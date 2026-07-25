@@ -1,0 +1,96 @@
+# Install with: uv run pre-commit install
+# The install hook types below are wired automatically by that one command.
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+  - prepare-commit-msg
+  - pre-push
+  - post-checkout
+  - post-merge
+default_stages: [pre-commit]
+
+# .beads/ is generated and maintained by bd; leave its formatting alone.
+exclude: '^\.beads/'
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.0
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      # Enforces .agents/skills/commit-messages/SKILL.md.
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+
+  - repo: local
+    hooks:
+      # Delegate to the hook scripts bd generates, so beads keeps owning its
+      # own timeout and exit-code handling. These used to run via
+      # core.hooksPath, which pre-commit refuses to coexist with.
+      - id: beads-pre-commit
+        name: beads (pre-commit)
+        entry: .beads/hooks/pre-commit
+        language: script
+        stages: [pre-commit]
+        always_run: true
+        pass_filenames: false
+      - id: beads-prepare-commit-msg
+        name: beads (prepare-commit-msg)
+        entry: .beads/hooks/prepare-commit-msg
+        language: script
+        stages: [prepare-commit-msg]
+        always_run: true
+      - id: beads-pre-push
+        name: beads (pre-push)
+        entry: .beads/hooks/pre-push
+        language: script
+        stages: [pre-push]
+        always_run: true
+        pass_filenames: false
+      - id: beads-post-checkout
+        name: beads (post-checkout)
+        entry: .beads/hooks/post-checkout
+        language: script
+        stages: [post-checkout]
+        always_run: true
+        pass_filenames: false
+      - id: beads-post-merge
+        name: beads (post-merge)
+        entry: .beads/hooks/post-merge
+        language: script
+        stages: [post-merge]
+        always_run: true
+        pass_filenames: false
+
+      # Slow checks run on push, so committing stays fast. The herdr and beads
+      # markers are integration tests that need live servers; they are excluded
+      # here and expected to be run deliberately.
+      - id: pyright
+        name: pyright
+        entry: uv run pyright
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-push]
+      - id: pytest
+        name: pytest
+        entry: uv run pytest -m "not herdr and not beads"
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-push]
