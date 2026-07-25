@@ -188,9 +188,17 @@ def test_send_keys_addresses_the_pane_not_the_agent(
     """The exit sequence makes the agent vanish partway through."""
     fake_proc.expect("herdr pane send-keys", Reply(stdout=""))
 
-    client.send_keys("wG:p1", ["c-c", "c-c", "c-d"])
+    client.send_keys("wG:p1", ["ctrl+c", "ctrl+c", "ctrl+d"])
 
-    assert fake_proc.calls[0] == ("herdr", "pane", "send-keys", "wG:p1", "c-c", "c-c", "c-d")
+    assert fake_proc.calls[0] == (
+        "herdr",
+        "pane",
+        "send-keys",
+        "wG:p1",
+        "ctrl+c",
+        "ctrl+c",
+        "ctrl+d",
+    )
 
 
 def test_pane_agent_is_none_at_a_shell_prompt(client: HerdrClient, fake_proc: FakeProc) -> None:
@@ -281,7 +289,7 @@ def test_workspace_and_pane_lifecycle_against_the_live_server(tmp_path: Path) ->
         assert client.pane_agent(workspace.pane_id) is None
         assert client.wait_for_shell(workspace.pane_id, timeout_s=2.0)
 
-        client.send_keys(workspace.pane_id, ["c-c"])
+        client.send_keys(workspace.pane_id, ["ctrl+c"])
         assert isinstance(client.read_pane(workspace.pane_id, lines=20), str)
 
         second = client.split_pane(workspace.pane_id, tmp_path)

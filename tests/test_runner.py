@@ -79,12 +79,12 @@ def test_the_transcript_is_captured_before_the_agent_exits(
 
 
 def test_the_configured_exit_keys_are_sent(runner: AgentRunner, happy: FakeProc) -> None:
-    runner.config.agent.exit_keys = ["c-c", "c-d"]
+    runner.config.agent.exit_keys = ["ctrl+c", "ctrl+d"]
 
     runner.run_turn("x", iteration=1)
 
     keys = next(happy.commands("herdr", "pane", "send-keys"))
-    assert keys[4:] == ("c-c", "c-d")
+    assert keys[4:] == ("ctrl+c", "ctrl+d")
 
 
 def test_a_blocked_turn_is_reported_not_raised(runner: AgentRunner, happy: FakeProc) -> None:
@@ -125,7 +125,7 @@ def test_a_pane_that_will_not_release_is_replaced(runner: AgentRunner, fake_proc
     )
     fake_proc.expect("herdr pane close", Reply(stdout=""))
 
-    runner.config.agent.exit_keys = ["c-c"]
+    runner.config.agent.exit_keys = ["ctrl+c"]
     runner.exit_agent()
 
     assert runner.pane_id == "wG:p9"
@@ -148,7 +148,7 @@ def test_an_unreplaceable_pane_is_an_agent_error(runner: AgentRunner, fake_proc:
     fake_proc.expect("herdr pane send-keys", Reply(stdout=""))
     fake_proc.expect("herdr pane split", Reply(stdout=error("pane:split", "no_space", "too small")))
 
-    runner.config.agent.exit_keys = ["c-c"]
+    runner.config.agent.exit_keys = ["ctrl+c"]
 
     with pytest.raises(AgentError, match="could not replace pane"):
         runner.exit_agent()

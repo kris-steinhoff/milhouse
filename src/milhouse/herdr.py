@@ -182,8 +182,10 @@ class HerdrClient:
 
         Args:
             pane_id: The pane to type into.
-            keys: herdr key names, e.g. ``["c-c", "c-c", "c-d"]``. Note that
-                herdr spells control keys ``c-c``, not ``ctrl-c``.
+            keys: herdr key names, e.g. ``["ctrl+c", "ctrl+c", "ctrl+d"]``. The
+                ``ctrl+`` spelling is the one that works for every control key.
+                herdr accepts ``c-c`` but rejects ``c-d``, and rejects the
+                hyphenated ``ctrl-c``, both with ``invalid_key``.
         """
         self._call(["pane", "send-keys", pane_id, *keys], expect_json=False)
 

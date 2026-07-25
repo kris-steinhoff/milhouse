@@ -265,9 +265,7 @@ class RalphLoop:
 
             issue = self.tracker.ready(epic.id, claim=True)
             if issue is None:
-                return self._stop(
-                    state, "no issues are ready; the epic is finished", completed=True
-                )
+                return self._stop(state, self._nothing_ready(epic), completed=self._is_done(epic))
 
             state.claimed_issue = issue.id
             state.save(self.state_path)
@@ -412,6 +410,35 @@ class RalphLoop:
             self.tracker.block(issue.id, note)
         except MilhouseError as exc:
             log.warning("could not mark %s blocked: %s", issue.id, exc)
+
+    def _unfinished(self, epic: Issue) -> list[Issue]:
+        """Children of ``epic`` that are not closed."""
+        return [child for child in self.tracker.children(epic.id) if not child.is_closed]
+
+    def _is_done(self, epic: Issue) -> bool:
+        """Whether the epic is genuinely finished, rather than merely stuck."""
+        return not self._unfinished(epic)
+
+    def _nothing_ready(self, epic: Issue) -> str:
+        """Explain an empty ready queue.
+
+        ``bd ready`` returns nothing both when every issue is closed and when
+        everything left is blocked, or depends on something blocked. Those are
+        opposite outcomes, and reporting the second as "the epic is finished"
+        exits 0 on a run that did nothing — which is how a dogfood run whose
+        issues all blocked on a permission prompt reported success.
+        """
+        unfinished = self._unfinished(epic)
+        if not unfinished:
+            return "no issues are ready; the epic is finished"
+        blocked = [issue for issue in unfinished if issue.status == "blocked"]
+        detail = ", ".join(issue.id for issue in unfinished)
+        if blocked:
+            return (
+                f"nothing is ready but {len(unfinished)} issue(s) are unfinished "
+                f"({detail}); {len(blocked)} blocked and needing a human"
+            )
+        return f"nothing is ready but {len(unfinished)} issue(s) are unfinished ({detail})"
 
     def _stop(self, state: RunState, reason: str, *, completed: bool) -> LoopResult:
         """Finish the run cleanly, leaving the workspace open for inspection."""

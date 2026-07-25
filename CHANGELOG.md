@@ -45,4 +45,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/tasks/hello.md`, the example task definition the quickstart and the
   end-to-end check both point at.
 
+### Fixed
+
+Everything here was found by dogfooding milhouse against a real repository
+rather than by testing against fakes.
+
+- A run whose issues all ended up `blocked` reported "the epic is finished" and
+  exited `0`. An empty `bd ready` queue means either "everything is closed" or
+  "everything left is stuck", and the two are opposites. The loop now checks the
+  epic's children, names the unfinished issues, and exits `9`.
+- The default `[agent] exit_keys` used `c-d`, which herdr rejects with
+  `invalid_key`. The short forms are inconsistent — `c-c` is accepted but `c-d`
+  is not — so the default is now spelled `ctrl+c`, `ctrl+c`, `ctrl+d`. The
+  symptom was an agent that appeared to refuse to quit, at the end of a turn
+  that had otherwise succeeded.
+- Documented, in [troubleshooting](docs/troubleshooting.md), why
+  `--dangerously-skip-permissions` makes an agent produce nothing: it shows a
+  one-time consent screen that an unattended agent cannot answer, and the turn
+  settles normally with no output.
+
 [Unreleased]: https://github.com/kris-steinhoff/milhouse/commits/main

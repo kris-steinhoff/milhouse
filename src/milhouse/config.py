@@ -57,10 +57,12 @@ class AgentConfig(BaseModel):
     exit_timeout_ms: int = 8_000
     """How long to wait for the pane to return to a shell prompt after exit_keys."""
 
-    exit_keys: list[str] = Field(default_factory=lambda: ["c-c", "c-c", "c-d"])
+    exit_keys: list[str] = Field(default_factory=lambda: ["ctrl+c", "ctrl+c", "ctrl+d"])
     """Keys returning the pane from the agent TUI to a shell prompt.
 
-    herdr spells control keys ``c-c``, not ``ctrl-c``, which it rejects.
+    Use the ``ctrl+`` spelling. herdr also accepts ``c-c`` and ``C-c``, but not
+    every control key has a short form: ``c-d`` is rejected with ``invalid_key``
+    while ``ctrl+d`` works. ``ctrl-c``, with a hyphen, is rejected too.
     """
 
 

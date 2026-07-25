@@ -27,6 +27,20 @@ def test_defaults_apply_without_a_config_file(repo: Path) -> None:
     assert resolved.herdr.read_source == "visible"
 
 
+def test_default_exit_keys_use_the_spelling_herdr_accepts(repo: Path) -> None:
+    """The short key forms herdr accepts are a trap, and must not drift back in.
+
+    ``c-c`` is accepted, so the short form looks correct, but ``c-d`` is
+    rejected with ``invalid_key``. A dogfood run reached the end of a successful
+    turn and then failed to exit the agent for exactly this reason.
+    """
+    resolved = config_module.load(repo)
+
+    assert resolved.agent.exit_keys == ["ctrl+c", "ctrl+c", "ctrl+d"]
+    for key in resolved.agent.exit_keys:
+        assert key.startswith("ctrl+"), f"{key} is not the spelling herdr accepts for every key"
+
+
 def test_file_overrides_defaults_key_by_key(repo: Path) -> None:
     write_config(repo, "[loop]\nmax_iterations = 7\n")
 

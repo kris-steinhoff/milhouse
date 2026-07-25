@@ -45,6 +45,40 @@ When a run misbehaves, read them in this order:
 3. `iter-NNN.prompt` — what it was actually asked. Prompts are rendered per
    iteration and differ between attempts.
 
+## The agent produced nothing, and the turn looked fine
+
+Symptom: `milhouse plan` reports that the agent did not write `plan.json`, or an
+iteration classifies as `stalled`, but nothing errored and the turn settled
+normally. The cause is almost always that the agent is sitting on a screen it
+cannot leave without a human. Open `iter-NNN.term` and look at the last few
+lines.
+
+The one that bites first is `--dangerously-skip-permissions`. It shows a
+one-time consent screen before the agent will accept any input:
+
+```
+  WARNING: Claude Code running in Bypass Permissions mode
+  ❯ 1. No, exit
+    2. Yes, I accept
+```
+
+An unattended agent never answers it. herdr sees a settled agent, milhouse sees
+no output, and the run ends with a confusing message. Grant permissions with a
+scoped list instead, which needs no consent:
+
+```toml
+[agent]
+args = [
+  "--permission-mode", "acceptEdits",
+  "--allowedTools", "Write,Edit,Read,Bash(git:*),Bash(bd:*)",
+]
+```
+
+This is the general shape of the problem: an agent flag that opens an
+interactive gate is unusable in a loop, and the transcript is the only place it
+shows. See [ADR 0009](decisions/0009-permission-posture.md) for the posture,
+and the `blocked` path below for gates that milhouse *can* detect.
+
 ## The agent is blocked
 
 herdr reports `blocked` when the agent is waiting on a human, which is almost
@@ -110,5 +144,10 @@ If that happens every iteration, the sequence is wrong for your agent. Set it:
 
 ```toml
 [agent]
-exit_keys = ["c-c", "c-d"]
+exit_keys = ["ctrl+c", "ctrl+d"]
 ```
+
+Run with `--verbose` and look for `invalid_key` first. herdr accepts the short
+form `c-c` but not `c-d`, so a sequence copied from tmux habits can be rejected
+outright — and a rejected sequence looks exactly like an agent that would not
+quit. Spell control keys `ctrl+c`, `ctrl+d`.

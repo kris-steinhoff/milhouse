@@ -11,14 +11,19 @@ key sequence, and the right sequence is agent-specific.
 
 ## Decision
 
-Send the configured `[agent] exit_keys` (default `["c-c", "c-c", "c-d"]` for
-`claude`) with `herdr pane send-keys`, then confirm the pane is back at a shell
-prompt by polling `herdr pane get` until it no longer reports an `agent` field.
+Send the configured `[agent] exit_keys` (default `["ctrl+c", "ctrl+c", "ctrl+d"]`
+for `claude`) with `herdr pane send-keys`, then confirm the pane is back at a
+shell prompt by polling `herdr pane get` until it no longer reports an `agent`
+field.
 
 Two details, both found against the real TUI rather than assumed:
 
-- **herdr spells control keys `c-c`.** It rejects `ctrl-c` outright with
-  `invalid_key`. `c-c`, `ctrl+c`, and `C-c` are all accepted.
+- **Spell control keys `ctrl+c`.** herdr rejects the hyphenated `ctrl-c` with
+  `invalid_key`. It does accept the short forms `c-c` and `C-c`, but not for
+  every key: `c-d` is rejected while `ctrl+d` works. The short forms are a trap
+  because they work often enough to look correct, so milhouse uses `ctrl+`
+  throughout. This cost a dogfood run, which failed at the exit step with
+  `unsupported key c-d` after the turn itself had succeeded.
 - **Address the pane, not the agent.** `herdr agent send-keys` resolves its
   target by agent name, and the agent stops existing partway through the
   sequence — the remaining keys then fail with `agent_not_found`.
@@ -34,8 +39,8 @@ herdr pane split <other_pane_id> --direction right --cwd <repo> --no-focus
 
 The new pane id is recorded in `state.json`, so the next iteration uses it.
 
-Two `c-c` rather than one: the first interrupts whatever the agent is doing,
-the second dismisses its confirmation, and `c-d` exits the now-idle prompt.
+Two `ctrl+c` rather than one: the first interrupts whatever the agent is doing,
+the second dismisses its confirmation, and `ctrl+d` exits the now-idle prompt.
 
 ## Consequences
 

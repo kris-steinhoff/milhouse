@@ -133,6 +133,29 @@ Re-opening matters: a claimed issue is `in_progress`, and `bd ready` excludes
 those, so an unfinished issue that was simply left alone would never be offered
 again.
 
+### How a run ends
+
+The loop stops when `bd ready` offers nothing, and that means one of two
+opposite things. milhouse distinguishes them by looking at the epic's children:
+
+```console
+$ milhouse run docs/tasks/farewell.md
+working on branch milhouse/farewell
+using existing epic dogfood-6i2: Add a farewell function
+nothing is ready but 3 issue(s) are unfinished (dogfood-6i2.1, dogfood-6i2.2,
+dogfood-6i2.3); 2 blocked and needing a human
+the herdr workspace wY is still open
+
+stopped after 2 iterations: nothing is ready but 3 issue(s) are unfinished
+```
+
+That exits `9`, not `0`. Only "no issues are ready; the epic is finished", with
+every child closed, exits `0`. A run that blocks every issue has done no work,
+and a script branching on the exit code has to be able to tell.
+
+The workspace is deliberately left open so the panes can be inspected
+([ADR 0005](decisions/0005-milhouse-owns-the-loop.md)).
+
 ### `--dry-run`
 
 Shows exactly what a run would do, including the prompt it would send, and

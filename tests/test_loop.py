@@ -245,8 +245,46 @@ def test_a_stalled_issue_is_retried_then_blocked(
 
     assert [item.outcome for item in result.state.iterations] == ["stalled"] * 3
     assert decomposed.blocked == ["bd-e.1"]
-    assert result.completed  # nothing left ready, because the issue is blocked
+    # Nothing is ready, but the issue is blocked rather than done, so the run
+    # did not complete. Reporting completion here would exit 0 on a failed run.
+    assert not result.completed
+    assert "bd-e.1" in result.reason
     assert result.state.attempts_for("bd-e.1") == 3
+
+
+def test_an_epic_whose_issues_all_blocked_is_not_reported_as_finished(
+    config: Config, task: TaskDefinition, decomposed: FakeTracker
+) -> None:
+    """An empty ready queue means "finished" or "stuck", and they are opposites.
+
+    A dogfood run hit a permission prompt on every issue, blocked them all, and
+    then reported "the epic is finished" and exited 0 with nothing done.
+    """
+    for issue in decomposed.issues:
+        issue.status = "blocked"
+    loop, _ = build(config, task, tracker=decomposed, script=[])
+
+    result = loop.run()
+
+    assert not result.completed
+    assert result.iterations == 0
+    assert "unfinished" in result.reason
+    assert "blocked" in result.reason
+    for issue in decomposed.issues:
+        assert issue.id in result.reason
+
+
+def test_an_epic_with_every_issue_closed_is_finished(
+    config: Config, task: TaskDefinition, decomposed: FakeTracker
+) -> None:
+    for issue in decomposed.issues:
+        issue.status = "closed"
+    loop, _ = build(config, task, tracker=decomposed, script=[])
+
+    result = loop.run()
+
+    assert result.completed
+    assert result.reason == "no issues are ready; the epic is finished"
 
 
 def test_a_commit_without_a_close_is_partial_and_retried(
