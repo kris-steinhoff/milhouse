@@ -31,5 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `runner.py`, which runs one iteration's agent from start to exit, capturing
   the prompt and the pane transcript into `.milhouse/runs/<task>/`.
 - `outcome.py`, the pure classification of what an iteration achieved.
+- The two prompt templates, `plan.md.j2` and `iterate.md.j2`, documented in
+  [docs/prompts.md](docs/prompts.md).
+- `planner.py`: the plan format, its validation (unique keys, resolvable and
+  acyclic dependencies), and the creation pass. The planning agent proposes a
+  file; milhouse creates the issues.
 
 [Unreleased]: https://github.com/kris-steinhoff/milhouse/commits/main
