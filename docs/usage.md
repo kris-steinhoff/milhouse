@@ -135,6 +135,43 @@ again.
 
 ### How a run ends
 
+A complete run, one issue per iteration, each with a fresh agent:
+
+```console
+$ milhouse run docs/tasks/farewell.md
+working on branch milhouse/farewell
+using existing epic dogfood-6i2: Add a farewell function
+iteration 3: dogfood-6i2.1 Add goodbye(name) to src/greet/__init__.py and document it in README.md (attempt 1 of 3)
+  → success: dogfood-6i2.1 closed in beads
+iteration 4: dogfood-6i2.2 Make the src-layout greet package importable when running python -m pytest (attempt 1 of 3)
+  → success: dogfood-6i2.2 closed in beads
+iteration 5: dogfood-6i2.3 Add tests/test_greet.py covering hello and goodbye (attempt 1 of 3)
+  → success: dogfood-6i2.3 closed in beads
+iteration 6: dogfood-6i2.4 Ignore Python cache dirs (__pycache__, .pytest_cache) in .gitignore (attempt 1 of 3)
+  → stalled: dogfood-6i2.4 is still open and nothing was committed
+reached the 6-iteration ceiling
+the herdr workspace wY is still open
+
+stopped after 6 iterations: reached the 6-iteration ceiling
+```
+
+The numbering starts at 3 because two earlier iterations of this run had already
+been recorded — the count is per task, not per invocation.
+
+### Epics grow while you run them
+
+`dogfood-6i2.4` is not in the plan. The iteration prompt tells the agent to file
+work it notices rather than do it
+([ADR 0013](decisions/0013-iteration-prompt-contract.md)), so an agent working
+issue 3 filed a fourth, and the loop picked it up next.
+
+This is the intended behaviour and it has a consequence worth stating plainly:
+**a run is not guaranteed to terminate on its own.** Agents can add issues as
+fast as the loop closes them. `--max-iterations` is the thing that actually
+bounds a run, which is why it has a default rather than being optional.
+
+### How a run ends
+
 The loop stops when `bd ready` offers nothing, and that means one of two
 opposite things. milhouse distinguishes them by looking at the epic's children:
 
@@ -151,7 +188,8 @@ stopped after 2 iterations: nothing is ready but 3 issue(s) are unfinished
 
 That exits `9`, not `0`. Only "no issues are ready; the epic is finished", with
 every child closed, exits `0`. A run that blocks every issue has done no work,
-and a script branching on the exit code has to be able to tell.
+and a script branching on the exit code has to be able to tell. Hitting the
+iteration ceiling exits `9` too.
 
 The workspace is deliberately left open so the panes can be inspected
 ([ADR 0005](decisions/0005-milhouse-owns-the-loop.md)).

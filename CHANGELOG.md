@@ -45,6 +45,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/tasks/hello.md`, the example task definition the quickstart and the
   end-to-end check both point at.
 
+### Verified
+
+- The loop was driven end to end against a live `claude` in a herdr pane: a task
+  definition decomposed into three issues, then three consecutive `success`
+  iterations, each with a freshly started agent, each closing its issue in beads
+  and committing with the issue id in the message. Captured in
+  [docs/usage.md](docs/usage.md#what-each-iteration-does).
+- That run also confirmed epics grow while they run. An agent filed a fourth
+  issue it had noticed, exactly as the iteration prompt asks, and the loop picked
+  it up. `--max-iterations` is what bounds a run, not the plan.
+
 ### Fixed
 
 Everything here was found by dogfooding milhouse against a real repository
