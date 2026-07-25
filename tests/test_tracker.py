@@ -264,8 +264,9 @@ def test_full_lifecycle_against_a_real_database(tmp_path: Path, task: TaskDefini
 
     epic = tracker.create_epic(task)
     assert epic.issue_type == "epic"
-    assert tracker.find_epic(task) is not None
-    assert tracker.find_epic(task).id == epic.id  # type: ignore[union-attr]
+    found = tracker.find_epic(task)
+    assert found is not None
+    assert found.id == epic.id
 
     children = tracker.create_children(
         epic.id,

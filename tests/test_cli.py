@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from milhouse import cli, proc
 from milhouse.models import Iteration, RunState
@@ -41,7 +41,7 @@ def task_repo(repo: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return repo
 
 
-def invoke(*args: str) -> object:
+def invoke(*args: str) -> Result:
     return runner.invoke(cli.app, list(args))
 
 

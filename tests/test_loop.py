@@ -181,18 +181,18 @@ def build(
     loop = RalphLoop(
         config,
         task,
-        tracker=tracker,  # type: ignore[arg-type]
-        client=FakeClient(),  # type: ignore[arg-type]
-        repo=repo,  # type: ignore[arg-type]
+        tracker=tracker,
+        client=FakeClient(),  # ty: ignore[invalid-argument-type]
+        repo=repo,  # ty: ignore[invalid-argument-type]
     )
     runner = FakeRunner(tracker=tracker, repo=repo, script=script)
     original = loop._open_workspace
 
     def open_workspace(state: RunState) -> None:
         original(state)
-        loop._session.runner = runner  # type: ignore[assignment]
+        loop._session.runner = runner  # ty: ignore[invalid-assignment]
 
-    loop._open_workspace = open_workspace  # type: ignore[method-assign]
+    loop._open_workspace = open_workspace  # ty: ignore[invalid-assignment]
     return loop, runner
 
 
@@ -501,7 +501,7 @@ def test_decomposition_runs_when_there_is_no_epic(
                 issue.status = "closed"
         return TurnResult(agent_state="done")
 
-    runner.run_turn = propose_then_close  # type: ignore[method-assign]
+    runner.run_turn = propose_then_close  # ty: ignore[invalid-assignment]
 
     result = loop.run()
 
@@ -522,7 +522,7 @@ def test_declining_the_decomposition_creates_nothing(config: Config, task: TaskD
         )
         return TurnResult(agent_state="done")
 
-    runner.run_turn = propose  # type: ignore[method-assign]
+    runner.run_turn = propose  # ty: ignore[invalid-assignment]
 
     with pytest.raises(UserAbortError):
         loop.run(confirm=lambda plan: False)

@@ -26,7 +26,7 @@ from . import prompts
 from .config import Config
 from .errors import AgentError, HerdrError, LoopAbortedError, MilhouseError, UserAbortError
 from .gitrepo import GitRepo
-from .herdr import HerdrClient, Workspace
+from .herdr import AgentStatus, HerdrClient, Workspace
 from .models import Issue, Iteration, RunState, TaskDefinition, now
 from .planner import Planner
 from .runner import AgentRunner
@@ -340,7 +340,7 @@ class RalphLoop:
             transcript_path=self._relative(turn.transcript_path if turn else None),
         )
 
-    def _handle_blocked(self, runner: AgentRunner) -> str:
+    def _handle_blocked(self, runner: AgentRunner) -> AgentStatus:
         """Apply the ``--on-blocked`` policy to an agent waiting on a human."""
         policy = self.config.loop.on_blocked
         workspace = self._session.workspace

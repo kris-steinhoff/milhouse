@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from milhouse import proc
 
@@ -102,11 +102,14 @@ class FakeProc:
     def _resolve(self, key: tuple[str, ...], argv: tuple[str, ...]) -> Reply:
         """Turn a registered value into a concrete reply for this call."""
         value = self.replies[key]
-        if callable(value):
-            return value(argv)
+        if isinstance(value, Reply):
+            return value
         if isinstance(value, list):
-            return value.pop(0) if len(value) > 1 else value[0]
-        return value
+            # isinstance cannot carry the element type, and a list subclass could
+            # also be a Responder, so the narrowed type is wider than the dict's.
+            queue = cast("list[Reply]", value)
+            return queue.pop(0) if len(queue) > 1 else queue[0]
+        return value(argv)
 
     def commands(self, *prefix: str) -> Iterator[tuple[str, ...]]:
         """Yield recorded calls starting with ``prefix``.
