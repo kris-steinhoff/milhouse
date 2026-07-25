@@ -23,10 +23,20 @@ herdr workspace create --cwd <repo> --label "milhouse:<slug>" --no-focus
 herdr agent start milhouse-<slug> --kind claude --pane <pane_id> \
     --timeout 60000 -- <agent args>
 herdr agent prompt milhouse-<slug> "<rendered prompt>" \
-    --wait --until idle --until blocked --timeout <ms>
+    --wait --until idle --until done --until blocked --timeout <ms>
 herdr agent read milhouse-<slug> --source visible --lines 400 --format text
-herdr agent send-keys milhouse-<slug> ctrl-c ctrl-c ctrl-d   # back to the shell
+herdr pane send-keys <pane_id> c-c c-c c-d                   # back to the shell
 ```
+
+Two corrections the design's version of this needed, both found by driving the
+real server:
+
+- **`--until done`, not just `--until idle`.** claude settles in herdr's `done`
+  state at the end of a turn, not `idle`. Waiting on `idle` alone times out on
+  every successful turn. `done` is also what `agent prompt --wait` matches by
+  default when no `--until` is given.
+- **`c-c`, not `ctrl-c`.** herdr rejects `ctrl-c` with `invalid_key`. The
+  accepted spellings are `c-c`, `ctrl+c`, and `C-c`.
 
 ## Consequences
 
@@ -37,9 +47,9 @@ herdr agent send-keys milhouse-<slug> ctrl-c ctrl-c ctrl-d   # back to the shell
   `idle → working → idle` transition around a prompt is unambiguous.
   (`agent prompt --wait` warns it cannot distinguish turns if the agent is
   *already* working, which never applies here.)
-- `--until idle --until blocked` is the whole turn-completion mechanism: one
-  blocking subprocess per iteration, which is exactly what a sequential loop
-  wants.
+- `--until idle --until done --until blocked` is the whole turn-completion
+  mechanism: one blocking subprocess per iteration, which is exactly what a
+  sequential loop wants.
 - herdr reports a distinct `blocked` state when the agent is waiting on a human.
   That is the main payoff of panes over a headless runner: milhouse can stop and
   ask, instead of failing the iteration. See

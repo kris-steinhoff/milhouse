@@ -110,5 +110,5 @@ If that happens every iteration, the sequence is wrong for your agent. Set it:
 
 ```toml
 [agent]
-exit_keys = ["ctrl-c", "ctrl-d"]
+exit_keys = ["c-c", "c-d"]
 ```

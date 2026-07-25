@@ -54,8 +54,11 @@ class AgentConfig(BaseModel):
     start_timeout_ms: int = 60_000
     """How long ``herdr agent start`` may take to report the agent ready."""
 
-    exit_keys: list[str] = Field(default_factory=lambda: ["ctrl-c", "ctrl-c", "ctrl-d"])
-    """Key sequence that returns the pane from the agent TUI to a shell prompt."""
+    exit_keys: list[str] = Field(default_factory=lambda: ["c-c", "c-c", "c-d"])
+    """Keys returning the pane from the agent TUI to a shell prompt.
+
+    herdr spells control keys ``c-c``, not ``ctrl-c``, which it rejects.
+    """
 
 
 class LoopConfig(BaseModel):

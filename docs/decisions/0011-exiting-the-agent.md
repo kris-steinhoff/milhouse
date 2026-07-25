@@ -11,22 +11,31 @@ key sequence, and the right sequence is agent-specific.
 
 ## Decision
 
-Send the configured `[agent] exit_keys` (default `["ctrl-c", "ctrl-c", "ctrl-d"]`
-for `claude`) with `herdr agent send-keys`, then confirm the pane is back at a
-shell prompt by checking `herdr pane get` no longer reports an agent.
+Send the configured `[agent] exit_keys` (default `["c-c", "c-c", "c-d"]` for
+`claude`) with `herdr pane send-keys`, then confirm the pane is back at a shell
+prompt by polling `herdr pane get` until it no longer reports an `agent` field.
+
+Two details, both found against the real TUI rather than assumed:
+
+- **herdr spells control keys `c-c`.** It rejects `ctrl-c` outright with
+  `invalid_key`. `c-c`, `ctrl+c`, and `C-c` are all accepted.
+- **Address the pane, not the agent.** `herdr agent send-keys` resolves its
+  target by agent name, and the agent stops existing partway through the
+  sequence — the remaining keys then fail with `agent_not_found`.
+  `herdr pane send-keys` has no such problem.
 
 If it is not back within a few seconds, fall back to closing the pane and
 splitting a fresh one:
 
 ```sh
 herdr pane close <pane_id>
-herdr pane split <other_pane_id> --cwd <repo>
+herdr pane split <other_pane_id> --direction right --cwd <repo> --no-focus
 ```
 
 The new pane id is recorded in `state.json`, so the next iteration uses it.
 
-Two `ctrl-c` rather than one: the first interrupts whatever the agent is doing,
-the second dismisses its confirmation, and `ctrl-d` exits the now-idle prompt.
+Two `c-c` rather than one: the first interrupts whatever the agent is doing,
+the second dismisses its confirmation, and `c-d` exits the now-idle prompt.
 
 ## Consequences
 

@@ -23,5 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Task definition sources: local markdown files (`docs/tasks/hello.md`,
   `file:...`) and GitHub issues (`gh:owner/repo#123`, `gh:123`, or an issue
   URL), each deriving the stable `task_id` that links a task to its epic.
+- `tracker/beads.py`, the `bd` wrapper: find or create the epic for a task,
+  create children with their dependencies, claim the next ready issue, and
+  release, block, note, or close one.
+- `herdr.py`, a narrow client over the herdr CLI: workspaces, panes, and the
+  agent lifecycle.
 
 [Unreleased]: https://github.com/kris-steinhoff/milhouse/commits/main

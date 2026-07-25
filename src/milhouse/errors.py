@@ -21,6 +21,7 @@ __all__ = [
     "ProcessError",
     "SourceError",
     "TrackerError",
+    "TurnTimeoutError",
     "UserAbortError",
 ]
 
@@ -80,6 +81,17 @@ class HerdrError(MilhouseError):
 
     exit_code = 5
     remedy = "Run `milhouse doctor`; start the herdr server if it is not running."
+
+
+class TurnTimeoutError(HerdrError):
+    """An agent did not settle within the turn timeout.
+
+    Exit code ``5``, inherited from :class:`HerdrError`. The loop catches this
+    and classifies the iteration as ``timeout`` rather than letting it end the
+    run, so it usually never reaches the CLI.
+    """
+
+    remedy = "Raise [loop] turn_timeout_ms, or attach to the pane to see what stalled."
 
 
 class AgentError(MilhouseError):
