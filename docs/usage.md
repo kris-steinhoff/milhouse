@@ -196,11 +196,28 @@ Running it against a task that already has an epic prints the existing tree
 instead of planning it a second time:
 
 ```console
-$ milhouse plan docs/tasks/hello.md
-file:docs/tasks/hello.md is already decomposed as bd-4rt.
-  [x] bd-4rt.1  Add the hello subcommand  (closed)
-  [ ] bd-4rt.2  Document the hello subcommand  (open)
+$ milhouse plan docs/tasks/farewell.md
+created epic dogfood-6i2 with 3 issues
+  [ ] dogfood-6i2.1  Add goodbye(name) to src/greet/__init__.py and document it in README.md  (open)
+  [ ] dogfood-6i2.2  Make the src-layout greet package importable when running python -m pytest  (open)
+  [ ] dogfood-6i2.3  Add tests/test_greet.py covering hello and goodbye  (open)
 ```
+
+Run it again and it prints the existing tree rather than planning a second time:
+
+```console
+$ milhouse plan docs/tasks/farewell.md
+file:docs/tasks/farewell.md is already decomposed as dogfood-6i2.
+  [ ] dogfood-6i2.1  Add goodbye(name) to src/greet/__init__.py and document it in README.md  (blocked)
+  [ ] dogfood-6i2.2  Make the src-layout greet package importable when running python -m pytest  (blocked)
+  [ ] dogfood-6i2.3  Add tests/test_greet.py covering hello and goodbye  (open)
+```
+
+Worth noticing in that decomposition: only `goodbye` and the tests were asked
+for. The planning agent read the repository, found that the `src/` layout made
+`greet` unimportable under `python -m pytest`, and filed that as its own issue
+blocking the tests. Reading the code before decomposing is the reason the
+prompt insists on it ([prompts](prompts.md#the-plan-format)).
 
 The planning agent never creates issues itself. It writes
 `.milhouse/runs/<task>/plan.json` and milhouse creates them, which is what makes
@@ -218,6 +235,8 @@ starts nothing and changes nothing.
 milhouse status <task> [--repo PATH]
 ```
 
+Before a task is decomposed:
+
 ```console
 $ milhouse status docs/tasks/hello.md
 task    file:docs/tasks/hello.md
@@ -226,7 +245,23 @@ epic    (not decomposed yet — run `milhouse plan`)
 
 Once a run is under way it also reports the branch, the herdr workspace and
 pane, any claim left behind by an unfinished run, and one line per iteration
-with its outcome.
+with its outcome:
+
+```console
+$ milhouse status docs/tasks/farewell.md
+task    file:docs/tasks/farewell.md
+epic    dogfood-6i2  Add a farewell function
+branch  milhouse/farewell
+herdr   workspace wY, pane wY:p3
+
+  [ ] dogfood-6i2.1  Add goodbye(name) to src/greet/__init__.py and document it in README.md  (blocked)
+  [ ] dogfood-6i2.2  Make the src-layout greet package importable when running python -m pytest  (blocked)
+  [ ] dogfood-6i2.3  Add tests/test_greet.py covering hello and goodbye  (open)
+
+iterations (2)
+    1  blocked  dogfood-6i2.1  the agent is waiting on a human
+    2  blocked  dogfood-6i2.2  the agent is waiting on a human
+```
 
 ## End-to-end check
 

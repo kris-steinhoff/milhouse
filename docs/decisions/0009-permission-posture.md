@@ -30,6 +30,34 @@ args = ["--dangerously-skip-permissions"]
 milhouse stops, prints which workspace to attach to, and waits up to
 `blocked_timeout_ms` for the agent to leave `blocked`.
 
+### The middle ground does not exist
+
+The obvious compromise — grant a *scoped* tool allowlist instead of skipping
+permissions wholesale — does not work, and a dogfood run is what established
+that. Given
+
+```toml
+args = ["--allowedTools", "Write,Edit,Bash(git:*),Bash(bd:*),Bash(python3:*)"]
+```
+
+every issue still blocked, on this:
+
+```
+ls docs && echo "---" && which ruff flake8 pytest black; python -m pytest --version
+```
+
+An agent writing its own shell commands composes them freely, and a composed
+command matches no single prefix pattern. Prefix allowlists work for known call
+sites, not for an agent authoring commands as it goes. Widening the list until
+it stops blocking arrives at `Bash` unscoped, which is the unattended posture
+with extra steps.
+
+Note also that `--dangerously-skip-permissions` shows a one-time consent screen.
+An unattended agent cannot answer it, so the first turn settles normally having
+produced nothing at all — see
+[troubleshooting](../troubleshooting.md#the-agent-produced-nothing-and-the-turn-looked-fine).
+Accept it once interactively before relying on it in a loop.
+
 ## Consequences
 
 - The dangerous setting is in a committed file with a name that shows up in code
@@ -42,3 +70,6 @@ milhouse stops, prints which workspace to attach to, and waits up to
 - `--on-blocked skip` exists for a middle posture: keep permission prompts on,
   but do not stall the run on them. The issue is left for a human and the loop
   moves to the next one.
+- The real choice is binary: supervise the run, or isolate the working copy and
+  let the agent off the leash. There is no configuration that is both unattended
+  and meaningfully restricted, so do not spend time looking for one.
