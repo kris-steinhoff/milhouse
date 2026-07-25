@@ -40,7 +40,7 @@ def test_failed_outcomes_count_against_the_attempt_cap() -> None:
     state = RunState(task_id="file:t.md", task_slug="t")
 
     for outcome in ("stalled", "partial", "timeout", "error"):
-        state.record(Iteration(number=1, issue_id="bd-1", outcome=outcome))  # type: ignore[arg-type]
+        state.record(Iteration(number=1, issue_id="bd-1", outcome=outcome))
 
     assert state.attempts_for("bd-1") == 4
 

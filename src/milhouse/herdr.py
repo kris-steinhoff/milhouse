@@ -466,7 +466,7 @@ def _agent_info(raw: dict[str, Any], *, fallback_name: str, fallback_pane: str) 
 def _as_status(value: Any) -> AgentStatus:
     """Coerce a herdr status string to :data:`AgentStatus`, defaulting to unknown."""
     if value in ("idle", "working", "blocked", "done", "unknown"):
-        return value  # type: ignore[return-value]
+        return value
     return "unknown"
 
 
