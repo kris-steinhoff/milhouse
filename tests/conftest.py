@@ -24,10 +24,16 @@ def fake_proc(monkeypatch: pytest.MonkeyPatch) -> FakeProc:
 
 
 @pytest.fixture
-def repo(tmp_path: Path) -> Path:
-    """An empty directory standing in for a repository root."""
+def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An empty directory standing in for a repository root, and the working directory.
+
+    Tests run from inside it because relative task specs are resolved against the
+    current directory first. Without the ``chdir``, a spec like
+    ``docs/tasks/hello.md`` would find milhouse's own copy of that file.
+    """
     root = tmp_path / "repo"
     root.mkdir()
+    monkeypatch.chdir(root)
     return root
 
 

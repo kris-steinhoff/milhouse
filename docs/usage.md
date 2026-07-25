@@ -76,6 +76,161 @@ Three result levels:
 The agent row uses whatever `[agent] kind` is configured, so it checks the agent
 you will actually run.
 
+## `milhouse run`
+
+The main entry point. Resolves the task, decomposes it if it has not been
+decomposed yet, then loops: claim one ready issue, hand it to a **freshly
+started** agent, classify what happened, repeat.
+
+```
+milhouse run <task> [options]
+```
+
+| Option              | Default                | Meaning                                                                     |
+| ------------------- | ---------------------- | --------------------------------------------------------------------------- |
+| `--max-iterations`  | `50`                   | Hard ceiling on iterations for the whole run.                               |
+| `--max-attempts`    | `3`                    | Failed attempts on one issue before it is marked blocked and skipped.       |
+| `--on-blocked`      | `wait`                 | `wait`, `skip`, or `abort` when herdr reports the agent needs a human.      |
+| `--agent`           | `claude`               | Agent kind to run. Any kind herdr supports.                                 |
+| `--workspace`       | `HERDR_WORKSPACE_ID`   | Reuse this herdr workspace instead of creating one.                         |
+| `--branch-strategy` | `task`                 | `task` for one branch per task definition; `current` to stay put.           |
+| `--dry-run`         | off                    | Render the prompts and print the plan; start no agents.                     |
+| `--attach`          | off                    | Focus the herdr workspace instead of leaving it hidden.                     |
+| `--yes`, `-y`       | off                    | Create the proposed issues without asking.                                  |
+| `--repo`            | the enclosing repo     | Repository to work in.                                                      |
+
+Everything except `--dry-run`, `--attach`, and `--yes` can also be set in
+[`.milhouse/config.toml`](configuration.md).
+
+### Resuming
+
+Re-running `milhouse run` against the same task **is** the resume mechanism. It
+re-opens any claim a previous run left behind, keeps the attempt counts, and
+carries on ([ADR 0008](decisions/0008-crash-recovery-by-reconciliation.md)).
+There is no separate `resume` command.
+
+### What each iteration does
+
+1. `bd ready --parent <epic> --claim --limit 1` — an empty result means the epic
+   is finished.
+2. Render `iterate.md.j2` for that issue and save it to `iter-NNN.prompt`.
+3. `herdr agent start` a **new** agent in the task's pane.
+4. `herdr agent prompt --wait` until the turn settles.
+5. Capture the pane transcript to `iter-NNN.term`.
+6. Exit the agent, returning the pane to a shell prompt.
+7. Classify the outcome from beads and git, and record it.
+
+| Outcome   | Means                                          | Issue becomes                    |
+| --------- | ---------------------------------------------- | -------------------------------- |
+| `success` | The issue is closed in beads.                  | closed                           |
+| `partial` | Still open, but `HEAD` moved.                  | re-opened for another attempt    |
+| `stalled` | Still open and nothing was committed.          | re-opened for another attempt    |
+| `timeout` | The turn did not settle in time.               | re-opened for another attempt    |
+| `blocked` | The agent is waiting on a human.               | `blocked` in beads               |
+| `error`   | herdr or `bd` failed.                          | re-opened for another attempt    |
+
+Re-opening matters: a claimed issue is `in_progress`, and `bd ready` excludes
+those, so an unfinished issue that was simply left alone would never be offered
+again.
+
+### `--dry-run`
+
+Shows exactly what a run would do, including the prompt it would send, and
+starts nothing:
+
+```console
+$ milhouse run docs/tasks/hello.md --dry-run
+dry run — no agents will be started
+task      file:docs/tasks/hello.md
+title     Add a hello command
+branch    milhouse/hello
+agent     claude
+caps      50 iterations, 3 attempts per issue, on-blocked wait
+run dir   /home/agent/code/github.com/kris-steinhoff/milhouse/.milhouse/runs/hello
+
+not decomposed yet; the planning agent would be sent:
+
+    You are planning one unit of work for the milhouse orchestrator. Your entire job
+    this session is to decompose the task below into issues and write them to a
+    file. You are not implementing anything.
+    …
+```
+
+Once the task is decomposed, `--dry-run` prints the issue the next iteration
+would claim and the prompt it would get. It is the cheapest way to see the
+effect of a prompt or config change.
+
+## `milhouse plan`
+
+Decompose a task and stop. Runs the planning agent, shows what it proposes,
+creates the issues once you approve, and does not start the loop.
+
+```
+milhouse plan <task> [--yes] [--agent KIND] [--workspace ID] [--repo PATH]
+```
+
+Running it against a task that already has an epic prints the existing tree
+instead of planning it a second time:
+
+```console
+$ milhouse plan docs/tasks/hello.md
+file:docs/tasks/hello.md is already decomposed as bd-4rt.
+  [x] bd-4rt.1  Add the hello subcommand  (closed)
+  [ ] bd-4rt.2  Document the hello subcommand  (open)
+```
+
+The planning agent never creates issues itself. It writes
+`.milhouse/runs/<task>/plan.json` and milhouse creates them, which is what makes
+the approval real rather than advisory
+([ADR 0006](decisions/0006-planning-agent-proposes-milhouse-creates.md)). The
+format is in [prompts](prompts.md#the-plan-format), and the file is plain JSON,
+so editing it and re-running is a reasonable way to fix a bad decomposition.
+
+## `milhouse status`
+
+The issue tree and this run's iteration history. Reads beads and the run state;
+starts nothing and changes nothing.
+
+```
+milhouse status <task> [--repo PATH]
+```
+
+```console
+$ milhouse status docs/tasks/hello.md
+task    file:docs/tasks/hello.md
+epic    (not decomposed yet — run `milhouse plan`)
+```
+
+Once a run is under way it also reports the branch, the herdr workspace and
+pane, any claim left behind by an unfinished run, and one line per iteration
+with its outcome.
+
+## End-to-end check
+
+The manual check that the loop really works. It needs eyes on it, because the
+thing being verified — that the context is fresh every iteration — is only
+visible in the pane.
+
+```sh
+milhouse doctor                                        # all required rows green
+milhouse run docs/tasks/hello.md --dry-run             # prompts look right
+milhouse plan docs/tasks/hello.md                      # inspect the issue tree
+bd list --metadata-field milhouse_task=file:docs/tasks/hello.md --json
+milhouse run docs/tasks/hello.md --max-iterations 2 --attach
+```
+
+Watch for:
+
+1. A workspace named `milhouse:hello` appears.
+2. The pane shows the agent starting and working.
+3. **The pane returns to a shell prompt between iterations.** This is the one
+   that matters: it is what proves each iteration gets a fresh context window.
+4. The issue closes in `bd`.
+
+Then trigger a permission prompt deliberately and confirm herdr reports
+`blocked`, milhouse tells you which workspace to attach to, and it waits rather
+than counting a failure.
+
 ## Exit codes
 
 Stable, and safe to branch on in a script.

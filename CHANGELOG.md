@@ -36,5 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `planner.py`: the plan format, its validation (unique keys, resolvable and
   acyclic dependencies), and the creation pass. The planning agent proposes a
   file; milhouse creates the issues.
+- `loop.py`, the ralph loop and its guardrails: the iteration ceiling, the
+  per-issue attempt cap, stall detection, the `--on-blocked` policy, crash
+  reconciliation on startup, and teardown that reverts the in-flight claim on
+  SIGINT/SIGTERM without closing anyone's pane.
+- `milhouse run`, `milhouse plan`, and `milhouse status`, including `--dry-run`,
+  which renders the prompts and prints the plan without starting an agent.
+- `docs/tasks/hello.md`, the example task definition the quickstart and the
+  end-to-end check both point at.
 
 [Unreleased]: https://github.com/kris-steinhoff/milhouse/commits/main
