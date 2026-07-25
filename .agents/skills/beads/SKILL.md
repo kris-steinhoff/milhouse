@@ -1,6 +1,6 @@
 ---
 name: beads
-description: Use when working in a repository that uses bd or Beads for durable project task tracking, issue dependencies, blocker management, multi-session handoff, or shared work memory. Trigger when the user asks to find ready work, claim or close tasks, create follow-up work, inspect blockers, recover project context, or choose between local planning and persistent project tracking.
+description: Use when working in a repository that uses bd or Beads for durable project task tracking, issue dependencies, blocker management, multi-session handoff, or shared work memory. Trigger when the user asks to find ready work, claim or close tasks, create follow-up work, inspect blockers, recover project context, share issues with collaborators, sync a workspace, set up a fresh clone, or choose between local planning and persistent project tracking.
 ---
 
 # Beads
@@ -58,6 +58,48 @@ bd create "Short title" --description="Why this exists and what needs to be done
 ```bash
 bd close <id> --reason="Completed"
 ```
+
+## Sync
+
+Issue data does not travel with `git push`. One git remote carries two independent things under different refs:
+
+| What | Ref | Command |
+| ----------- | ------------------ | ------------------------------- |
+| Source code | `refs/heads/main` | `git push` and `git pull` |
+| Issue data  | `refs/dolt/data`   | `bd dolt push` and `bd dolt pull` |
+
+The local Dolt database is the source of truth. It lives under `.beads/` and is gitignored, so an unpushed database exists on exactly one machine.
+
+Pull at the start of a session, before claiming anything:
+
+```bash
+bd dolt pull
+```
+
+Push after closing work, so the next person or agent sees it:
+
+```bash
+bd dolt push
+```
+
+On a fresh clone, join the existing database rather than creating a new one:
+
+```bash
+bd bootstrap
+```
+
+`bd init` creates a new database and is not how you join an existing project.
+
+Dolt three-way merges issue data, so concurrent edits to different issues merge without conflict.
+
+### Sync And The Conservative Profile
+
+The conservative profile says not to sync without being asked. Read that as a rule about publishing:
+
+- `bd dolt pull` and `bd bootstrap` only read from the remote. They are safe to run unprompted, and running them avoids working from a stale view.
+- `bd dolt push` publishes. Ask first, unless the active profile grants that authority.
+
+If work is closed but unpushed, say so at handoff and give the exact command, rather than leaving it unmentioned.
 
 ## What Belongs In Beads
 
