@@ -20,5 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flags), documented in [docs/configuration.md](docs/configuration.md).
 - Error hierarchy with documented, stable exit codes.
 - Documentation skeleton under `docs/`, and the first ADRs.
+- Task definition sources: local markdown files (`docs/tasks/hello.md`,
+  `file:...`) and GitHub issues (`gh:owner/repo#123`, `gh:123`, or an issue
+  URL), each deriving the stable `task_id` that links a task to its epic.
 
 [Unreleased]: https://github.com/kris-steinhoff/milhouse/commits/main

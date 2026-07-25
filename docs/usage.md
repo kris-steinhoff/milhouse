@@ -14,6 +14,32 @@ milhouse [--version] [--verbose] <command> [options]
 | `--version`       | Print the milhouse version and exit.                               |
 | `--verbose`, `-v` | Log every subprocess milhouse runs, to stderr. The debugging tool.  |
 
+## Task definitions
+
+Every command that takes a `<task>` accepts the same spec forms. The spec
+determines the `task_id`, which is the stable link between the task and its beads
+epic ([ADR 0002](decisions/0002-link-issues-via-bead-metadata.md)).
+
+| Spec                                                  | `task_id`                        | Notes                                          |
+| ----------------------------------------------------- | -------------------------------- | ---------------------------------------------- |
+| `docs/tasks/hello.md`                                  | `file:docs/tasks/hello.md`       | Relative to the current directory, then the repo root. |
+| `file:docs/tasks/hello.md`                             | `file:docs/tasks/hello.md`       | Same thing, said explicitly.                   |
+| `/abs/path/hello.md`                                   | `file:docs/tasks/hello.md`       | Made repo-relative when it is inside the repo. |
+| `gh:owner/repo#123`                                    | `gh:owner/repo#123`              | Fetched with `gh issue view`.                  |
+| `gh:123`                                               | `gh:owner/repo#123`              | Repo inferred from the working directory.      |
+| `gh:https://github.com/owner/repo/issues/123`          | `gh:owner/repo#123`              | Paste a URL straight from a browser.           |
+
+A file task definition is any markdown. Its first `#` heading becomes the epic
+title (falling back to the filename), and the whole file is handed to the
+planning agent verbatim. An empty file is an error: there is nothing to
+decompose.
+
+GitHub tasks also set `--external-ref gh-<number>` on the epic, so beads can
+round-trip the link.
+
+Renaming a task file changes its `task_id` and orphans the existing epic. See
+[troubleshooting](troubleshooting.md#the-task-was-planned-twice).
+
 ## `milhouse doctor`
 
 Verify the tools milhouse depends on and the state of the herdr server. Run this
