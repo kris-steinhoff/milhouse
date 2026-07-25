@@ -28,5 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release, block, note, or close one.
 - `herdr.py`, a narrow client over the herdr CLI: workspaces, panes, and the
   agent lifecycle.
+- `runner.py`, which runs one iteration's agent from start to exit, capturing
+  the prompt and the pane transcript into `.milhouse/runs/<task>/`.
+- `outcome.py`, the pure classification of what an iteration achieved.
 
 [Unreleased]: https://github.com/kris-steinhoff/milhouse/commits/main

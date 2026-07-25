@@ -43,6 +43,7 @@ How the interactive agent is started in its herdr pane. See
 | `kind`             | string     | `"claude"`                         | `MILHOUSE_AGENT_KIND`             | `herdr agent start --kind` value. Any kind herdr supports (`claude`, `codex`, `gemini`, `amp`, `opencode`, …).  |
 | `args`             | list\[str] | `[]`                               | `MILHOUSE_AGENT_ARGS` (shell-split) | Extra arguments passed to the agent binary after `--`. See [ADR 0009](decisions/0009-permission-posture.md).  |
 | `start_timeout_ms` | int        | `60000`                            | `MILHOUSE_AGENT_START_TIMEOUT_MS` | How long `herdr agent start` may take to report the agent ready.                                                |
+| `exit_timeout_ms`  | int        | `8000`                             | `MILHOUSE_AGENT_EXIT_TIMEOUT_MS`  | How long to wait for the pane to return to a shell prompt before replacing it.                                  |
 | `exit_keys`        | list\[str] | `["c-c", "c-c", "c-d"]`            | —                                 | Key sequence returning the pane from the agent TUI to a shell prompt. See [ADR 0011](decisions/0011-exiting-the-agent.md). |
 
 `--agent` on the CLI overrides `agent.kind`.
@@ -110,6 +111,7 @@ before — a surprising transcript to find in a post-mortem.
 | `MILHOUSE_AGENT_KIND`             | `agent.kind`             |
 | `MILHOUSE_AGENT_ARGS`             | `agent.args`             |
 | `MILHOUSE_AGENT_START_TIMEOUT_MS` | `agent.start_timeout_ms` |
+| `MILHOUSE_AGENT_EXIT_TIMEOUT_MS`  | `agent.exit_timeout_ms`  |
 | `MILHOUSE_MAX_ITERATIONS`         | `loop.max_iterations`    |
 | `MILHOUSE_MAX_ATTEMPTS`           | `loop.max_attempts`      |
 | `MILHOUSE_TURN_TIMEOUT_MS`        | `loop.turn_timeout_ms`   |

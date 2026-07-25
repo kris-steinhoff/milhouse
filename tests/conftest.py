@@ -33,8 +33,14 @@ def repo(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def config(repo: Path) -> Config:
-    """A default configuration rooted at the ``repo`` fixture."""
-    return Config(repo_root=repo)
+    """A default configuration rooted at the ``repo`` fixture.
+
+    ``exit_timeout_ms`` is zeroed so tests that exercise the pane-replacement
+    fallback do not spend the real eight-second poll waiting for a fake.
+    """
+    config = Config(repo_root=repo)
+    config.agent.exit_timeout_ms = 0
+    return config
 
 
 @pytest.fixture(autouse=True)

@@ -54,6 +54,9 @@ class AgentConfig(BaseModel):
     start_timeout_ms: int = 60_000
     """How long ``herdr agent start`` may take to report the agent ready."""
 
+    exit_timeout_ms: int = 8_000
+    """How long to wait for the pane to return to a shell prompt after exit_keys."""
+
     exit_keys: list[str] = Field(default_factory=lambda: ["c-c", "c-c", "c-d"])
     """Keys returning the pane from the agent TUI to a shell prompt.
 
@@ -201,6 +204,7 @@ _ENV_MAP: dict[str, tuple[str, str, str]] = {
     "MILHOUSE_AGENT_KIND": ("agent", "kind", "str"),
     "MILHOUSE_AGENT_ARGS": ("agent", "args", "argv"),
     "MILHOUSE_AGENT_START_TIMEOUT_MS": ("agent", "start_timeout_ms", "int"),
+    "MILHOUSE_AGENT_EXIT_TIMEOUT_MS": ("agent", "exit_timeout_ms", "int"),
     "MILHOUSE_MAX_ITERATIONS": ("loop", "max_iterations", "int"),
     "MILHOUSE_MAX_ATTEMPTS": ("loop", "max_attempts", "int"),
     "MILHOUSE_TURN_TIMEOUT_MS": ("loop", "turn_timeout_ms", "int"),
