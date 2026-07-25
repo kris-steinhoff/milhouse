@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "milhouse",
+  "project_id": "1cafa3d8-1e13-48d9-892c-04ffd924d8d3"
+}
