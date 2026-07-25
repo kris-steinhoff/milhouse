@@ -1,0 +1,24 @@
+# Changelog
+
+All notable changes to this project are documented here.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+
+- Package skeleton: `pyproject.toml` (uv/hatchling, Python 3.11+), the
+  `milhouse` console script, ruff (including docstring `D` rules) and pytest
+  configuration.
+- `milhouse doctor` — verifies `bd`, `herdr`, `git`, `gh`, and the configured
+  agent, checks the repo has a beads database, and confirms the herdr server is
+  running and protocol-compatible.
+- `milhouse --version` and `--verbose`.
+- Layered configuration (defaults < `.milhouse/config.toml` < environment <
+  flags), documented in [docs/configuration.md](docs/configuration.md).
+- Error hierarchy with documented, stable exit codes.
+- Documentation skeleton under `docs/`, and the first ADRs.
+
+[Unreleased]: https://github.com/kris-steinhoff/milhouse/commits/main
