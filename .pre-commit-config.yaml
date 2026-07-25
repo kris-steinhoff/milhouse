@@ -80,9 +80,9 @@ repos:
       # Slow checks run on push, so committing stays fast. The herdr and beads
       # markers are integration tests that need live servers; they are excluded
       # here and expected to be run deliberately.
-      - id: pyright
-        name: pyright
-        entry: uv run pyright
+      - id: ty
+        name: ty
+        entry: uv run ty check
         language: system
         types: [python]
         pass_filenames: false
