@@ -254,6 +254,64 @@ def test_first_pane_finds_the_workspace_pane(client: HerdrClient, fake_proc: Fak
         client.first_pane("wZ")
 
 
+def _pane_list(*panes: dict[str, object]) -> Reply:
+    return Reply(stdout=wrapped("pane:list", {"panes": list(panes)}))
+
+
+def test_the_pane_to_work_in_is_never_the_callers_own(
+    client: HerdrClient, fake_proc: FakeProc
+) -> None:
+    """Herdr exports HERDR_PANE_ID, so the caller's pane is in this workspace too.
+
+    Taking it would send the exit keys to the terminal milhouse was typed into.
+    """
+    fake_proc.expect(
+        "herdr pane list",
+        _pane_list(
+            {"pane_id": "wE:p4", "workspace_id": "wE", "agent": "claude"},
+            {"pane_id": "wE:p5", "workspace_id": "wE"},
+        ),
+    )
+
+    assert client.pane_to_work_in("wE", Path("/repo"), avoid="wE:p4") == "wE:p5"
+
+
+def test_a_pane_running_an_agent_is_left_alone(client: HerdrClient, fake_proc: FakeProc) -> None:
+    fake_proc.expect(
+        "herdr pane list",
+        _pane_list(
+            {"pane_id": "wE:p4", "workspace_id": "wE", "agent": "codex"},
+            {"pane_id": "wE:p5", "workspace_id": "wE"},
+        ),
+    )
+
+    assert client.pane_to_work_in("wE", Path("/repo")) == "wE:p5"
+
+
+def test_a_workspace_with_no_free_pane_gets_a_new_one(
+    client: HerdrClient, fake_proc: FakeProc
+) -> None:
+    fake_proc.expect(
+        "herdr pane list",
+        _pane_list({"pane_id": "wE:p4", "workspace_id": "wE", "agent": "claude"}),
+    )
+    fake_proc.expect(
+        "herdr pane split",
+        Reply(stdout=wrapped("pane:split", {"pane": {"pane_id": "wE:p9"}})),
+    )
+
+    assert client.pane_to_work_in("wE", Path("/repo"), avoid="wE:p4") == "wE:p9"
+
+
+def test_an_empty_workspace_is_reported_rather_than_split(
+    client: HerdrClient, fake_proc: FakeProc
+) -> None:
+    fake_proc.expect("herdr pane list", _pane_list())
+
+    with pytest.raises(HerdrError, match="has no panes"):
+        client.pane_to_work_in("wZ", Path("/repo"))
+
+
 def test_a_missing_field_is_reported_rather_than_crashing(
     client: HerdrClient, fake_proc: FakeProc
 ) -> None:
@@ -299,3 +357,32 @@ def test_workspace_and_pane_lifecycle_against_the_live_server(tmp_path: Path) ->
         client.close_workspace(workspace.workspace_id)
 
     assert not client.workspace_exists(workspace.workspace_id)
+
+
+@pytest.mark.herdr
+def test_the_pane_to_work_in_avoids_the_caller_against_the_live_server(tmp_path: Path) -> None:
+    """The one that matters: a real workspace really does hand back another pane.
+
+    The recorded test proves the filtering. This proves the field it filters on
+    is the field herdr actually sends, which is the half that made this a bug.
+    """
+    if shutil.which("herdr") is None:
+        pytest.skip("herdr is not installed")
+    client = HerdrClient()
+    try:
+        workspace = client.create_workspace(tmp_path, "milhouse:test-pane-choice")
+    except HerdrError as exc:
+        pytest.skip(f"herdr server unavailable: {exc}")
+
+    try:
+        # The only pane is the caller's, so milhouse has to make itself one.
+        chosen = client.pane_to_work_in(workspace.workspace_id, tmp_path, avoid=workspace.pane_id)
+        assert chosen != workspace.pane_id
+        assert chosen in {str(pane["pane_id"]) for pane in client.panes_in(workspace.workspace_id)}
+        # With a free pane available it is reused rather than multiplying panes.
+        assert (
+            client.pane_to_work_in(workspace.workspace_id, tmp_path, avoid=workspace.pane_id)
+            == chosen
+        )
+    finally:
+        client.close_workspace(workspace.workspace_id)

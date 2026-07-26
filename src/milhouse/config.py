@@ -116,6 +116,15 @@ class HerdrConfig(BaseModel):
     workspace: str | None = None
     """Reuse this workspace id instead of creating one. ``None`` creates one."""
 
+    self_pane: str | None = None
+    """The pane milhouse is itself running in, which it must never start an agent in.
+
+    Set from ``HERDR_PANE_ID``, which herdr exports into every pane it launches.
+    Running ``milhouse step`` from inside a pane is the normal case, and that
+    pane also belongs to the workspace ``HERDR_WORKSPACE_ID`` names, so without
+    this milhouse can pick it to work in and kill the session that launched it.
+    """
+
     read_lines: int = 400
     """Lines of pane transcript captured after each turn."""
 
@@ -221,6 +230,7 @@ _ENV_MAP: dict[str, tuple[str, str, str]] = {
     # setting should beat the one herdr exports into every pane it launches.
     "HERDR_WORKSPACE_ID": ("herdr", "workspace", "str"),
     "MILHOUSE_WORKSPACE": ("herdr", "workspace", "str"),
+    "HERDR_PANE_ID": ("herdr", "self_pane", "str"),
 }
 
 

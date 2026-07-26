@@ -86,10 +86,13 @@ Workspace and transcript settings. See [ADR 0001](decisions/0001-shell-out-to-bd
 | Key           | Type   | Default     | Environment                                | Meaning                                                                                  |
 | ------------- | ------ | ----------- | ------------------------------------------ | ---------------------------------------------------------------------------------------- |
 | `workspace`   | string | unset       | `MILHOUSE_WORKSPACE`, `HERDR_WORKSPACE_ID` | Reuse this workspace instead of creating one. Unset creates (and owns) one.              |
+| `self_pane`   | string | unset       | `HERDR_PANE_ID`                            | The pane milhouse is running in, which it will never start an agent in.                  |
 | `read_lines`  | int    | `400`       | —                                          | Lines of pane transcript captured after each turn into `iter-NNN.term`.                  |
 | `read_source` | enum   | `"visible"` | —                                          | `herdr agent read --source` value: `visible`, `recent`, `recent-unwrapped`, `detection`. |
 
 `HERDR_WORKSPACE_ID` is exported by herdr into every pane it launches, so milhouse running inside a pane reuses that workspace by default. `MILHOUSE_WORKSPACE` takes precedence over it, and `--workspace` over both.
+
+A reused workspace is not an empty one, which is why `self_pane` exists. Its panes belong to somebody — very often to the terminal `milhouse step` was just typed into, since that pane is the reason `HERDR_WORKSPACE_ID` is set at all. milhouse therefore picks a pane rather than taking the first one: it skips `self_pane`, skips any pane already running an agent, and splits a new pane when nothing is free. `HERDR_PANE_ID` is set by herdr for you, so this is not a key you should need to write down.
 
 `read_source` defaults to `visible` rather than `recent` because `recent` returns only output since the previous read, which is empty when nothing has been read before — a surprising transcript to find in a post-mortem.
 
@@ -106,6 +109,7 @@ Workspace and transcript settings. See [ADR 0001](decisions/0001-shell-out-to-bd
 | `MILHOUSE_BRANCH_PREFIX`          | `git.branch_prefix`      |
 | `MILHOUSE_WORKSPACE`              | `herdr.workspace`        |
 | `HERDR_WORKSPACE_ID`              | `herdr.workspace`        |
+| `HERDR_PANE_ID`                   | `herdr.self_pane`        |
 
 Variables holding an integer must parse as one, or milhouse exits with `ConfigError` (exit code 2). `MILHOUSE_AGENT_ARGS` and `MILHOUSE_VERIFY_COMMAND` are split with `shlex`, so quoting works the way it does in a shell.
 

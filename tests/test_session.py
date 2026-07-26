@@ -16,7 +16,7 @@ from milhouse.errors import MilhouseError, RunLockedError, UserAbortError
 from milhouse.models import Issue, RunState, TaskDefinition
 from milhouse.state import RunStore
 
-from .doubles import FakeRepo, FakeTracker, build
+from .doubles import FakeClient, FakeRepo, FakeTracker, build
 
 
 @pytest.fixture
@@ -194,3 +194,25 @@ def test_the_workspace_and_pane_are_recorded(
     assert saved.workspace_id == "wG"
     assert saved.pane_id == "wG:p1"
     assert saved.branch == "milhouse/hello"
+
+
+def test_a_reused_workspace_does_not_take_the_callers_own_pane(
+    config: Config, task: TaskDefinition, decomposed: FakeTracker
+) -> None:
+    """Run from inside a pane, HERDR_WORKSPACE_ID names the workspace it is in.
+
+    That workspace contains the caller's pane, and starting an iteration agent
+    there sends the exit keys to the session that launched milhouse.
+    """
+    config.herdr.workspace = "wG"
+    config.herdr.self_pane = "wG:p1"
+    client = FakeClient(workspaces={"wG"})
+    session, _ = build(config, task, tracker=decomposed, script=[], client=client)
+
+    with session:
+        pass
+
+    assert client.avoided == "wG:p1"
+    saved = session.store.load()
+    assert saved is not None
+    assert saved.pane_id == "wG:p2"

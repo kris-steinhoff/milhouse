@@ -222,6 +222,10 @@ class Session:
 
         A workspace recorded in ``state.json`` may have been closed by a human
         since, so its existence is checked rather than assumed.
+
+        A reused workspace is not an empty one. Its panes may be running agents,
+        including the one milhouse was typed into, so the pane to work in is
+        chosen rather than taken.
         """
         configured = self.config.herdr.workspace
         existing = configured or self.state.workspace_id
@@ -229,7 +233,12 @@ class Session:
             pane = self.state.pane_id if self.state.workspace_id == existing else None
             workspace = Workspace(
                 workspace_id=existing,
-                pane_id=pane or self.client.first_pane(existing),
+                pane_id=pane
+                or self.client.pane_to_work_in(
+                    existing,
+                    self.config.repo_root,
+                    avoid=self.config.herdr.self_pane,
+                ),
             )
             self.state.owns_workspace = self.state.owns_workspace and configured is None
         else:

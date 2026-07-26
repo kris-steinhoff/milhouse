@@ -124,6 +124,11 @@ class HerdrClient:
         """Close a workspace. milhouse only ever does this to one it created."""
         self._call(["workspace", "close", workspace_id])
 
+    def panes_in(self, workspace_id: str) -> list[dict[str, Any]]:
+        """Every pane herdr reports for ``workspace_id``, in its own order."""
+        panes = self._call(["pane", "list"]).get("panes", [])
+        return [pane for pane in panes if pane.get("workspace_id") == workspace_id]
+
     def first_pane(self, workspace_id: str) -> str:
         """Return a pane id belonging to ``workspace_id``.
 
@@ -136,11 +141,39 @@ class HerdrClient:
         Raises:
             HerdrError: The workspace has no panes, which should not happen.
         """
-        panes = self._call(["pane", "list"]).get("panes", [])
+        panes = self.panes_in(workspace_id)
+        if not panes:
+            raise HerdrError(f"herdr workspace {workspace_id} has no panes")
+        return str(panes[0]["pane_id"])
+
+    def pane_to_work_in(self, workspace_id: str, cwd: Path, *, avoid: str | None = None) -> str:
+        """Find a pane in ``workspace_id`` that milhouse may drive, or make one.
+
+        A pane is only usable if it is empty. A pane already running an agent is
+        somebody's session — very often the caller's own, because herdr exports
+        ``HERDR_WORKSPACE_ID`` into every pane it launches, so ``milhouse step``
+        typed into a pane reuses the workspace that pane belongs to. Taking that
+        pane would send the exit keys to the terminal the user is sitting in.
+
+        Args:
+            workspace_id: The workspace to find a pane in.
+            cwd: Working directory for a pane that has to be created.
+            avoid: A pane to skip whatever its state, namely the caller's own.
+
+        Returns:
+            An empty pane's id, splitting a new one when every pane is in use.
+
+        Raises:
+            HerdrError: The workspace has no panes at all.
+        """
+        panes = self.panes_in(workspace_id)
+        if not panes:
+            raise HerdrError(f"herdr workspace {workspace_id} has no panes")
         for pane in panes:
-            if pane.get("workspace_id") == workspace_id:
-                return str(pane["pane_id"])
-        raise HerdrError(f"herdr workspace {workspace_id} has no panes")
+            pane_id = str(pane["pane_id"])
+            if pane_id != avoid and not pane.get("agent"):
+                return pane_id
+        return self.split_pane(str(panes[0]["pane_id"]), cwd)
 
     def pane_agent(self, pane_id: str) -> str | None:
         """The kind of agent occupying ``pane_id``, or ``None`` for a shell prompt.

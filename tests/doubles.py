@@ -82,6 +82,7 @@ class FakeClient:
 
     workspaces: set[str] = field(default_factory=set)
     focused: bool = False
+    avoided: str | None = None
 
     def workspace_exists(self, workspace_id: str) -> bool:
         return workspace_id in self.workspaces
@@ -92,6 +93,13 @@ class FakeClient:
         return Workspace(workspace_id="wG", pane_id="wG:p1", label=label)
 
     def first_pane(self, workspace_id: str) -> str:
+        return f"{workspace_id}:p1"
+
+    def pane_to_work_in(self, workspace_id: str, cwd: Path, *, avoid: str | None = None) -> str:
+        """Hand out ``:p1``, or ``:p2`` when ``:p1`` is the caller's own pane."""
+        self.avoided = avoid
+        if avoid == f"{workspace_id}:p1":
+            return f"{workspace_id}:p2"
         return f"{workspace_id}:p1"
 
 
@@ -190,6 +198,7 @@ def build(
     tracker: FakeTracker,
     script: list[str],
     repo: FakeRepo | None = None,
+    client: FakeClient | None = None,
 ) -> tuple[Session, FakeRunner]:
     """Wire a session with fakes and a scripted runner already installed."""
     repo = repo or FakeRepo()
@@ -198,7 +207,7 @@ def build(
         config,
         task,
         tracker=tracker,
-        client=FakeClient(),  # ty: ignore[invalid-argument-type]
+        client=client or FakeClient(),  # ty: ignore[invalid-argument-type]
         repo=repo,  # ty: ignore[invalid-argument-type]
         runner=runner,
     )

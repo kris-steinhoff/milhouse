@@ -112,6 +112,8 @@ milhouse step <task> [options]
 
 Everything except `--dry-run`, `--attach`, and `--yes` can also be set in [`.milhouse/config.toml`](configuration.md).
 
+Run from inside a herdr pane, `--workspace` defaults to the workspace that pane is in. milhouse works in a free pane of it, never the one you typed into, splitting a new pane if it has to ([configuration](configuration.md#herdr)).
+
 It decomposes the task first if that has not happened yet, exactly as `milhouse plan` would.
 
 Exits `0` when the issue was finished and `9` when it was not, so a shell loop can stand in for the policy milhouse does not have:
