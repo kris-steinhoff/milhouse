@@ -60,7 +60,9 @@ jobs:
       # Keep in step with additional_dependencies in .pre-commit-config.yaml.
       PRETTIER_VERSION: 3.9.6
       # The annotation step parses prettier's output, so keep it uncolored.
-      FORCE_COLOR: "0"
+      # prettier colors on the presence of FORCE_COLOR, not on its value.
+      FORCE_COLOR: ""
+      NO_COLOR: "1"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -73,7 +75,7 @@ jobs:
           npx --yes "prettier@$PRETTIER_VERSION" --check "**/*.{md,yaml,yml,json}" 2>&1 | tee prettier.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
-            sed -n 's/^\[warn\] \([^ ]*\)$/\1/p' prettier.log | while IFS= read -r file; do
+            sed 's/\x1b\[[0-9;]*m//g' prettier.log | sed -n 's/^\[warn\] \([^ ]*\)$/\1/p' | while IFS= read -r file; do
               echo "::error file=$file,title=prettier::Not formatted. Run: npx prettier@$PRETTIER_VERSION --write \"$file\""
             done
           fi
