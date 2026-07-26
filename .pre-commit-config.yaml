@@ -1,5 +1,14 @@
+# Optional local mirror of .github/workflows/ci.yml.
+#
+# CI is the canonical check suite. Nothing here is required to contribute, and
+# nothing here decides whether a change is good: it only moves CI's answer
+# earlier, onto the developer's machine. Installing it is still recommended,
+# because the same command wires the beads hooks that keep issue data in sync.
+#
 # Install with: uv run pre-commit install
 # The install hook types below are wired automatically by that one command.
+#
+# See .agents/skills/ci-checks/SKILL.md before changing this file or ci.yml.
 default_install_hook_types:
   - pre-commit
   - commit-msg
@@ -13,6 +22,8 @@ default_stages: [pre-commit]
 exclude: '^\.beads/'
 
 repos:
+  # Mirrors the hygiene job. CI reimplements these checks with git and shell,
+  # so the two share no version to keep in step.
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
@@ -23,31 +34,37 @@ repos:
       - id: check-merge-conflict
       - id: check-added-large-files
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.0
-    hooks:
-      - id: ruff-check
-        args: [--fix]
-      - id: ruff-format
-
-  # pre-commit provisions node and npm-installs prettier itself, so the repo
-  # needs no local node toolchain.
   - repo: local
     hooks:
+      # Mirrors the ruff job. These run the ruff from uv.lock rather than a
+      # pinned ruff-pre-commit rev, so the local and CI versions cannot drift.
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+
+      # Mirrors the prettier job. pre-commit provisions node and npm-installs
+      # prettier itself, so the repo needs no local node toolchain. Keep the
+      # version in step with PRETTIER_VERSION in ci.yml. File selection comes
+      # from .prettierignore, which prettier reads in both places.
       - id: prettier
         name: prettier
         entry: prettier --write
         language: node
         additional_dependencies: [prettier@3.9.6]
         types_or: [markdown, yaml, json]
-        # bd owns the beads skill; reformatting its managed blocks invalidates
-        # the content hashes in their BEGIN markers.
-        exclude: '^\.agents/skills/beads/'
 
+  # Mirrors the commit-messages job, and enforces
+  # .agents/skills/commit-messages/SKILL.md.
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: v4.4.0
     hooks:
-      # Enforces .agents/skills/commit-messages/SKILL.md.
       - id: conventional-pre-commit
         stages: [commit-msg]
 
@@ -55,7 +72,8 @@ repos:
     hooks:
       # Delegate to the hook scripts bd generates, so beads keeps owning its
       # own timeout and exit-code handling. These used to run via
-      # core.hooksPath, which pre-commit refuses to coexist with.
+      # core.hooksPath, which pre-commit refuses to coexist with. They have no
+      # CI counterpart: they sync issue data, they do not check the tree.
       - id: beads-pre-commit
         name: beads (pre-commit)
         entry: .beads/hooks/pre-commit
@@ -91,9 +109,10 @@ repos:
         always_run: true
         pass_filenames: false
 
-      # Slow checks run on push, so committing stays fast. The herdr and beads
-      # markers are integration tests that need live servers; they are excluded
-      # here and expected to be run deliberately.
+      # Mirrors the ty and test jobs. Both run the versions from uv.lock. They
+      # are slow, so they wait for push and committing stays fast. The herdr and
+      # beads markers are integration tests that need live servers; they are
+      # excluded here and expected to be run deliberately.
       - id: ty
         name: ty
         entry: uv run ty check

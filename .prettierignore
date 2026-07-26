@@ -1,0 +1,13 @@
+# Prettier reads this file and the root .gitignore. Keeping the ignore list
+# here (rather than in .pre-commit-config.yaml) means CI and the optional local
+# hook skip exactly the same files.
+
+# bd generates and owns everything under .beads/.
+.beads/
+
+# bd also owns the beads skill. Reformatting its managed blocks invalidates the
+# content hashes in their BEGIN markers.
+.agents/skills/beads/
+
+# Build output.
+dist/

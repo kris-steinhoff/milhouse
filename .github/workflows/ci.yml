@@ -1,5 +1,12 @@
 name: CI
 
+# This workflow is the canonical check suite. Every lint, format, type, and test
+# gate the project enforces lives here as its own job, and every job reports
+# failures as workflow annotations so they land on the changed lines.
+#
+# .pre-commit-config.yaml mirrors these checks for local use and is optional.
+# See .agents/skills/ci-checks/SKILL.md before changing either file.
+
 on:
   push:
     branches: [main]
@@ -18,8 +25,8 @@ env:
   FORCE_COLOR: "1"
 
 jobs:
-  lint:
-    name: lint
+  ruff:
+    name: ruff
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -31,10 +38,11 @@ jobs:
       - name: ruff check
         run: uv run ruff check --output-format=github
       - name: ruff format
-        run: uv run ruff format --check --diff
+        if: ${{ !cancelled() }}
+        run: uv run ruff format --check --output-format=github
 
-  pre-commit:
-    name: pre-commit
+  ty:
+    name: ty
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -43,24 +51,146 @@ jobs:
           enable-cache: true
           python-version: "3.11"
       - run: uv sync --locked
-      - uses: actions/cache@v6
-        with:
-          path: ~/.cache/pre-commit
-          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
-      # The beads hooks no-op when bd is absent, which it is on a runner.
-      - run: uv run pre-commit run --all-files --show-diff-on-failure
+      - run: uv run ty check --output-format=github
 
-  typecheck:
-    name: typecheck
+  prettier:
+    name: prettier
+    runs-on: ubuntu-latest
+    env:
+      # Keep in step with additional_dependencies in .pre-commit-config.yaml.
+      PRETTIER_VERSION: 3.9.6
+      # The annotation step parses prettier's output, so keep it uncolored.
+      FORCE_COLOR: "0"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      # File selection comes from .prettierignore plus .gitignore, which prettier
+      # reads on its own, so the local hook skips the same files.
+      - name: prettier --check
+        run: |
+          npx --yes "prettier@$PRETTIER_VERSION" --check "**/*.{md,yaml,yml,json}" 2>&1 | tee prettier.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            sed -n 's/^\[warn\] \([^ ]*\)$/\1/p' prettier.log | while IFS= read -r file; do
+              echo "::error file=$file,title=prettier::Not formatted. Run: npx prettier@$PRETTIER_VERSION --write \"$file\""
+            done
+          fi
+          exit "$status"
+
+  hygiene:
+    name: hygiene
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v9.0.0
+
+      # Every check below skips .beads/, which bd generates and owns.
+      - name: Merge conflict markers
+        run: |
+          if git grep -InE '^(<{7}|>{7})( |$)' -- . ':!.beads' > hits.txt; then
+            while IFS=: read -r file line _; do
+              echo "::error file=$file,line=$line,title=merge conflict::Merge conflict marker left in the file."
+            done < hits.txt
+            exit 1
+          fi
+
+      - name: Trailing whitespace
+        if: ${{ !cancelled() }}
+        run: |
+          if git grep -InE '[[:blank:]]+$' -- . ':!.beads' > hits.txt; then
+            while IFS=: read -r file line _; do
+              echo "::error file=$file,line=$line,title=trailing whitespace::Line ends in whitespace."
+            done < hits.txt
+            exit 1
+          fi
+
+      - name: Final newline
+        if: ${{ !cancelled() }}
+        run: |
+          status=0
+          # -I lists text files only, and an empty pattern matches every line.
+          git grep -Ilz '' -- . ':!.beads' > files.txt
+          while IFS= read -r -d '' file; do
+            if [ -s "$file" ] && [ -n "$(tail -c 1 "$file")" ]; then
+              echo "::error file=$file,title=missing newline::File does not end with a newline."
+              status=1
+            fi
+          done < files.txt
+          exit "$status"
+
+      - name: Large files
+        if: ${{ !cancelled() }}
+        run: |
+          status=0
+          limit=512000
+          git ls-files -z > files.txt
+          while IFS= read -r -d '' file; do
+            size=$(stat -c %s "$file")
+            if [ "$size" -gt "$limit" ]; then
+              echo "::error file=$file,title=large file::$size bytes exceeds the $limit byte limit for a committed file."
+              status=1
+            fi
+          done < files.txt
+          exit "$status"
+
+      - name: TOML syntax
+        if: ${{ !cancelled() }}
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import subprocess
+          import sys
+          import tomllib
+
+          status = 0
+          listed = subprocess.run(
+              ["git", "ls-files", "-z", "*.toml"], capture_output=True, text=True, check=True
+          )
+          for name in filter(None, listed.stdout.split("\0")):
+              try:
+                  tomllib.loads(pathlib.Path(name).read_text())
+              except tomllib.TOMLDecodeError as exc:
+                  print(f"::error file={name},title=invalid TOML::{exc}")
+                  status = 1
+          sys.exit(status)
+          PY
+
+  commit-messages:
+    name: commit messages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
         with:
-          enable-cache: true
-          python-version: "3.11"
-      - run: uv sync --locked
-      - run: uv run ty check
+          fetch-depth: 0
+      # Mirrors conventional-pre-commit, which enforces the same spec locally.
+      # See .agents/skills/commit-messages/SKILL.md for the type table.
+      - name: Conventional Commits
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            set -- "$BASE..$HEAD_SHA"
+          else
+            # A new branch, a force push, or a manual dispatch leaves no usable
+            # base, so check the tip commit alone.
+            set -- -1 "$HEAD_SHA"
+          fi
+          git log --no-merges --format='%h %s' "$@" > commits.txt
+          pattern='^(feat|fix|docs|refactor|test|perf|build|ci|chore|revert)(\([a-z0-9._/-]+\))?!?: .+'
+          status=0
+          while IFS= read -r commit; do
+            subject=${commit#* }
+            if ! printf '%s\n' "$subject" | grep -Eq "$pattern"; then
+              echo "::error title=commit message::$commit"
+              status=1
+            fi
+          done < commits.txt
+          if [ "$status" -ne 0 ]; then
+            echo "Commit messages must follow Conventional Commits: <type>(<scope>): <description>"
+          fi
+          exit "$status"
 
   test:
     name: test (py${{ matrix.python-version }})
@@ -76,7 +206,9 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked
-      # The herdr and beads markers need live services no runner provides.
+      # pytest-github-actions-annotate-failures turns each failure into an
+      # annotation on the asserting line. The herdr and beads markers are
+      # integration tests that need live services no runner provides.
       - run: uv run pytest -m "not herdr and not beads" --junit-xml=junit.xml
       - uses: actions/upload-artifact@v7
         if: always()

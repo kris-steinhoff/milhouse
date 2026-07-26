@@ -23,31 +23,31 @@ This project is pre-launch with a single developer, so it moves fast. Ignore the
 
 - Commit directly to `main`. No feature branches, no pull requests.
 - Committing, `git push`, and `bd dolt push` are all fine without asking. Push both after finishing a unit of work, so issue data does not sit unpublished on one machine.
-- Commit messages follow Conventional Commits. See the `commit-messages` skill (`.agents/skills/commit-messages/SKILL.md`), enforced by `conventional-pre-commit` on `commit-msg`.
-- The pre-push hooks (`ty` and the fast pytest suite) are the gate. If they fail, fix the failure rather than pushing around them.
+- Commit messages follow Conventional Commits. See the `commit-messages` skill (`.agents/skills/commit-messages/SKILL.md`), checked by the `commit-messages` CI job and, locally, by `conventional-pre-commit` on `commit-msg`.
+- CI is the gate. After pushing, watch the run, and fix what it reports rather than working around it.
 
 ## Build And Test
 
 ```bash
 uv sync                                      # install, including the dev group
-uv run pre-commit install                    # wires every hook type this repo uses
+uv run pre-commit install                    # optional; also wires the beads hooks
 uv run pytest -m "not herdr and not beads"   # the fast suite
 uv run ruff check --fix && uv run ruff format
 uv run ty check
 ```
 
-Formatting, linting, and the beads hooks run on `pre-commit`. `ty` and the fast pytest suite run on `pre-push`, so committing stays quick.
-
-Two pytest markers cover integration tests that need live services. They are excluded from the default gates, so run them deliberately:
+Two pytest markers cover integration tests that need live services. They are excluded from every gate, so run them deliberately:
 
 - `-m herdr` drives a running herdr server (no agents spawned).
 - `-m beads` drives a real scratch `bd` database.
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push to `main`, on pull requests, and on demand. It repeats the local gates off the developer machine: ruff (check and format), the full `pre-commit` run over all files, `ty`, the fast pytest suite on Python 3.11, 3.12, and 3.13, and a packaging job that builds the wheel, installs it into a clean environment, and runs the console script.
+`.github/workflows/ci.yml` is the canonical check suite, and it runs on every push to `main`, on pull requests, and on demand. Each check is its own job, reporting failures as annotations on the offending lines: `ruff` (check and format), `ty`, `prettier`, `hygiene` (whitespace, newlines, conflict markers, file size, TOML syntax), `commit-messages`, `test` on Python 3.11, 3.12, and 3.13, and `package`, which builds the wheel, installs it into a clean environment, and runs the console script.
 
 Watch a run with `gh run watch`, and read a failure with `gh run view --log-failed`.
+
+`.pre-commit-config.yaml` mirrors those checks locally and is optional: it moves CI's answer earlier, it does not decide anything on its own. Installing it is still worth it, because the same command wires the beads hooks. The `ci-checks` skill (`.agents/skills/ci-checks/SKILL.md`) covers how the two stay in step. Read it before touching either file.
 
 ## Non-Interactive Shell Commands
 
