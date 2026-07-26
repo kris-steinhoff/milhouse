@@ -44,6 +44,8 @@ app = typer.Typer(
     # Gives --install-completion and --show-completion. The values each
     # parameter offers come from milhouse.completion.
     add_completion=True,
+    # Click passes this down to every subcommand's context.
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 
 

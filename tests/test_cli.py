@@ -86,6 +86,18 @@ def test_every_flag_is_documented(command: str, flags: list[str]) -> None:
         assert flag in output, f"{command} is missing help for {flag}"
 
 
+@pytest.mark.parametrize("command", [None, "run", "plan", "status", "doctor"])
+def test_short_help_flag_matches_long_one(command: str | None) -> None:
+    """``-h`` is the same help as ``--help``, on the app and every subcommand."""
+    args = [command] if command else []
+
+    short = invoke(*args, "-h")
+    long = invoke(*args, "--help")
+
+    assert short.exit_code == 0
+    assert short.output == long.output
+
+
 def test_version_prints_and_exits() -> None:
     result = invoke("--version")
 
