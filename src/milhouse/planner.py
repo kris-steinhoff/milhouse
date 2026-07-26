@@ -20,7 +20,7 @@ from . import prompts
 from .config import Config
 from .errors import MilhouseError, UserAbortError
 from .models import Issue, TaskDefinition
-from .runner import Runner
+from .runner import Runner, TurnResult
 from .state import ensure_run_dir
 from .tracker.base import Tracker
 
@@ -216,7 +216,48 @@ class Planner:
         result = self.runner.run_turn(prompt, iteration=0)
         if result.error:
             raise PlanError(f"the planning agent could not be run: {result.error}")
+        if not self.plan_path.exists():
+            raise self._nothing_written(result)
         return self.read_plan()
+
+    def _nothing_written(self, result: TurnResult) -> PlanError:
+        """Explain a turn that settled without producing a plan.
+
+        The missing file is the symptom, and on its own it reads as an agent
+        that ignored its instructions. Usually it is not. A permission prompt
+        stops the agent on its first tool call, herdr reports ``blocked``, and
+        the turn settles having written nothing — the same failure
+        :func:`milhouse.outcome.classify` already names for an iteration, which
+        the planner used to throw away.
+
+        Args:
+            result: What the turn produced.
+
+        Returns:
+            The error to raise, carrying the remedy that fits the cause.
+        """
+        if result.timed_out:
+            error = PlanError(
+                "the planning agent did not finish within the turn timeout, and wrote no plan"
+            )
+            error.remedy = (
+                "Raise [agent] turn_timeout_ms, or attach to the pane to see what stalled."
+            )
+            return error
+        if result.agent_state == "blocked":
+            error = PlanError(
+                "the planning agent stopped waiting on a human, most likely a permission "
+                "prompt, and wrote no plan"
+            )
+            error.remedy = (
+                "Give the agent permission up front ([agent] args in .milhouse/config.toml), "
+                "then re-run."
+            )
+            return error
+        return PlanError(
+            f"the planning agent did not write {self.plan_path}; "
+            "see the transcript in the same directory"
+        )
 
     def read_plan(self) -> Plan:
         """Read and validate the plan file the agent was asked to write.

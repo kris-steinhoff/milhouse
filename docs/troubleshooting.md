@@ -52,7 +52,11 @@ The one that bites first is `--dangerously-skip-permissions`. It shows a one-tim
     2. Yes, I accept
 ```
 
-An unattended agent never answers it. herdr sees a settled agent, milhouse sees no output, and the run ends with a confusing message. Grant permissions with a scoped list instead, which needs no consent:
+An unattended agent never answers it. herdr reports the agent as started and `interactive_ready`, the prompt goes into a dialog rather than into the agent, the turn settles having spent nothing, and the run ends with a confusing message. The tell in the transcript is a token count of zero.
+
+Accepting it once, by hand, is the fix — the choice is remembered. Until then no `[agent] args` setting helps, because the screen comes up before the agent reads any of them.
+
+A scoped list needs no consent screen, and is enough for **planning**:
 
 ```toml
 [agent]
@@ -62,7 +66,15 @@ args = [
 ]
 ```
 
-This is the general shape of the problem: an agent flag that opens an interactive gate is unusable in a loop, and the transcript is the only place it shows. See [ADR 0009](decisions/0009-permission-posture.md) for the posture, and the `blocked` path below for gates that milhouse _can_ detect.
+The planning agent writes one file and stops, so an edit permission covers it. **Iterations are a different matter**, and the same config blocks them on the first composed shell command:
+
+```
+cat .milhouse/config.toml; echo "---"; ls -a ~/.venv; pip --version
+```
+
+That matches no prefix pattern, and an agent authoring its own commands writes things like it constantly. Widening the list until it stops is how you arrive at unscoped `Bash`, which is the unattended posture with extra steps — see [ADR 0009](decisions/0009-permission-posture.md), which is about this exact finding.
+
+This is the general shape of the problem: an agent flag that opens an interactive gate is unusable in a loop, and the transcript is the only place it shows. See the `blocked` path below for gates that milhouse _can_ detect. `milhouse plan` names that case rather than reporting only the missing `plan.json`.
 
 ## The agent is blocked
 
@@ -73,7 +85,7 @@ herdr workspace list          # find the milhouse:<slug> workspace
 herdr agent attach milhouse-<slug>
 ```
 
-The agent is exited by then, so attaching shows you the pane rather than a live turn. Read the transcript, decide what the agent needed, then run again — the issue is back in the ready queue.
+The agent is exited by then, so attaching shows you the pane rather than a live turn. If the agent was sitting on a dialog the exit keys do not dismiss, milhouse will have replaced the pane and the scrollback is gone with it — `iter-NNN.term` survives either way, because the transcript is captured before the agent is exited. Read it, decide what the agent needed, then run again: the issue is back in the ready queue.
 
 If a run keeps blocking, the posture is wrong rather than the run. Grant the permissions the work needs in `[agent] args`, in the scoped form shown above.
 
@@ -89,6 +101,16 @@ Then run the verification command yourself. Two things it usually means:
 
 - **The work really is not done.** The note is now in the next agent's prompt, so stepping again may be enough.
 - **The gate is wrong for the loop.** A command that fails for reasons unrelated to the issue rejects every issue in the epic. Point `[verify] command` at the fast suite rather than the full matrix, and make sure it passes on a clean checkout before pointing milhouse at it.
+
+The second one has a trap worth naming, because it turns an epic into a loop that cannot finish. **`pytest` exits `5` when it collects no tests**, and a non-zero exit is a failed gate:
+
+```console
+$ pytest -q; echo $?
+no tests ran in 0.00s
+5
+```
+
+So a repository whose first issue writes the code and whose second writes the tests rejects the first issue every time, re-opens it, and hands the next agent a note saying verification failed when the work was fine. Anything that reports "nothing to check" as an error does the same. Either gate on something that holds from the first commit, or leave `[verify] command` unset until there is a suite to run — an unset gate means milhouse takes a closed issue at its word ([ADR 0016](decisions/0016-milhouse-verifies.md)).
 
 ## A stale claim
 
@@ -139,9 +161,19 @@ git diff
 
 Commit them if they are the work, discard them if they are not, then step again.
 
+If `git status` shows only files your issue tracker wrote, that is not the agent's doing. `bd` appends to `.beads/interactions.jsonl` on every call, milhouse calls `bd` several times a step, and a repository that tracks that file therefore reads as dirty during and after every run. `bd init` ignores it for you; a repository that predates that does not. Ignore it and the report goes quiet:
+
+```sh
+echo '.beads/interactions.jsonl' >> .gitignore
+```
+
+milhouse's own bookkeeping cannot cause this: it keeps `.milhouse/runs/` ignored itself.
+
 ## The branch checkout failed
 
 milhouse refuses to touch a dirty working tree. Commit or stash your changes first. It will not stash for you: losing uncommitted work to a checkout you did not ask for is the worst failure available ([ADR 0007](decisions/0007-branch-per-task.md)).
+
+The same tracker files are worth ruling out here, because this check runs before the first agent starts and a dirty tree stops a step before it does anything at all.
 
 ## The pane did not return to a shell prompt
 

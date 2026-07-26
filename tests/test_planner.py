@@ -16,7 +16,7 @@ from milhouse.runner import AgentRunner
 from milhouse.tracker import BeadsTracker
 
 from .fakes import FakeProc, Reply
-from .test_herdr import AGENT_STARTED
+from .test_herdr import AGENT_STARTED, wrapped
 from .test_runner import PANE_AT_SHELL, PANE_WITH_AGENT, TURN_DONE
 
 GOOD_PLAN = {
@@ -237,6 +237,50 @@ def test_an_invalid_plan_file_is_kept_for_inspection(
     with pytest.raises(PlanError, match="not valid JSON"):
         planner.propose(task)
     assert planner.plan_path.exists()
+
+
+def test_a_blocked_planning_agent_is_reported_as_blocked(
+    planner: Planner, task: TaskDefinition, fake_proc: FakeProc
+) -> None:
+    """A permission prompt stops the agent before it writes anything.
+
+    Reporting only the missing file blames the agent for ignoring instructions,
+    when what actually happened is a dialog nobody answered.
+    """
+    fake_proc.expect(
+        "herdr pane get",
+        [Reply(stdout=PANE_AT_SHELL), Reply(stdout=PANE_AT_SHELL)],
+    )
+    fake_proc.expect("herdr agent start", Reply(stdout=AGENT_STARTED))
+    fake_proc.expect("herdr agent read", Reply(stdout=""))
+    fake_proc.expect(
+        "herdr agent prompt",
+        Reply(stdout=wrapped("agent:prompt", {"agent": {"agent_status": "blocked"}})),
+    )
+
+    with pytest.raises(PlanError, match="waiting on a human") as caught:
+        planner.propose(task)
+    assert caught.value.remedy is not None
+    assert "permission" in str(caught.value)
+
+
+def test_a_planning_turn_that_ran_out_of_time_says_so(
+    planner: Planner, task: TaskDefinition, fake_proc: FakeProc
+) -> None:
+    fake_proc.expect(
+        "herdr pane get",
+        [Reply(stdout=PANE_AT_SHELL), Reply(stdout=PANE_AT_SHELL)],
+    )
+    fake_proc.expect("herdr agent start", Reply(stdout=AGENT_STARTED))
+    fake_proc.expect("herdr agent read", Reply(stdout=""))
+    fake_proc.expect(
+        "herdr agent prompt",
+        Reply(stdout=json.dumps({"error": {"code": "timeout", "message": "gave up"}})),
+    )
+    fake_proc.expect("herdr agent get", Reply(stdout=AGENT_STARTED))
+
+    with pytest.raises(PlanError, match="turn timeout"):
+        planner.propose(task)
 
 
 def test_a_failed_planning_turn_is_a_plan_error(
