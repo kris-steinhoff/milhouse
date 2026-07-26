@@ -55,7 +55,7 @@ Watch a run with `gh run watch`, and read a failure with `gh run view --log-fail
 
 ## Architecture And Conventions
 
-`milhouse` decomposes a task definition into beads issues, then drives a ralph loop (fresh agent context per iteration) over them in herdr panes. Source lives in `src/milhouse/`, and tests mirror it in `tests/`.
+`milhouse` decomposes a task definition into beads issues, then works through them one at a time, each with a fresh agent in a herdr pane. One iteration is the primitive: `milhouse step` runs one, `milhouse run` loops over it, and what happens between iterations is a pure policy function ([ADR 0014](docs/decisions/0014-step-is-the-primitive.md)). Source lives in `src/milhouse/`, and tests mirror it in `tests/`.
 
 The docs are the long form, and are kept current:
 

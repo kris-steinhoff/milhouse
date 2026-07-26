@@ -1,5 +1,11 @@
 # milhouse — Design
 
+> **Status: superseded, kept as the record of where this started.**
+>
+> This is the pre-implementation design, written when the repository held only a `LICENSE` and a `README`. It is accurate about why the pieces were chosen and what the open questions were, and out of date about the shape of the code: [ADR 0014](docs/decisions/0014-step-is-the-primitive.md) made one iteration the primitive and the loop a policy over it, which moved most of what this document calls "the ralph loop" out of `loop.py`.
+>
+> For what milhouse does now, read [docs/architecture.md](docs/architecture.md) and [the decisions](docs/decisions/README.md). Every numbered decision and open question below has an ADR, is marked deferred, or is listed under "Still open" there. Nothing new should be added to this file.
+
 ## Context
 
 `milhouse` is an agentic AI orchestrator. It takes a task definition, ensures the task has been decomposed into tracked issues, then drives a [ralph-loop](https://ghuntley.com/ralph/) over those issues until the work is done.

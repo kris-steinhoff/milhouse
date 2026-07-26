@@ -82,16 +82,15 @@ Rendered once per iteration, for a **fresh agent with no memory of any previous 
 
 **Variables**
 
-| Variable        | Meaning                                      |
-| --------------- | -------------------------------------------- |
-| `task`          | The `TaskDefinition`, included as background |
-| `issue`         | The `Issue` being worked                     |
-| `acceptance`    | Acceptance criteria pulled off the bead      |
-| `notes`         | Notes previous attempts left on the bead     |
-| `branch`        | Branch to commit to, or `None`               |
-| `attempt`       | 1-based attempt number for this issue        |
-| `attempts_left` | Attempts remaining, including this one       |
-| `previous`      | Earlier attempts, as `{outcome, detail}`     |
+| Variable     | Meaning                                      |
+| ------------ | -------------------------------------------- |
+| `task`       | The `TaskDefinition`, included as background |
+| `issue`      | The `Issue` being worked                     |
+| `acceptance` | Acceptance criteria pulled off the bead      |
+| `notes`      | Notes previous attempts left on the bead     |
+| `branch`     | Branch to commit to, or `None`               |
+| `attempt`    | 1-based attempt number for this issue        |
+| `previous`   | Earlier attempts, as `{outcome, detail}`     |
 
 **What it promises the agent:** exactly one issue, the acceptance criteria, the notes previous attempts left, the task definition as background, and the branch to commit to.
 
@@ -105,7 +104,7 @@ Rendered once per iteration, for a **fresh agent with no memory of any previous 
 
 **And the failure path**, which carries as much weight as the success path: commit what works, `bd note` what was learned, and **leave the issue open**.
 
-That last instruction is doing real work. Without it, the incentive is to close the issue and look successful, which is the one failure milhouse cannot detect — `bd` says closed, so [ADR 0004](decisions/0004-outcome-from-beads-and-git.md) says success. The only defences are this instruction and the fact that a human can watch the pane.
+That last instruction is doing real work. Without it, the incentive is to close the issue and look successful — `bd` says closed, so [ADR 0004](decisions/0004-outcome-from-beads-and-git.md) says success. milhouse can now check the answer with [`[verify] command`](configuration.md), which is the backstop ([ADR 0016](decisions/0016-milhouse-verifies.md)). The prompt still asks, because it is cheaper for an agent to find its own failure mid-turn than for milhouse to find it afterwards.
 
 ### What is deliberately absent
 
@@ -115,7 +114,9 @@ That last instruction is doing real work. Without it, the incentive is to close 
 
 ### Retries
 
-On attempt 2 and beyond the prompt says so, says how many attempts remain, lists how the earlier attempts ended, and tells the agent to try a different approach. The notes on the bead are the only memory that survives between attempts, which is why the failure path insists on writing them.
+On attempt 2 and beyond the prompt says so, lists how the earlier attempts ended, and tells the agent to try a different approach. It does not say how many attempts remain, because there is no cap: every earlier attempt stopped the run and a person looked at it before starting this one ([ADR 0014](decisions/0014-step-is-the-primitive.md)).
+
+The notes on the bead are the only memory that survives between attempts, which is why the failure path insists on writing them, and why a rejected verification pastes its output into one.
 
 ## Changing a prompt
 
