@@ -1,13 +1,15 @@
 """The ``milhouse`` command line.
 
-Four commands: ``run`` drives the whole loop, ``plan`` stops after
-decomposition, ``status`` reports on a task, and ``doctor`` checks the tools
-milhouse depends on. Every command and flag carries help text, so
-``milhouse --help`` is a usable reference on its own.
+Five commands: ``step`` runs one supervised iteration, ``run`` loops over
+``step``, ``plan`` stops after decomposition, ``status`` reports on a task, and
+``doctor`` checks the tools milhouse depends on. Every command and flag carries
+help text, so ``milhouse --help`` is a usable reference on its own.
 
 This module owns argument parsing and output formatting only. The behaviour
-lives in :mod:`milhouse.loop`, :mod:`milhouse.planner`, and their collaborators,
-so it stays testable without a terminal.
+lives in :mod:`milhouse.step`, :mod:`milhouse.loop`, :mod:`milhouse.session`, and
+their collaborators, so it stays testable without a terminal. It reaches for no
+private attribute of any of them: everything the CLI needs is on
+:class:`~milhouse.session.Session`.
 """
 
 from __future__ import annotations
@@ -27,7 +29,11 @@ from .errors import MilhouseError
 from .gitrepo import GitRepo, find_repo_root
 from .herdr import HerdrClient
 from .loop import RalphLoop
-from .models import RunState, TaskDefinition
+from .models import TaskDefinition
+from .session import Session
+from .state import RunStore
+from .step import nothing_ready
+from .step import step as run_step
 from .tracker import BeadsTracker
 
 __all__ = ["app", "main"]
@@ -147,19 +153,7 @@ def run(
     ],
     max_iterations: Annotated[
         int | None,
-        typer.Option("--max-iterations", help="Hard ceiling on iterations for the whole run."),
-    ] = None,
-    max_attempts: Annotated[
-        int | None,
-        typer.Option("--max-attempts", help="Failed attempts on one issue before it is skipped."),
-    ] = None,
-    on_blocked: Annotated[
-        str | None,
-        typer.Option(
-            "--on-blocked",
-            help="What to do when the agent waits on a human: wait, skip, or abort.",
-            autocompletion=completion.complete_on_blocked,
-        ),
+        typer.Option("--max-iterations", help="Iterations this invocation may run."),
     ] = None,
     agent: Annotated[
         str | None,
@@ -206,22 +200,20 @@ def run(
         ),
     ] = None,
 ) -> None:
-    """Resolve a task, decompose it if needed, then loop until the work is done.
+    """Resolve a task, decompose it if needed, then step until something stops it.
 
-    The main entry point. Each iteration claims one ready issue and gives it to a
-    freshly started agent, so every iteration begins with a clean context window.
+    Repeats what `milhouse step` does once. Each iteration claims one ready issue
+    and gives it to a freshly started agent, so every iteration begins with a
+    clean context window.
 
-    Re-running against the same task resumes it: any claim a previous run left
-    behind is re-opened, and the attempt counts carry over.
+    The run stops at the first iteration that does not succeed, and says what
+    needs a person. Re-running is how you carry on: any claim a previous run left
+    behind is re-opened first.
     """
     config = _config(
         repo,
         {
-            "loop": {
-                "max_iterations": max_iterations,
-                "max_attempts": max_attempts,
-                "on_blocked": on_blocked,
-            },
+            "loop": {"max_iterations": max_iterations},
             "agent": {"kind": agent},
             "git": {"branch_strategy": branch_strategy},
             "herdr": {"workspace": workspace},
@@ -233,13 +225,101 @@ def run(
         _dry_run(config, definition)
         return
 
-    loop = _loop(config, definition, attach=attach)
+    loop = RalphLoop(_session(config, definition, attach=attach))
     result = loop.run(confirm=None if yes else _confirm_plan)
     typer.echo("")
     typer.secho(
         _summarise(result), fg=typer.colors.GREEN if result.completed else typer.colors.YELLOW
     )
     if not result.completed:
+        raise typer.Exit(code=9)
+
+
+@app.command()
+def step(
+    task: Annotated[
+        str,
+        typer.Argument(help=TASK_HELP, autocompletion=completion.complete_task),
+    ],
+    agent: Annotated[
+        str | None,
+        typer.Option(
+            "--agent",
+            help="Agent kind to run, e.g. claude, codex, gemini.",
+            autocompletion=completion.complete_agent,
+        ),
+    ] = None,
+    workspace: Annotated[
+        str | None,
+        typer.Option(
+            "--workspace",
+            help="Reuse this herdr workspace instead of creating one.",
+            autocompletion=completion.complete_workspace,
+        ),
+    ] = None,
+    branch_strategy: Annotated[
+        str | None,
+        typer.Option(
+            "--branch-strategy",
+            help="task creates one branch per task definition; current stays where you are.",
+            autocompletion=completion.complete_branch_strategy,
+        ),
+    ] = None,
+    attach: Annotated[
+        bool,
+        typer.Option("--attach", help="Focus the herdr workspace instead of leaving it hidden."),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Create the proposed issues without asking."),
+    ] = False,
+    repo: Annotated[
+        Path | None,
+        typer.Option(
+            "--repo",
+            help="Repository to work in. Defaults to the current one.",
+            autocompletion=completion.complete_repo,
+        ),
+    ] = None,
+) -> None:
+    """Work one ready issue with a fresh agent, report what happened, and stop.
+
+    The supervised entry point. It claims one issue, gives it to one agent, and
+    hands straight back to you, so you decide whether to go again. `milhouse run`
+    is this in a loop.
+
+    Exits 0 when the issue was finished, and 9 when it was not.
+    """
+    config = _config(
+        repo,
+        {
+            "agent": {"kind": agent},
+            "git": {"branch_strategy": branch_strategy},
+            "herdr": {"workspace": workspace},
+        },
+    )
+    definition = sources.resolve(task, config.repo_root)
+
+    with _session(config, definition, attach=attach) as session:
+        epic = session.ensure_epic(confirm=None if yes else _confirm_plan)
+        outcome = run_step(session, epic)
+        if outcome is None:
+            reason, completed = nothing_ready(session, epic)
+            typer.echo("")
+            typer.secho(reason, fg=typer.colors.GREEN if completed else typer.colors.YELLOW)
+            if not completed:
+                raise typer.Exit(code=9)
+            return
+        if outcome.decision.reason:
+            typer.echo(f"  {outcome.decision.reason}")
+
+    typer.echo("")
+    finished = outcome.iteration.outcome == "success"
+    typer.secho(
+        f"{outcome.iteration.issue_id}: {outcome.iteration.outcome} — {outcome.iteration.detail}",
+        fg=typer.colors.GREEN if finished else typer.colors.YELLOW,
+    )
+    if not finished:
         raise typer.Exit(code=9)
 
 
@@ -294,12 +374,8 @@ def plan(
         _print_tree(tracker, existing)
         return
 
-    loop = _loop(config, definition, tracker=tracker)
-    state = loop.state()
-    loop._prepare_branch(state)
-    loop._open_workspace(state)
-    state.save(loop.state_path)
-    epic = loop._ensure_epic(state, confirm=None if yes else _confirm_plan)
+    with _session(config, definition, tracker=tracker) as session:
+        epic = session.ensure_epic(confirm=None if yes else _confirm_plan)
     _print_tree(tracker, epic)
 
 
@@ -333,7 +409,8 @@ def status(
     else:
         typer.echo(f"epic    {epic.id}  {epic.title}")
 
-    state = RunState.load(config.run_dir(definition.slug) / "state.json")
+    store = RunStore(config.run_dir(definition.slug))
+    state = store.load()
     if state:
         typer.echo(f"branch  {state.branch or '(none)'}")
         if state.workspace_id:
@@ -343,17 +420,21 @@ def status(
                 f"claim   {state.claimed_issue} is claimed by an unfinished run",
                 fg=typer.colors.YELLOW,
             )
+    holder = store.lock.holder()
+    if holder is not None:
+        typer.secho(f"lock    held by {holder.describe()}", fg=typer.colors.YELLOW)
 
     if epic is not None:
         typer.echo("")
         _print_tree(tracker, epic)
 
-    if state and state.iterations:
+    history = store.history()
+    if history:
         typer.echo("")
-        typer.echo(f"iterations ({len(state.iterations)})")
-        for item in state.iterations:
+        typer.echo(f"iterations ({len(history)})")
+        for item in history:
             colour = _OUTCOME_COLOURS.get(item.outcome, typer.colors.WHITE)
-            mark = typer.style(item.outcome.ljust(7), fg=colour)
+            mark = typer.style(item.outcome.ljust(8), fg=colour)
             typer.echo(f"  {item.number:>3}  {mark}  {item.issue_id}  {item.detail}")
 
 
@@ -361,6 +442,7 @@ TASK_HELP = "Task definition: a markdown file path, or gh:owner/repo#123."
 
 _OUTCOME_COLOURS = {
     "success": typer.colors.GREEN,
+    "rejected": typer.colors.RED,
     "blocked": typer.colors.YELLOW,
     "partial": typer.colors.CYAN,
     "stalled": typer.colors.YELLOW,
@@ -369,15 +451,15 @@ _OUTCOME_COLOURS = {
 }
 
 
-def _loop(
+def _session(
     config: Config,
     definition: TaskDefinition,
     *,
     tracker: BeadsTracker | None = None,
     attach: bool = False,
-) -> RalphLoop:
-    """Assemble a :class:`~milhouse.loop.RalphLoop` from resolved configuration."""
-    return RalphLoop(
+) -> Session:
+    """Assemble a :class:`~milhouse.session.Session` from resolved configuration."""
+    return Session(
         config,
         definition,
         tracker=tracker or BeadsTracker(config.repo_root, config.tracker),
@@ -403,11 +485,7 @@ def _dry_run(config: Config, definition: TaskDefinition) -> None:
     )
     typer.echo(f"branch    {branch}")
     typer.echo(f"agent     {config.agent.kind} {' '.join(config.agent.args)}".rstrip())
-    typer.echo(
-        f"caps      {config.loop.max_iterations} iterations, "
-        f"{config.loop.max_attempts} attempts per issue, "
-        f"on-blocked {config.loop.on_blocked}"
-    )
+    typer.echo(f"budget    {config.loop.max_iterations} iterations for one run")
     typer.echo(f"run dir   {config.run_dir(definition.slug)}")
 
     if epic is None:
@@ -422,16 +500,7 @@ def _dry_run(config: Config, definition: TaskDefinition) -> None:
         typer.echo("\nno issues are ready; a run would finish immediately")
         return
     typer.echo(f"\nthe next iteration would work {next_issue.id} and send:\n")
-    typer.echo(
-        _indent(
-            prompts.render_iterate(
-                definition,
-                next_issue,
-                branch=branch,
-                attempts_left=config.loop.max_attempts,
-            )
-        )
-    )
+    typer.echo(_indent(prompts.render_iterate(definition, next_issue, branch=branch)))
 
 
 def _confirm_plan(proposal: Any) -> bool:
@@ -459,7 +528,7 @@ def _print_tree(tracker: BeadsTracker, epic: Any) -> None:
 def _summarise(result: Any) -> str:
     """One line describing how a run ended."""
     verb = "finished" if result.completed else "stopped"
-    return f"{verb} after {result.iterations} iterations: {result.reason}"
+    return f"{verb} after {result.count} iterations: {result.reason}"
 
 
 def _indent(text: str) -> str:

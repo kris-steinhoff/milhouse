@@ -340,41 +340,6 @@ class HerdrClient:
         )
         return result.stdout
 
-    def wait_for_status(
-        self,
-        name: str,
-        until: tuple[AgentStatus, ...],
-        *,
-        timeout_ms: int,
-    ) -> AgentStatus:
-        """Block until an agent reaches one of ``until``.
-
-        Used for the blocked-agent wait, where milhouse has already prompted and
-        is now waiting on a human rather than on a turn
-        (:doc:`ADR 0009 <../../docs/decisions/0009-permission-posture>`).
-
-        Args:
-            name: The agent to watch.
-            until: States to wait for.
-            timeout_ms: How long to wait.
-
-        Returns:
-            The state reached.
-
-        Raises:
-            TurnTimeoutError: No such state was reached in time.
-        """
-        argv = ["agent", "wait", name, "--timeout", str(timeout_ms)]
-        for status in until:
-            argv += ["--until", status]
-        try:
-            result = self._call(argv, timeout=timeout_ms / 1000 + 30)
-        except HerdrError as exc:
-            if _is_timeout(exc):
-                raise TurnTimeoutError(f"agent {name} never reached {'/'.join(until)}") from exc
-            raise
-        return _as_status(result.get("agent", {}).get("agent_status"))
-
     def wait_for_shell(self, pane_id: str, *, timeout_s: float = 8.0) -> bool:
         """Poll until ``pane_id`` is back at a shell prompt.
 

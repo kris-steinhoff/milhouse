@@ -208,15 +208,6 @@ def test_release_reopens_and_unassigns(tracker: BeadsTracker, fake_proc: FakePro
     assert update[update.index("--assignee") + 1] == ""
 
 
-def test_block_sets_the_blocked_status(tracker: BeadsTracker, fake_proc: FakeProc) -> None:
-    fake_proc.expect("bd", Reply(stdout=""))
-
-    tracker.block("bd-4rt.1", "three failed attempts")
-
-    update = next(call for call in fake_proc.calls if "update" in call)
-    assert update[update.index("--status") + 1] == "blocked"
-
-
 def test_get_raises_for_a_missing_issue(tracker: BeadsTracker, fake_proc: FakeProc) -> None:
     fake_proc.expect("bd", Reply(stdout="[]"))
 

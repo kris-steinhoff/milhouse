@@ -20,7 +20,7 @@ from . import prompts
 from .config import Config
 from .errors import MilhouseError, UserAbortError
 from .models import Issue, TaskDefinition
-from .runner import AgentRunner
+from .runner import Runner
 from .tracker.base import Tracker
 
 __all__ = ["Plan", "PlanError", "PlanIssue", "Planner"]
@@ -166,7 +166,7 @@ class Planner:
         self,
         config: Config,
         tracker: Tracker,
-        runner: AgentRunner,
+        runner: Runner,
         *,
         run_dir: Path,
         max_issues: int = 12,

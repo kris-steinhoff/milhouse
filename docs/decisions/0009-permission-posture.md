@@ -1,6 +1,8 @@
 # 0009 — Supervised by default; unattended is opt-in and explicit
 
-**Status:** accepted
+**Status:** accepted, and deferred by [ADR 0014](0014-step-is-the-primitive.md)
+
+Supervised is no longer the default, it is the only mode. Everything below about making a run unattended describes what the ralph policy has to answer, not a setting that does anything today.
 
 ## Context
 

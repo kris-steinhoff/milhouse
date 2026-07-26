@@ -126,12 +126,11 @@ def test_a_retry_tells_the_agent_where_it_stands(task: TaskDefinition, issue: Is
         task,
         issue,
         attempt=3,
-        attempts_left=1,
         previous=[{"outcome": "stalled", "detail": "nothing committed"}],
     )
 
     assert "attempt 3" in rendered
-    assert "1 remain" in rendered
+    assert "a human looked at the run in between" in rendered
     assert "stalled (nothing committed)" in rendered
     assert "try a different approach" in rendered
 

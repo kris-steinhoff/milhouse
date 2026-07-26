@@ -1,12 +1,16 @@
-"""The issue-tracker interface the loop depends on.
+"""The issue-tracker interface a step depends on.
 
-The loop needs six things from a tracker: find the epic for a task, create an
+A step needs a short list from a tracker: find the epic for a task, create an
 epic, create children under it, claim the next ready issue, read an issue back,
 and annotate or re-open one. :class:`Tracker` is exactly that list and nothing
 more.
 
+Marking an issue blocked is deliberately not on it. That was how the old attempt
+cap gave up on an issue and moved to the next, and giving up is now a person's
+decision (:doc:`ADR 0014 <../../docs/decisions/0014-step-is-the-primitive>`).
+
 There is one real implementation, :mod:`milhouse.tracker.beads`. The protocol
-exists because the loop's tests implement it, not as speculative generality.
+exists because the tests implement it, not as speculative generality.
 """
 
 from __future__ import annotations
@@ -109,15 +113,6 @@ class Tracker(Protocol):
         Args:
             issue_id: The issue to release.
             note: Optional note appended to the issue explaining why.
-        """
-        ...
-
-    def block(self, issue_id: str, note: str) -> None:
-        """Mark an issue as needing a human, with a note saying why.
-
-        Args:
-            issue_id: The issue to block.
-            note: What went wrong, for whoever picks it up.
         """
         ...
 

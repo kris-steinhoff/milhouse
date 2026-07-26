@@ -38,7 +38,6 @@ CONFIG_RELPATH = Path(".milhouse/config.toml")
 RUNS_RELPATH = Path(".milhouse/runs")
 """Where per-run bookkeeping lives. Gitignored; safe to delete."""
 
-OnBlocked = Literal["wait", "skip", "abort"]
 BranchStrategy = Literal["task", "current"]
 
 
@@ -67,22 +66,23 @@ class AgentConfig(BaseModel):
 
 
 class LoopConfig(BaseModel):
-    """Guardrails on the ralph loop."""
+    """Bounds on a run.
+
+    Small on purpose. The supervised policy stops at the first iteration that
+    does not succeed, so the ceiling rarely binds and there is nothing here
+    deciding when to retry
+    (:doc:`ADR 0014 <../../docs/decisions/0014-step-is-the-primitive>`).
+    """
 
     max_iterations: int = 50
-    """Hard ceiling on iterations for a whole run."""
+    """Iterations one ``milhouse run`` may take before it stops and reports.
 
-    max_attempts: int = 3
-    """Failed attempts on one issue before it is marked blocked and skipped."""
+    Per invocation, not per task: re-running picks up where the last one left
+    off and gets the same budget again.
+    """
 
     turn_timeout_ms: int = 1_800_000
     """Bound on a single ``herdr agent prompt --wait`` turn. Default 30 minutes."""
-
-    on_blocked: OnBlocked = "wait"
-    """What to do when herdr reports the agent is waiting on a human."""
-
-    blocked_timeout_ms: int = 900_000
-    """How long ``on_blocked = "wait"`` waits for a human. Default 15 minutes."""
 
 
 class GitConfig(BaseModel):
@@ -208,10 +208,7 @@ _ENV_MAP: dict[str, tuple[str, str, str]] = {
     "MILHOUSE_AGENT_START_TIMEOUT_MS": ("agent", "start_timeout_ms", "int"),
     "MILHOUSE_AGENT_EXIT_TIMEOUT_MS": ("agent", "exit_timeout_ms", "int"),
     "MILHOUSE_MAX_ITERATIONS": ("loop", "max_iterations", "int"),
-    "MILHOUSE_MAX_ATTEMPTS": ("loop", "max_attempts", "int"),
     "MILHOUSE_TURN_TIMEOUT_MS": ("loop", "turn_timeout_ms", "int"),
-    "MILHOUSE_ON_BLOCKED": ("loop", "on_blocked", "str"),
-    "MILHOUSE_BLOCKED_TIMEOUT_MS": ("loop", "blocked_timeout_ms", "int"),
     "MILHOUSE_BRANCH_STRATEGY": ("git", "branch_strategy", "str"),
     "MILHOUSE_BRANCH_PREFIX": ("git", "branch_prefix", "str"),
     # HERDR_WORKSPACE_ID first: later entries win, and an explicit MILHOUSE_

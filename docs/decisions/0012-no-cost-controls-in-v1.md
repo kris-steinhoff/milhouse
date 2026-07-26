@@ -1,6 +1,8 @@
 # 0012 — No token or cost caps in v1
 
-**Status:** accepted
+**Status:** accepted, and less pressing since [ADR 0014](0014-step-is-the-primitive.md)
+
+Still no cost tracking, for the reason below. It matters less now: a supervised run is bounded by a person's attention rather than by an iteration ceiling.
 
 ## Context
 

@@ -68,7 +68,6 @@ def render_iterate(
     *,
     branch: str | None = None,
     attempt: int = 1,
-    attempts_left: int = 3,
     previous: list[dict[str, str]] | None = None,
 ) -> str:
     """Render the per-issue prompt for one iteration.
@@ -78,7 +77,6 @@ def render_iterate(
         issue: The issue to work.
         branch: Branch the agent must commit to, or ``None`` to leave it alone.
         attempt: 1-based attempt number for this issue.
-        attempts_left: Attempts remaining, including this one.
         previous: Earlier attempts, as ``{"outcome", "detail"}`` mappings. These
             are what a fresh context window gets instead of memory.
 
@@ -91,7 +89,6 @@ def render_iterate(
         issue=issue,
         branch=branch,
         attempt=attempt,
-        attempts_left=attempts_left,
         previous=previous or [],
         acceptance=_field(issue, "acceptance_criteria", "acceptance"),
         notes=_field(issue, "notes"),

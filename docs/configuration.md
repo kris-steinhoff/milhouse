@@ -21,8 +21,6 @@ args = ["--permission-mode", "acceptEdits"]
 
 [loop]
 max_iterations = 30
-max_attempts = 3
-on_blocked = "wait"
 
 [git]
 branch_strategy = "task"
@@ -45,21 +43,20 @@ How the interactive agent is started in its herdr pane. See [ADR 0003](decisions
 
 ## `[loop]`
 
-The guardrails. See [ADR 0005](decisions/0005-milhouse-owns-the-loop.md).
+What bounds a run. Small on purpose: the supervised policy stops at the first iteration that does not succeed, so nothing here decides when to retry ([ADR 0014](decisions/0014-step-is-the-primitive.md)).
 
-| Key                  | Type | Default                | Environment                   | Meaning                                                                |
-| -------------------- | ---- | ---------------------- | ----------------------------- | ---------------------------------------------------------------------- |
-| `max_iterations`     | int  | `50`                   | `MILHOUSE_MAX_ITERATIONS`     | Hard ceiling on iterations for the whole run.                          |
-| `max_attempts`       | int  | `3`                    | `MILHOUSE_MAX_ATTEMPTS`       | Failed attempts on one issue before it is marked blocked and skipped.  |
-| `turn_timeout_ms`    | int  | `1800000` (30 minutes) | `MILHOUSE_TURN_TIMEOUT_MS`    | Bound on one `herdr agent prompt --wait` turn.                         |
-| `on_blocked`         | enum | `"wait"`               | `MILHOUSE_ON_BLOCKED`         | `wait`, `skip`, or `abort` when herdr reports the agent needs a human. |
-| `blocked_timeout_ms` | int  | `900000` (15 minutes)  | `MILHOUSE_BLOCKED_TIMEOUT_MS` | How long `on_blocked = "wait"` waits for that human before giving up.  |
+| Key               | Type | Default                | Environment                | Meaning                                        |
+| ----------------- | ---- | ---------------------- | -------------------------- | ---------------------------------------------- |
+| `max_iterations`  | int  | `50`                   | `MILHOUSE_MAX_ITERATIONS`  | Iterations one `milhouse run` may take.        |
+| `turn_timeout_ms` | int  | `1800000` (30 minutes) | `MILHOUSE_TURN_TIMEOUT_MS` | Bound on one `herdr agent prompt --wait` turn. |
 
-`--max-iterations`, `--max-attempts`, and `--on-blocked` override the first, second, and fourth.
+`--max-iterations` overrides the first, and counts **this invocation**: re-running picks up where the last one left off and gets the budget again. Iteration numbers keep counting across invocations, because they name `iter-NNN.prompt`.
+
+`max_attempts`, `on_blocked`, and `blocked_timeout_ms` were removed. They only ever answered questions an unattended run asks, and they come back with the ralph policy.
 
 ## `[git]`
 
-Where the loop's commits land. See [ADR 0007](decisions/0007-branch-per-task.md).
+Where the commits land. See [ADR 0007](decisions/0007-branch-per-task.md).
 
 | Key               | Type   | Default       | Environment                | Meaning                                                                       |
 | ----------------- | ------ | ------------- | -------------------------- | ----------------------------------------------------------------------------- |
@@ -93,21 +90,18 @@ Workspace and transcript settings. See [ADR 0001](decisions/0001-shell-out-to-bd
 
 ## Environment variables at a glance
 
-| Variable                          | Sets                      |
-| --------------------------------- | ------------------------- |
-| `MILHOUSE_AGENT_KIND`             | `agent.kind`              |
-| `MILHOUSE_AGENT_ARGS`             | `agent.args`              |
-| `MILHOUSE_AGENT_START_TIMEOUT_MS` | `agent.start_timeout_ms`  |
-| `MILHOUSE_AGENT_EXIT_TIMEOUT_MS`  | `agent.exit_timeout_ms`   |
-| `MILHOUSE_MAX_ITERATIONS`         | `loop.max_iterations`     |
-| `MILHOUSE_MAX_ATTEMPTS`           | `loop.max_attempts`       |
-| `MILHOUSE_TURN_TIMEOUT_MS`        | `loop.turn_timeout_ms`    |
-| `MILHOUSE_ON_BLOCKED`             | `loop.on_blocked`         |
-| `MILHOUSE_BLOCKED_TIMEOUT_MS`     | `loop.blocked_timeout_ms` |
-| `MILHOUSE_BRANCH_STRATEGY`        | `git.branch_strategy`     |
-| `MILHOUSE_BRANCH_PREFIX`          | `git.branch_prefix`       |
-| `MILHOUSE_WORKSPACE`              | `herdr.workspace`         |
-| `HERDR_WORKSPACE_ID`              | `herdr.workspace`         |
+| Variable                          | Sets                     |
+| --------------------------------- | ------------------------ |
+| `MILHOUSE_AGENT_KIND`             | `agent.kind`             |
+| `MILHOUSE_AGENT_ARGS`             | `agent.args`             |
+| `MILHOUSE_AGENT_START_TIMEOUT_MS` | `agent.start_timeout_ms` |
+| `MILHOUSE_AGENT_EXIT_TIMEOUT_MS`  | `agent.exit_timeout_ms`  |
+| `MILHOUSE_MAX_ITERATIONS`         | `loop.max_iterations`    |
+| `MILHOUSE_TURN_TIMEOUT_MS`        | `loop.turn_timeout_ms`   |
+| `MILHOUSE_BRANCH_STRATEGY`        | `git.branch_strategy`    |
+| `MILHOUSE_BRANCH_PREFIX`          | `git.branch_prefix`      |
+| `MILHOUSE_WORKSPACE`              | `herdr.workspace`        |
+| `HERDR_WORKSPACE_ID`              | `herdr.workspace`        |
 
 Variables holding an integer must parse as one, or milhouse exits with `ConfigError` (exit code 2). `MILHOUSE_AGENT_ARGS` is split with `shlex`, so quoting works the way it does in a shell.
 

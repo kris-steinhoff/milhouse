@@ -23,15 +23,15 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import get_args
 
-from .config import RUNS_RELPATH, BranchStrategy, OnBlocked
+from .config import RUNS_RELPATH, BranchStrategy
 from .gitrepo import find_repo_root
 from .models import RunState
+from .state import RunStore
 
 __all__ = [
     "AGENT_KINDS",
     "complete_agent",
     "complete_branch_strategy",
-    "complete_on_blocked",
     "complete_repo",
     "complete_task",
     "complete_workspace",
@@ -58,12 +58,6 @@ FILE_PREFIX = "file:"
 
 TASK_SUFFIXES = (".md", ".markdown")
 """Extensions a task definition can have. Anything else is not offered."""
-
-_ON_BLOCKED_HELP = {
-    "wait": "wait for a human, up to blocked_timeout_ms",
-    "skip": "mark the issue blocked and move on",
-    "abort": "stop the run",
-}
 
 _BRANCH_STRATEGY_HELP = {
     "task": "one branch per task definition",
@@ -98,11 +92,6 @@ def complete_repo(incomplete: str) -> list[str]:
 def complete_agent(incomplete: str) -> list[str]:
     """Complete an ``--agent`` value with the common herdr agent kinds."""
     return [kind for kind in AGENT_KINDS if kind.startswith(incomplete)]
-
-
-def complete_on_blocked(incomplete: str) -> list[tuple[str, str]]:
-    """Complete an ``--on-blocked`` value with the three policies and what they do."""
-    return _choices(get_args(OnBlocked), _ON_BLOCKED_HELP, incomplete)
 
 
 def complete_branch_strategy(incomplete: str) -> list[tuple[str, str]]:
@@ -143,7 +132,7 @@ def _run_states(repo_root: Path) -> list[RunState]:
     states = []
     for path in sorted((repo_root / RUNS_RELPATH).glob("*/state.json")):
         try:
-            state = RunState.load(path)
+            state = RunStore(path.parent).load()
         except Exception:
             continue
         if state is not None:

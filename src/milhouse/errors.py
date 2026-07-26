@@ -19,6 +19,7 @@ __all__ = [
     "MilhouseError",
     "MissingDependencyError",
     "ProcessError",
+    "RunLockedError",
     "SourceError",
     "TrackerError",
     "TurnTimeoutError",
@@ -153,15 +154,27 @@ class ProcessError(MilhouseError):
 
 
 class LoopAbortedError(MilhouseError):
-    """The ralph loop stopped before finishing the epic.
+    """A run stopped before finishing the epic.
 
-    Exit code ``9``. Covers hitting ``--max-iterations``, ``--on-blocked abort``,
-    and an issue exhausting ``--max-attempts`` with nothing else ready. The run
-    state under ``.milhouse/runs/`` is left in place so the run can be resumed.
+    Exit code ``9``. The run directory under ``.milhouse/runs/`` is left in place
+    so the run can be inspected and resumed.
     """
 
     exit_code = 9
     remedy = "Inspect .milhouse/runs/<task>/ then re-run `milhouse run` to resume."
+
+
+class RunLockedError(MilhouseError):
+    """Another milhouse process is already working this task.
+
+    Exit code ``10``. Two runs over one task would drive the same herdr pane and
+    reconcile each other's in-flight claim, so the second one refuses to start
+    (:doc:`ADR 0015 <../../docs/decisions/0015-one-run-at-a-time>`). If the named
+    process is genuinely gone, delete the lock file and re-run.
+    """
+
+    exit_code = 10
+    remedy = "Wait for the other run, or delete .milhouse/runs/<task>/lock.json."
 
 
 class UserAbortError(MilhouseError):

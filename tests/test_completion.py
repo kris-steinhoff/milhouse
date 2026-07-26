@@ -16,8 +16,9 @@ import typer.main
 from typer.core import TyperGroup
 
 from milhouse import cli, completion
-from milhouse.config import BranchStrategy, OnBlocked
+from milhouse.config import BranchStrategy
 from milhouse.models import RunState
+from milhouse.state import RunStore
 
 
 @pytest.fixture
@@ -79,15 +80,8 @@ def test_agent_offers_the_common_herdr_kinds() -> None:
     assert completion.complete_agent("zzz") == []
 
 
-def test_on_blocked_offers_every_policy_the_config_accepts() -> None:
-    """The values come from the config Literal, so the two cannot drift apart."""
-    offered = completion.complete_on_blocked("")
-
-    assert [value for value, _ in offered] == list(get_args(OnBlocked))
-    assert all(help_text for _, help_text in offered)
-
-
 def test_branch_strategy_offers_every_strategy_the_config_accepts() -> None:
+    """The values come from the config Literal, so the two cannot drift apart."""
     offered = completion.complete_branch_strategy("")
 
     assert [value for value, _ in offered] == list(get_args(BranchStrategy))
@@ -138,7 +132,8 @@ def test_workspace_says_nothing_outside_a_repository(
 @pytest.mark.parametrize(
     ("command", "params"),
     [
-        ("run", ["task", "on_blocked", "agent", "workspace", "branch_strategy", "repo"]),
+        ("run", ["task", "agent", "workspace", "branch_strategy", "repo"]),
+        ("step", ["task", "agent", "workspace", "branch_strategy", "repo"]),
         ("plan", ["task", "agent", "workspace", "repo"]),
         ("status", ["task", "repo"]),
         ("doctor", ["repo"]),
@@ -168,6 +163,6 @@ def _params(command: str) -> dict[str, Any]:
 
 def _save_run(repo: Path, slug: str, *, workspace_id: str | None) -> None:
     """Write a run state, the way a real run leaves one behind."""
-    RunState(task_id=f"file:{slug}.md", task_slug=slug, workspace_id=workspace_id).save(
-        repo / ".milhouse" / "runs" / slug / "state.json"
+    RunStore(repo / ".milhouse" / "runs" / slug).save(
+        RunState(task_id=f"file:{slug}.md", task_slug=slug, workspace_id=workspace_id)
     )

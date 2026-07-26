@@ -18,7 +18,6 @@
     issue     Issue — id, title, description, plus notes/acceptance in .raw
     branch    branch the work must be committed to, or None
     attempt   1-based attempt number for this issue
-    attempts_left  attempts remaining including this one
     previous  list of {outcome, detail} from earlier attempts at this issue
   =========================================================================== #}
 You are working **one issue** for the milhouse orchestrator. milhouse picked it,
@@ -50,8 +49,8 @@ memory you have of those attempts.
 {% endif %}
 
 {% if attempt > 1 %}
-> This is **attempt {{ attempt }}**, and {{ attempts_left }} remain before
-> milhouse marks this issue blocked and moves on.
+> This is **attempt {{ attempt }}** at this issue. Every earlier one stopped
+> without finishing it, and a human looked at the run in between.
 {% if previous %}
 > Earlier attempts ended: {% for item in previous %}{{ item.outcome }} ({{ item.detail }}){% if not loop.last %}; {% endif %}{% endfor %}.
 {% endif %}

@@ -24,18 +24,19 @@ Everything milhouse records about a run lives here, and it is the primary post-m
 .milhouse/
   config.toml                  # committed — agent command, defaults
   runs/<task_slug>/
-    state.json                 # workspace/pane id, epic id, per-issue attempts,
-                               #   iteration history, the in-flight claim
+    state.json                 # workspace/pane id, epic id, branch, the in-flight claim
+    events.jsonl               # one iteration per line, append-only, every invocation
+    lock.json                  # pid and host of the run holding this task, while it runs
     plan.json                  # what the planning agent proposed
     iter-007.prompt            # the exact prompt sent that iteration
     iter-007.term              # pane transcript captured after the turn
 ```
 
-`.milhouse/runs/` is gitignored. Beads and git remain the source of truth for the work itself; everything under `runs/` is loop bookkeeping and is safe to delete. Deleting it loses the iteration history and the attempt counts, nothing else.
+`.milhouse/runs/` is gitignored. Beads and git remain the source of truth for the work itself; everything under `runs/` is bookkeeping and is safe to delete. Deleting it loses the iteration history, nothing else.
 
 When a run misbehaves, read them in this order:
 
-1. `state.json` — the `iterations` array says what milhouse thought happened.
+1. `events.jsonl` — what milhouse thought happened, one line per iteration. `milhouse status` is the readable version.
 2. `iter-NNN.term` for the first bad iteration — what the agent actually did.
 3. `iter-NNN.prompt` — what it was actually asked. Prompts are rendered per iteration and differ between attempts.
 
@@ -65,27 +66,42 @@ This is the general shape of the problem: an agent flag that opens an interactiv
 
 ## The agent is blocked
 
-herdr reports `blocked` when the agent is waiting on a human, which is almost always a permission prompt. milhouse prints the workspace to attach to and waits (`--on-blocked wait`, the default):
+herdr reports `blocked` when the agent is waiting on a human, which is almost always a permission prompt. milhouse re-opens the issue, stops, and names the workspace to attach to:
 
 ```sh
 herdr workspace list          # find the milhouse:<slug> workspace
 herdr agent attach milhouse-<slug>
 ```
 
-Approve the prompt and the loop continues on its own. `blocked` does not count against `--max-attempts`.
+The agent is exited by then, so attaching shows you the pane rather than a live turn. Read the transcript, decide what the agent needed, then run again — the issue is back in the ready queue.
 
-If a run keeps blocking, the posture is wrong rather than the run. See [ADR 0009](decisions/0009-permission-posture.md): either supervise it, use `--on-blocked skip`, or make it explicitly unattended in `.milhouse/config.toml`.
+If a run keeps blocking, the posture is wrong rather than the run. Grant the permissions the work needs in `[agent] args`, in the scoped form shown above.
 
 ## A stale claim
 
 If milhouse is killed with `SIGKILL`, or the machine goes away, an issue is left `in_progress` and assigned. `bd` has no lease expiry, so `bd ready` will never return that issue again.
 
-The normal fix is to **run `milhouse run` against the same task again**. It reconciles at startup, re-opens the claim it recorded in `state.json`, and resumes with the attempt counts intact ([ADR 0008](decisions/0008-crash-recovery-by-reconciliation.md)).
+The normal fix is to **run `milhouse run` or `milhouse step` against the same task again**. It takes the run lock, re-opens the claim it recorded in `state.json`, and carries on ([ADR 0008](decisions/0008-crash-recovery-by-reconciliation.md)). Holding the lock first is what makes that safe: the claim being re-opened cannot belong to a run still working it ([ADR 0015](decisions/0015-one-run-at-a-time.md)).
 
 To fix it by hand instead:
 
 ```sh
 bd update <issue-id> --status open --assignee ""
+```
+
+## milhouse says another run holds the task
+
+```console
+$ milhouse step docs/tasks/hello.md
+milhouse: another milhouse run holds hello (pid 48213 on carbon, since 2026-07-26T09:14:02+00:00)
+```
+
+Exit code `10`. One run works a task at a time, because two would drive the same pane and re-open each other's in-flight claim ([ADR 0015](decisions/0015-one-run-at-a-time.md)).
+
+A lock whose process is dead is taken over automatically. You only see this when the process is alive, or when it ran on another machine and its pid cannot be checked. If you are sure it is gone:
+
+```sh
+rm -f .milhouse/runs/<task_slug>/lock.json
 ```
 
 ## The task was planned twice
@@ -101,7 +117,7 @@ bd update <epic-id> --set-metadata milhouse_task=file:<new-path>
 
 ## The branch checkout failed
 
-milhouse refuses to touch a dirty working tree. Commit or stash your changes first. It will not stash for you: losing uncommitted work to an unattended loop is the worst failure available ([ADR 0007](decisions/0007-branch-per-task.md)).
+milhouse refuses to touch a dirty working tree. Commit or stash your changes first. It will not stash for you: losing uncommitted work to a checkout you did not ask for is the worst failure available ([ADR 0007](decisions/0007-branch-per-task.md)).
 
 ## The pane did not return to a shell prompt
 

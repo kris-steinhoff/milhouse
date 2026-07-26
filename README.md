@@ -1,14 +1,16 @@
 # milhouse
 
-An agentic AI orchestrator. Point it at a task definition and it decomposes the task into tracked issues, then drives a [ralph loop](https://ghuntley.com/ralph/) over those issues until the work is done.
+An agentic AI orchestrator. Point it at a task definition and it decomposes the task into tracked issues, then works through them one issue at a time, each with a fresh agent.
 
-The pieces already existed. milhouse is the thing that wires them together and keeps the loop running unattended:
+The pieces already existed. milhouse is the thing that wires them together:
 
 - **[beads](https://github.com/steveyegge/beads) (`bd`)** — git-backed, dependency-aware issue tracker. Durable memory, plus `bd ready --claim` for race-free "what do I work on next".
 - **[herdr](https://herdr.dev)** — terminal workspace manager. Every agent runs in a herdr pane, so a human can watch it and intervene.
 - **`claude`** (or any agent herdr supports) — does one unit of work per iteration.
 
-The defining property of a ralph loop is a **fresh context window every iteration**. milhouse starts a new agent in the pane each time and exits it when the turn ends. State lives in beads and git, never in an accumulating chat session.
+The defining property of a [ralph loop](https://ghuntley.com/ralph/) is a **fresh context window every iteration**. milhouse starts a new agent in the pane each time and exits it when the turn ends. State lives in beads and git, never in an accumulating chat session.
+
+**One iteration is the unit.** `milhouse step` runs exactly one and hands back to you. `milhouse run` runs them in a loop, stopping at the first iteration that does not succeed. Making that loop genuinely unattended is a policy that lands over the same step, once there is enough observed behaviour to write it from ([ADR 0014](docs/decisions/0014-step-is-the-primitive.md)).
 
 ## Prerequisites
 
@@ -48,11 +50,14 @@ milhouse run docs/tasks/hello.md --dry-run
 # 4. Decompose it into issues and inspect the tree.
 milhouse plan docs/tasks/hello.md
 
-# 5. Run the loop, watching the pane.
-milhouse run docs/tasks/hello.md --max-iterations 2 --attach
+# 5. Work one issue, watching the pane. Run it again for the next one.
+milhouse step docs/tasks/hello.md --attach
+
+# 6. Or work them until something needs you.
+milhouse run docs/tasks/hello.md --attach
 ```
 
-`milhouse status docs/tasks/hello.md` shows the issue tree and this run's iteration history at any point.
+`milhouse status docs/tasks/hello.md` shows the issue tree and every iteration so far, at any point.
 
 ## Documentation
 
@@ -65,7 +70,7 @@ milhouse run docs/tasks/hello.md --max-iterations 2 --attach
 
 ## Status
 
-Alpha, and installed locally rather than published to PyPI. The loop works; the prompts are still being tuned by observation, as the ralph methodology expects.
+Alpha, and installed locally rather than published to PyPI. The step works and is meant to be driven supervised. The prompts, and the policy that would make a run unattended, are still being tuned by observation, as the ralph methodology expects.
 
 ## License
 

@@ -154,26 +154,6 @@ def test_an_unreplaceable_pane_is_an_agent_error(runner: AgentRunner, fake_proc:
         runner.exit_agent()
 
 
-def test_waiting_for_a_human_returns_the_state_reached(
-    runner: AgentRunner, fake_proc: FakeProc
-) -> None:
-    fake_proc.expect(
-        "herdr agent wait", Reply(stdout=wrapped("agent:wait", {"agent": {"agent_status": "done"}}))
-    )
-
-    assert runner.wait_for_unblock() == "done"
-    argv = fake_proc.calls[0]
-    assert [argv[i + 1] for i, word in enumerate(argv) if word == "--until"] == ["idle", "done"]
-
-
-def test_a_human_who_never_arrives_leaves_the_agent_blocked(
-    runner: AgentRunner, fake_proc: FakeProc
-) -> None:
-    fake_proc.expect("herdr agent wait", Reply(stdout=error("agent:wait", "timeout", "timed out")))
-
-    assert runner.wait_for_unblock() == "blocked"
-
-
 def test_an_empty_transcript_writes_no_file(
     runner: AgentRunner, happy: FakeProc, run_dir: Path
 ) -> None:

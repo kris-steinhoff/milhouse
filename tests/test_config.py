@@ -22,7 +22,7 @@ def test_defaults_apply_without_a_config_file(repo: Path) -> None:
     assert resolved.agent.kind == "claude"
     assert resolved.agent.args == []
     assert resolved.loop.max_iterations == 50
-    assert resolved.loop.on_blocked == "wait"
+    assert resolved.loop.turn_timeout_ms == 1_800_000
     assert resolved.git.branch_strategy == "task"
     assert resolved.herdr.read_source == "visible"
 
@@ -48,7 +48,7 @@ def test_file_overrides_defaults_key_by_key(repo: Path) -> None:
 
     assert resolved.loop.max_iterations == 7
     # Untouched keys in the same section keep their defaults.
-    assert resolved.loop.max_attempts == 3
+    assert resolved.loop.turn_timeout_ms == 1_800_000
 
 
 def test_env_overrides_the_file(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -107,12 +107,12 @@ def test_malformed_toml_is_a_config_error(repo: Path) -> None:
 
 
 def test_an_invalid_enum_value_is_a_config_error(repo: Path) -> None:
-    write_config(repo, '[loop]\non_blocked = "panic"\n')
+    write_config(repo, '[git]\nbranch_strategy = "whatever"\n')
 
     with pytest.raises(ConfigError) as caught:
         config_module.load(repo)
 
-    assert "loop.on_blocked" in str(caught.value)
+    assert "git.branch_strategy" in str(caught.value)
     assert caught.value.exit_code == 2
 
 

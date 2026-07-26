@@ -2,19 +2,18 @@
 
 Four types carry everything: a :class:`TaskDefinition` is what the user asked
 for, an :class:`Issue` is one unit of work in beads, an :class:`Iteration` is one
-pass of the ralph loop, and a :class:`RunState` is the durable bookkeeping that
-lets a run be inspected or resumed after a crash.
+turn of the agent, and a :class:`RunState` is the durable bookkeeping that lets a
+run be inspected or resumed after a crash.
 
 Beads and git remain the source of truth for the work itself. Everything here is
-either derived from them or is loop bookkeeping.
+either derived from them or is bookkeeping. Persisting it is
+:mod:`milhouse.state`'s job, not this module's: these are values.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -32,7 +31,7 @@ __all__ = [
 
 SourceKind = Literal["file", "github"]
 
-Outcome = Literal["success", "blocked", "partial", "stalled", "timeout", "error"]
+Outcome = Literal["success", "rejected", "blocked", "partial", "stalled", "timeout", "error"]
 """How one iteration ended. See ``docs/architecture.md`` for the decision table."""
 
 _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
@@ -115,15 +114,19 @@ class Issue(BaseModel):
 
 
 class Iteration(BaseModel):
-    """The record of one pass through the ralph loop.
+    """The record of one turn: one issue, one fresh agent, one classification.
 
     One iteration is: claim an issue, start a fresh agent, prompt it once, exit
-    it, then classify what happened. Every field here is written to
-    ``state.json`` so a finished or crashed run can be explained after the fact.
+    it, verify, then classify what happened. Every field here is appended to
+    ``events.jsonl`` so a finished or crashed run can be explained after the fact.
     """
 
     number: int
-    """1-based iteration counter within the run."""
+    """1-based iteration counter, over the whole task rather than one invocation.
+
+    It names the run artifacts (``iter-007.prompt``), so it has to keep counting
+    across invocations even though the iteration budget does not.
+    """
 
     issue_id: str
     issue_title: str = ""
@@ -133,7 +136,28 @@ class Iteration(BaseModel):
 
     head_before: str | None = None
     head_after: str | None = None
-    """Git ``HEAD`` around the turn. A change means the agent committed."""
+    """Git ``HEAD`` around the turn."""
+
+    commits: list[str] = Field(default_factory=list)
+    """Short shas of every commit that landed during the turn, oldest first."""
+
+    attributed: bool = False
+    """Whether any of :attr:`commits` names this issue in its message.
+
+    ``HEAD`` moving is weak evidence on its own: a hook, or a human in another
+    terminal, moves it too. The iteration prompt asks for the issue id in the
+    commit message, and this is milhouse checking that it is there.
+    """
+
+    dirty_after: bool = False
+    """Whether the working tree had uncommitted changes when the turn ended.
+
+    An agent that edits without committing hands the mess to the next agent,
+    which did not make it and cannot explain it.
+    """
+
+    verified: bool | None = None
+    """Whether the verification command passed. ``None`` when it was not run."""
 
     started_at: datetime = Field(default_factory=now)
     ended_at: datetime | None = None
@@ -146,21 +170,29 @@ class Iteration(BaseModel):
 
     @property
     def made_commit(self) -> bool:
-        """Whether ``HEAD`` moved during this iteration."""
-        return bool(self.head_before and self.head_after and self.head_before != self.head_after)
+        """Whether anything was committed during this iteration."""
+        return bool(self.commits)
 
 
 class RunState(BaseModel):
-    """Durable bookkeeping for one task's run, persisted as ``state.json``.
+    """The session facts for one task, persisted as ``state.json``.
 
-    This is not the source of truth for the work. It records what milhouse
-    itself did: which workspace and pane it is driving, which epic it is working
-    through, how many attempts each issue has cost, and the iteration history.
-    Deleting it loses the history and the attempt counts, nothing else.
+    This is not the source of truth for the work, and it is not the history
+    either. It records only what milhouse needs in order to pick a task back up:
+    which epic it is working through, which workspace and pane it is driving,
+    which branch, and whether a claim was left in flight. The history lives in
+    ``events.jsonl`` beside it (:mod:`milhouse.state`).
+
+    Deleting the run directory loses the history, nothing else.
     """
 
-    version: int = 1
-    """Schema version of this file, so future milhouse can migrate it."""
+    version: int = 2
+    """Schema version of this file.
+
+    Version 1 also carried ``iterations`` and ``attempts``. Both are gone: the
+    history moved to ``events.jsonl``, and the attempt ladder went with the
+    unattended retry policy. A version 1 file still loads, minus its history.
+    """
 
     task_id: str
     task_slug: str
@@ -168,65 +200,13 @@ class RunState(BaseModel):
     workspace_id: str | None = None
     pane_id: str | None = None
     branch: str | None = None
-    """Branch the loop commits to, when ``git.branch_strategy = "task"``."""
+    """Branch the work is committed to, when ``git.branch_strategy = "task"``."""
 
     owns_workspace: bool = False
     """Whether milhouse created the workspace (and may therefore close it)."""
 
-    attempts: dict[str, int] = Field(default_factory=dict)
-    """Failed attempts per issue id, against ``loop.max_attempts``."""
-
-    iterations: list[Iteration] = Field(default_factory=list)
     claimed_issue: str | None = None
     """Issue claimed but not yet resolved. Reverted on teardown or resume."""
 
     created_at: datetime = Field(default_factory=now)
     updated_at: datetime = Field(default_factory=now)
-
-    @classmethod
-    def load(cls, path: Path) -> RunState | None:
-        """Read a state file, returning ``None`` when it does not exist.
-
-        Args:
-            path: Path to ``state.json``.
-
-        Returns:
-            The parsed state, or ``None`` for a first run.
-        """
-        if not path.exists():
-            return None
-        return cls.model_validate_json(path.read_text(encoding="utf-8"))
-
-    def save(self, path: Path) -> None:
-        """Write this state to ``path`` atomically, creating parent directories.
-
-        The write goes to a sibling temporary file and is then renamed, so a
-        crash mid-write cannot leave a truncated ``state.json`` behind.
-
-        Args:
-            path: Path to ``state.json``.
-        """
-        self.updated_at = now()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.loads(self.model_dump_json())
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        tmp.replace(path)
-
-    def record(self, iteration: Iteration) -> None:
-        """Append an iteration and update the issue's attempt counter.
-
-        ``success`` and ``blocked`` do not count against the attempt cap: the
-        first finished the issue, and the second is waiting on a human rather
-        than failing.
-
-        Args:
-            iteration: The iteration that just ended.
-        """
-        self.iterations.append(iteration)
-        if iteration.outcome not in ("success", "blocked"):
-            self.attempts[iteration.issue_id] = self.attempts.get(iteration.issue_id, 0) + 1
-
-    def attempts_for(self, issue_id: str) -> int:
-        """Failed attempts recorded so far for ``issue_id``."""
-        return self.attempts.get(issue_id, 0)

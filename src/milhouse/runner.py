@@ -15,12 +15,13 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from .config import Config
 from .errors import AgentError, HerdrError, TurnTimeoutError
 from .herdr import AgentStatus, HerdrClient
 
-__all__ = ["AgentRunner", "TurnResult"]
+__all__ = ["AgentRunner", "Runner", "TurnResult"]
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +43,34 @@ class TurnResult:
     prompt_path: Path | None = None
     transcript_path: Path | None = None
     error: str | None = None
+
+
+class Runner(Protocol):
+    """What :func:`milhouse.step.step` needs from whatever runs the agent.
+
+    :class:`AgentRunner` is the only implementation, and it drives a TUI in a
+    herdr pane. The protocol exists because that is not the only way to run a
+    turn: a headless agent has an exit code and a usage block, which is what
+    would retire both the exit-key fragility of
+    :doc:`ADR 0011 <../../docs/decisions/0011-exiting-the-agent>` and the cost
+    blindness of :doc:`ADR 0012 <../../docs/decisions/0012-no-cost-caps>`.
+
+    It is not speculative generality: the tests implement it too.
+    """
+
+    pane_id: str
+    """The pane in use, which may change when a pane has to be replaced."""
+
+    agent_name: str
+    """The herdr agent name, e.g. ``milhouse-hello``."""
+
+    def run_turn(self, prompt: str, *, iteration: int) -> TurnResult:
+        """Run one whole turn and leave the pane ready for the next one."""
+        ...
+
+    def exit_agent(self) -> None:
+        """Return the pane to a shell prompt. Idempotent."""
+        ...
 
 
 class AgentRunner:
@@ -116,27 +145,6 @@ class AgentRunner:
         result.transcript_path = self._capture(iteration)
         self.exit_agent()
         return result
-
-    def wait_for_unblock(self) -> AgentStatus:
-        """Block until a blocked agent is no longer blocked.
-
-        Called when the loop's ``--on-blocked wait`` policy applies: a human has
-        been told which workspace to attach to, and milhouse waits for them
-        (:doc:`ADR 0009 <../../docs/decisions/0009-permission-posture>`).
-
-        Returns:
-            The state the agent reached, or ``blocked`` if the wait timed out.
-        """
-        try:
-            return self.client.wait_for_status(
-                self.agent_name,
-                ("idle", "done"),
-                timeout_ms=self.config.loop.blocked_timeout_ms,
-            )
-        except TurnTimeoutError:
-            return "blocked"
-        except HerdrError:
-            return self.client.agent_status(self.agent_name)
 
     def exit_agent(self) -> None:
         """Return the pane to a shell prompt, replacing it if the keys do not work.

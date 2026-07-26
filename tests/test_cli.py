@@ -1,8 +1,9 @@
 """Tests for the command line: help text, exit codes, and the read-only commands.
 
-`run` itself is covered in `test_loop.py`, where the loop's decisions are.
-What matters here is that every flag is documented, errors map to their exit
-codes, and the commands that promise not to start anything really do not.
+What `run` and `step` actually do is covered in `test_loop.py` and
+`test_step.py`, where the decisions are. What matters here is that every flag is
+documented, errors map to their exit codes, and the commands that promise not to
+start anything really do not.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from typer.testing import CliRunner, Result
 
 from milhouse import cli, proc
 from milhouse.models import Iteration, RunState
+from milhouse.state import RunStore
 
 from .fakes import FakeProc, Reply
 
@@ -49,7 +51,7 @@ def test_help_lists_every_command() -> None:
     result = invoke("--help")
 
     assert result.exit_code == 0
-    for command in ("doctor", "run", "plan", "status"):
+    for command in ("doctor", "run", "step", "plan", "status"):
         assert command in result.output
 
 
@@ -60,8 +62,6 @@ def test_help_lists_every_command() -> None:
             "run",
             [
                 "--max-iterations",
-                "--max-attempts",
-                "--on-blocked",
                 "--agent",
                 "--workspace",
                 "--branch-strategy",
@@ -70,6 +70,10 @@ def test_help_lists_every_command() -> None:
                 "--yes",
                 "--repo",
             ],
+        ),
+        (
+            "step",
+            ["--agent", "--workspace", "--branch-strategy", "--attach", "--yes", "--repo"],
         ),
         ("plan", ["--yes", "--workspace", "--agent", "--repo"]),
         ("status", ["--repo"]),
@@ -86,7 +90,7 @@ def test_every_flag_is_documented(command: str, flags: list[str]) -> None:
         assert flag in output, f"{command} is missing help for {flag}"
 
 
-@pytest.mark.parametrize("command", [None, "run", "plan", "status", "doctor"])
+@pytest.mark.parametrize("command", [None, "run", "step", "plan", "status", "doctor"])
 def test_short_help_flag_matches_long_one(command: str | None) -> None:
     """``-h`` is the same help as ``--help``, on the app and every subcommand."""
     args = [command] if command else []
@@ -129,11 +133,11 @@ def test_status_shows_the_tree_and_the_history(
         "bd",
         lambda argv: Reply(stdout=json.dumps(CHILDREN if "--parent" in argv else [EPIC])),
     )
-    state = RunState(task_id="file:hello.md", task_slug="hello", branch="milhouse/hello")
-    state.record(
+    store = RunStore(task_repo / ".milhouse" / "runs" / "hello")
+    store.save(RunState(task_id="file:hello.md", task_slug="hello", branch="milhouse/hello"))
+    store.append(
         Iteration(number=1, issue_id="bd-e.1", outcome="success", detail="bd-e.1 closed in beads")
     )
-    state.save(task_repo / ".milhouse" / "runs" / "hello" / "state.json")
 
     result = invoke("status", "hello.md")
 
@@ -148,8 +152,8 @@ def test_status_flags_a_claim_left_by_an_unfinished_run(
     task_repo: Path, fake_proc: FakeProc
 ) -> None:
     fake_proc.expect("bd", Reply(stdout="[]"))
-    RunState(task_id="file:hello.md", task_slug="hello", claimed_issue="bd-e.2").save(
-        task_repo / ".milhouse" / "runs" / "hello" / "state.json"
+    RunStore(task_repo / ".milhouse" / "runs" / "hello").save(
+        RunState(task_id="file:hello.md", task_slug="hello", claimed_issue="bd-e.2")
     )
 
     result = invoke("status", "hello.md")
@@ -199,12 +203,12 @@ def test_dry_run_reports_an_epic_with_nothing_ready(task_repo: Path, fake_proc: 
     assert "would finish immediately" in result.output
 
 
-def test_dry_run_honours_the_caps_it_reports(task_repo: Path, fake_proc: FakeProc) -> None:
+def test_dry_run_honours_the_budget_it_reports(task_repo: Path, fake_proc: FakeProc) -> None:
     fake_proc.expect("bd", Reply(stdout="[]"))
 
     result = invoke("run", "hello.md", "--dry-run", "--max-iterations", "3", "--agent", "codex")
 
-    assert "3 iterations" in result.output
+    assert "3 iterations for one run" in result.output
     assert "agent     codex" in result.output
 
 
@@ -227,7 +231,7 @@ def test_plan_prints_the_existing_tree_without_replanning(
 def test_a_bad_config_value_exits_two(
     task_repo: Path, fake_proc: FakeProc, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("MILHOUSE_ON_BLOCKED", "panic")
+    monkeypatch.setenv("MILHOUSE_BRANCH_STRATEGY", "sideways")
 
     result = invoke("status", "hello.md")
 

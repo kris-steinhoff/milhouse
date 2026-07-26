@@ -164,11 +164,6 @@ class BeadsTracker:
             self.note(issue_id, note)
         self._run(["update", issue_id, "--status", "open", "--assignee", ""])
 
-    def block(self, issue_id: str, note: str) -> None:
-        """Mark an issue blocked, with a note saying why."""
-        self.note(issue_id, note)
-        self._run(["update", issue_id, "--status", "blocked", "--assignee", ""])
-
     def close(self, issue_id: str, *, note: str | None = None) -> None:
         """Close an issue.
 
