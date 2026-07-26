@@ -1,14 +1,17 @@
 """The ``milhouse`` command line.
 
-Five commands: ``step`` runs one supervised iteration, ``run`` loops over
-``step``, ``plan`` stops after decomposition, ``status`` reports on a task, and
-``doctor`` checks the tools milhouse depends on. Every command and flag carries
-help text, so ``milhouse --help`` is a usable reference on its own.
+Four commands: ``step`` works one issue, ``plan`` stops after decomposition,
+``status`` reports on a task, and ``doctor`` checks the tools milhouse depends
+on. Every command and flag carries help text, so ``milhouse --help`` is a usable
+reference on its own.
+
+There is no command that repeats a step. Driving it by hand is the point for now
+(:doc:`ADR 0017 <../../docs/decisions/0017-no-loop-until-it-is-earned>`).
 
 This module owns argument parsing and output formatting only. The behaviour
-lives in :mod:`milhouse.step`, :mod:`milhouse.loop`, :mod:`milhouse.session`, and
-their collaborators, so it stays testable without a terminal. It reaches for no
-private attribute of any of them: everything the CLI needs is on
+lives in :mod:`milhouse.step`, :mod:`milhouse.session`, and their collaborators,
+so it stays testable without a terminal. It reaches for no private attribute of
+any of them: everything the CLI needs is on
 :class:`~milhouse.session.Session`.
 """
 
@@ -28,7 +31,6 @@ from .config import Config, load
 from .errors import MilhouseError
 from .gitrepo import GitRepo, find_repo_root
 from .herdr import HerdrClient
-from .loop import RalphLoop
 from .models import TaskDefinition
 from .session import Session
 from .state import RunStore
@@ -41,9 +43,9 @@ __all__ = ["app", "main"]
 app = typer.Typer(
     name="milhouse",
     help=(
-        "Decompose a task into tracked issues, then drive a ralph loop over them.\n\n"
+        "Decompose a task into tracked issues, then work them one step at a time.\n\n"
         "milhouse resolves a task definition, asks a planning agent to break it into "
-        "beads issues, then repeatedly claims one ready issue and gives it to a fresh "
+        "beads issues, then works one of them per `milhouse step`, each with a fresh "
         "agent running in a herdr pane."
     ),
     no_args_is_help=True,
@@ -146,96 +148,6 @@ def doctor(
 
 
 @app.command()
-def run(
-    task: Annotated[
-        str,
-        typer.Argument(help=TASK_HELP, autocompletion=completion.complete_task),
-    ],
-    max_iterations: Annotated[
-        int | None,
-        typer.Option("--max-iterations", help="Iterations this invocation may run."),
-    ] = None,
-    agent: Annotated[
-        str | None,
-        typer.Option(
-            "--agent",
-            help="Agent kind to run, e.g. claude, codex, gemini.",
-            autocompletion=completion.complete_agent,
-        ),
-    ] = None,
-    workspace: Annotated[
-        str | None,
-        typer.Option(
-            "--workspace",
-            help="Reuse this herdr workspace instead of creating one.",
-            autocompletion=completion.complete_workspace,
-        ),
-    ] = None,
-    branch_strategy: Annotated[
-        str | None,
-        typer.Option(
-            "--branch-strategy",
-            help="task creates one branch per task definition; current stays where you are.",
-            autocompletion=completion.complete_branch_strategy,
-        ),
-    ] = None,
-    dry_run: Annotated[
-        bool,
-        typer.Option("--dry-run", help="Render the prompts and print the plan; start no agents."),
-    ] = False,
-    attach: Annotated[
-        bool,
-        typer.Option("--attach", help="Focus the herdr workspace instead of leaving it hidden."),
-    ] = False,
-    yes: Annotated[
-        bool,
-        typer.Option("--yes", "-y", help="Create the proposed issues without asking."),
-    ] = False,
-    repo: Annotated[
-        Path | None,
-        typer.Option(
-            "--repo",
-            help="Repository to work in. Defaults to the current one.",
-            autocompletion=completion.complete_repo,
-        ),
-    ] = None,
-) -> None:
-    """Resolve a task, decompose it if needed, then step until something stops it.
-
-    Repeats what `milhouse step` does once. Each iteration claims one ready issue
-    and gives it to a freshly started agent, so every iteration begins with a
-    clean context window.
-
-    The run stops at the first iteration that does not succeed, and says what
-    needs a person. Re-running is how you carry on: any claim a previous run left
-    behind is re-opened first.
-    """
-    config = _config(
-        repo,
-        {
-            "loop": {"max_iterations": max_iterations},
-            "agent": {"kind": agent},
-            "git": {"branch_strategy": branch_strategy},
-            "herdr": {"workspace": workspace},
-        },
-    )
-    definition = sources.resolve(task, config.repo_root)
-
-    if dry_run:
-        _dry_run(config, definition)
-        return
-
-    loop = RalphLoop(_session(config, definition, attach=attach))
-    result = loop.run(confirm=None if yes else _confirm_plan)
-    typer.echo("")
-    typer.secho(
-        _summarise(result), fg=typer.colors.GREEN if result.completed else typer.colors.YELLOW
-    )
-    if not result.completed:
-        raise typer.Exit(code=9)
-
-
-@app.command()
 def step(
     task: Annotated[
         str,
@@ -265,6 +177,10 @@ def step(
             autocompletion=completion.complete_branch_strategy,
         ),
     ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Render the prompt and print the plan; start no agent."),
+    ] = False,
     attach: Annotated[
         bool,
         typer.Option("--attach", help="Focus the herdr workspace instead of leaving it hidden."),
@@ -284,9 +200,12 @@ def step(
 ) -> None:
     """Work one ready issue with a fresh agent, report what happened, and stop.
 
-    The supervised entry point. It claims one issue, gives it to one agent, and
-    hands straight back to you, so you decide whether to go again. `milhouse run`
-    is this in a loop.
+    The way milhouse is driven. It decomposes the task if that has not happened
+    yet, claims one ready issue, gives it to a freshly started agent, and hands
+    straight back to you. You decide whether to go again.
+
+    Stepping again is also how you resume: any claim a previous step left behind
+    is re-opened first.
 
     Exits 0 when the issue was finished, and 9 when it was not.
     """
@@ -299,6 +218,10 @@ def step(
         },
     )
     definition = sources.resolve(task, config.repo_root)
+
+    if dry_run:
+        _dry_run(config, definition)
+        return
 
     with _session(config, definition, attach=attach) as session:
         epic = session.ensure_epic(confirm=None if yes else _confirm_plan)
@@ -475,7 +398,7 @@ def _dry_run(config: Config, definition: TaskDefinition) -> None:
     tracker = BeadsTracker(config.repo_root, config.tracker)
     epic = tracker.find_epic(definition)
 
-    typer.secho("dry run — no agents will be started", fg=typer.colors.CYAN)
+    typer.secho("dry run — no agent will be started", fg=typer.colors.CYAN)
     typer.echo(f"task      {definition.task_id}")
     typer.echo(f"title     {definition.title}")
     branch = (
@@ -485,7 +408,6 @@ def _dry_run(config: Config, definition: TaskDefinition) -> None:
     )
     typer.echo(f"branch    {branch}")
     typer.echo(f"agent     {config.agent.kind} {' '.join(config.agent.args)}".rstrip())
-    typer.echo(f"budget    {config.loop.max_iterations} iterations for one run")
     verify = " ".join(config.verify.command) or "(none — a closed issue is taken on trust)"
     typer.echo(f"verify    {verify}")
     typer.echo(f"run dir   {config.run_dir(definition.slug)}")
@@ -499,9 +421,9 @@ def _dry_run(config: Config, definition: TaskDefinition) -> None:
     typer.echo(f"\nepic      {epic.id}  {epic.title}")
     next_issue = tracker.ready(epic.id, claim=False)
     if next_issue is None:
-        typer.echo("\nno issues are ready; a run would finish immediately")
+        typer.echo("\nno issues are ready; a step would do nothing")
         return
-    typer.echo(f"\nthe next iteration would work {next_issue.id} and send:\n")
+    typer.echo(f"\nthe next step would work {next_issue.id} and send:\n")
     typer.echo(_indent(prompts.render_iterate(definition, next_issue, branch=branch)))
 
 
@@ -525,12 +447,6 @@ def _print_tree(tracker: BeadsTracker, epic: Any) -> None:
         typer.echo(
             f"  [{mark}] {typer.style(child.id, fg=colour)}  {child.title}  ({child.status})"
         )
-
-
-def _summarise(result: Any) -> str:
-    """One line describing how a run ended."""
-    verb = "finished" if result.completed else "stopped"
-    return f"{verb} after {result.count} iterations: {result.reason}"
 
 
 def _indent(text: str) -> str:

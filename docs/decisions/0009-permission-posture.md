@@ -1,8 +1,8 @@
 # 0009 — Supervised by default; unattended is opt-in and explicit
 
-**Status:** accepted, and deferred by [ADR 0014](0014-step-is-the-primitive.md)
+**Status:** accepted, and deferred by [ADR 0014](0014-step-is-the-primitive.md) and [ADR 0017](0017-no-loop-until-it-is-earned.md)
 
-Supervised is no longer the default, it is the only mode. Everything below about making a run unattended describes what the ralph policy has to answer, not a setting that does anything today.
+Supervised is no longer the default, it is the only thing there is: one `milhouse step` is one turn, typed by a person. Everything below about making a run unattended describes what a loop has to answer, not a setting that does anything today.
 
 ## Context
 

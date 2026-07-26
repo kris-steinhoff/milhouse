@@ -51,7 +51,7 @@ def test_help_lists_every_command() -> None:
     result = invoke("--help")
 
     assert result.exit_code == 0
-    for command in ("doctor", "run", "step", "plan", "status"):
+    for command in ("doctor", "step", "plan", "status"):
         assert command in result.output
 
 
@@ -59,9 +59,8 @@ def test_help_lists_every_command() -> None:
     ("command", "flags"),
     [
         (
-            "run",
+            "step",
             [
-                "--max-iterations",
                 "--agent",
                 "--workspace",
                 "--branch-strategy",
@@ -70,10 +69,6 @@ def test_help_lists_every_command() -> None:
                 "--yes",
                 "--repo",
             ],
-        ),
-        (
-            "step",
-            ["--agent", "--workspace", "--branch-strategy", "--attach", "--yes", "--repo"],
         ),
         ("plan", ["--yes", "--workspace", "--agent", "--repo"]),
         ("status", ["--repo"]),
@@ -90,7 +85,7 @@ def test_every_flag_is_documented(command: str, flags: list[str]) -> None:
         assert flag in output, f"{command} is missing help for {flag}"
 
 
-@pytest.mark.parametrize("command", [None, "run", "step", "plan", "status", "doctor"])
+@pytest.mark.parametrize("command", [None, "step", "plan", "status", "doctor"])
 def test_short_help_flag_matches_long_one(command: str | None) -> None:
     """``-h`` is the same help as ``--help``, on the app and every subcommand."""
     args = [command] if command else []
@@ -166,7 +161,7 @@ def test_dry_run_shows_the_planning_prompt_and_starts_nothing(
 ) -> None:
     fake_proc.expect("bd", Reply(stdout="[]"))
 
-    result = invoke("run", "hello.md", "--dry-run")
+    result = invoke("step", "hello.md", "--dry-run")
 
     assert result.exit_code == 0
     assert "dry run" in result.output
@@ -184,7 +179,7 @@ def test_dry_run_shows_the_next_iteration_prompt_when_decomposed(
         lambda argv: Reply(stdout=json.dumps(ready if "ready" in argv else [EPIC])),
     )
 
-    result = invoke("run", "hello.md", "--dry-run")
+    result = invoke("step", "hello.md", "--dry-run")
 
     assert result.exit_code == 0
     assert "would work bd-e.2" in result.output
@@ -198,18 +193,18 @@ def test_dry_run_reports_an_epic_with_nothing_ready(task_repo: Path, fake_proc: 
         lambda argv: Reply(stdout=json.dumps([] if "ready" in argv else [EPIC])),
     )
 
-    result = invoke("run", "hello.md", "--dry-run")
+    result = invoke("step", "hello.md", "--dry-run")
 
-    assert "would finish immediately" in result.output
+    assert "a step would do nothing" in result.output
 
 
-def test_dry_run_honours_the_budget_it_reports(task_repo: Path, fake_proc: FakeProc) -> None:
+def test_dry_run_reports_the_resolved_config(task_repo: Path, fake_proc: FakeProc) -> None:
     fake_proc.expect("bd", Reply(stdout="[]"))
 
-    result = invoke("run", "hello.md", "--dry-run", "--max-iterations", "3", "--agent", "codex")
+    result = invoke("step", "hello.md", "--dry-run", "--agent", "codex")
 
-    assert "3 iterations for one run" in result.output
     assert "agent     codex" in result.output
+    assert "verify    (none" in result.output
 
 
 def test_plan_prints_the_existing_tree_without_replanning(

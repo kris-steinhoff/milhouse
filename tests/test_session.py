@@ -6,10 +6,13 @@ and knows how to pick a task back up after a crash.
 
 from __future__ import annotations
 
+import os
+import signal
+
 import pytest
 
 from milhouse.config import Config
-from milhouse.errors import MilhouseError, RunLockedError
+from milhouse.errors import MilhouseError, RunLockedError, UserAbortError
 from milhouse.models import Issue, RunState, TaskDefinition
 from milhouse.state import RunStore
 
@@ -143,6 +146,36 @@ def test_the_current_branch_strategy_leaves_the_repo_alone(
         assert opened.state.branch == "some-worktree-branch"
 
     assert repo.branch == "some-worktree-branch"
+
+
+# -- signals -------------------------------------------------------------------
+
+
+def test_an_interrupt_reverts_the_claim_and_drops_the_lock(
+    config: Config, task: TaskDefinition, decomposed: FakeTracker
+) -> None:
+    """SIGTERM would otherwise kill the process before teardown ever ran."""
+    session, _ = build(config, task, tracker=decomposed, script=[])
+
+    with pytest.raises(UserAbortError), session as opened:
+        opened.claim(decomposed.epic)  # ty: ignore[invalid-argument-type]
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    assert decomposed.released == ["bd-e.1"]
+    assert not session.store.lock.path.exists()
+
+
+def test_the_previous_handlers_are_put_back(
+    config: Config, task: TaskDefinition, decomposed: FakeTracker
+) -> None:
+    """Milhouse is a library as well as a command; it does not keep the signals."""
+    before = signal.getsignal(signal.SIGTERM)
+    session, _ = build(config, task, tracker=decomposed, script=[])
+
+    with session:
+        assert signal.getsignal(signal.SIGTERM) is not before
+
+    assert signal.getsignal(signal.SIGTERM) is before
 
 
 # -- the workspace -------------------------------------------------------------

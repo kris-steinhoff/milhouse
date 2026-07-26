@@ -1,8 +1,9 @@
 """One iteration: claim an issue, work it once, classify, decide.
 
-:func:`step` is the unit milhouse is built from. ``milhouse step`` calls it once
-and hands back to a human. ``milhouse run`` calls it in a loop. Nothing else
-differs between them, which is the point
+:func:`step` is the unit milhouse is built from, and ``milhouse step`` calls it
+once and hands back to a human. Nothing calls it in a loop yet, on purpose
+(:doc:`ADR 0017 <../../docs/decisions/0017-no-loop-until-it-is-earned>`), and the
+seam for one is already here: the ``policy`` argument is what a loop would swap
 (:doc:`ADR 0014 <../../docs/decisions/0014-step-is-the-primitive>`).
 
 The steps, in order:
@@ -58,7 +59,7 @@ def step(session: Session, epic: Issue, *, policy: Policy = decide) -> StepResul
         session: An open session, holding the lock, branch, and workspace.
         epic: The epic whose children are worked.
         policy: What decides the aftermath. Injectable so a different policy is
-            a different function rather than a different loop.
+            a different function rather than different plumbing.
 
     Returns:
         The iteration and the decision, or ``None`` when nothing was ready.
@@ -81,9 +82,9 @@ def nothing_ready(session: Session, epic: Issue) -> tuple[str, bool]:
 
     ``bd ready`` returns nothing both when every issue is closed and when
     everything left is stuck behind something. Those are opposite outcomes, and
-    reporting the second as "the epic is finished" exits 0 on a run that did
-    nothing — which is how a dogfood run whose issues all blocked on a permission
-    prompt reported success.
+    reporting the second as "the epic is finished" exits 0 having done nothing —
+    which is how a dogfood run whose issues all blocked on a permission prompt
+    reported success.
 
     Args:
         session: The open session.

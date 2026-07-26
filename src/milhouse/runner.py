@@ -5,8 +5,8 @@ agent in the pane, prompt it once and wait for the turn to settle, capture the
 pane transcript, then exit the agent so the pane is back at a shell prompt for
 the next iteration.
 
-Starting fresh every time is the point. It is what gives the loop the clean
-context window a ralph loop depends on
+Starting fresh every time is the point. It is what gives each iteration the
+clean context window a ralph loop depends on
 (:doc:`ADR 0003 <../../docs/decisions/0003-agents-run-in-herdr-panes>`).
 """
 
@@ -134,7 +134,7 @@ class AgentRunner:
             result.agent_state = self.client.prompt(
                 self.agent_name,
                 prompt,
-                timeout_ms=self.config.loop.turn_timeout_ms,
+                timeout_ms=self.config.agent.turn_timeout_ms,
             )
         except TurnTimeoutError:
             result.timed_out = True
@@ -150,11 +150,11 @@ class AgentRunner:
         """Return the pane to a shell prompt, replacing it if the keys do not work.
 
         Idempotent, and safe to call when no agent is running — which is what
-        makes it usable from the loop's teardown path.
+        makes it usable from the session's teardown path.
 
         Raises:
             AgentError: The pane could not be replaced either, which leaves the
-                run with nowhere to start the next agent.
+                session with nowhere to start the next agent.
         """
         try:
             if self.client.pane_agent(self.pane_id) is None:

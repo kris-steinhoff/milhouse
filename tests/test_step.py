@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from milhouse.config import Config
-from milhouse.errors import MilhouseError
+from milhouse.errors import MilhouseError, UserAbortError
 from milhouse.models import Issue, TaskDefinition
 from milhouse.policy import Decision
 from milhouse.runner import TurnResult
@@ -106,11 +106,11 @@ def test_the_policy_is_injectable(
         result = step(
             opened,
             decomposed.epic,  # ty: ignore[invalid-argument-type]
-            policy=lambda iteration: Decision(issue="none", stop=False),
+            policy=lambda iteration: Decision(issue="none"),
         )
 
     assert result is not None
-    assert not result.decision.stop
+    assert result.decision.issue == "none"
     assert decomposed.released == []
 
 
@@ -146,7 +146,7 @@ def test_a_commit_that_names_no_issue_is_movement_rather_than_progress(
     assert "none naming it" in result.iteration.detail
 
 
-def test_a_dirty_tree_after_a_turn_is_recorded_and_stops_the_run(
+def test_a_dirty_tree_after_a_turn_is_recorded_and_reported(
     config: Config, task: TaskDefinition, decomposed: FakeTracker
 ) -> None:
     """The next agent would inherit changes it did not make and cannot explain."""
@@ -167,7 +167,6 @@ def test_a_dirty_tree_after_a_turn_is_recorded_and_stops_the_run(
     assert result is not None
     assert result.iteration.outcome == "success"
     assert result.iteration.dirty_after
-    assert result.decision.stop
     assert "dirty" in result.decision.reason
 
 
@@ -258,6 +257,58 @@ def test_a_second_attempt_is_told_what_the_first_one_did(
     assert result.iteration.number == 2
     assert "attempt 2" in runner.turns[0]
     assert "stalled" in runner.turns[0]
+
+
+# -- decomposition -------------------------------------------------------------
+
+
+def test_decomposition_runs_when_there_is_no_epic(config: Config, task: TaskDefinition) -> None:
+    tracker = FakeTracker()
+    session, runner = build(config, task, tracker=tracker, script=[])
+
+    def propose_then_close(prompt: str, *, iteration: int) -> TurnResult:
+        runner.turns.append(prompt)
+        if iteration == 0:
+            session.store.run_dir.mkdir(parents=True, exist_ok=True)
+            (session.store.run_dir / "plan.json").write_text(
+                '{"issues": [{"key": "a", "title": "Add it"}]}', encoding="utf-8"
+            )
+            return TurnResult(agent_state="done")
+        for issue in tracker.issues:
+            if issue.status == "in_progress":
+                issue.status = "closed"
+        return TurnResult(agent_state="done")
+
+    runner.run_turn = propose_then_close  # ty: ignore[invalid-assignment]
+
+    with session as opened:
+        epic = opened.ensure_epic()
+        result = step(opened, epic)
+
+    assert tracker.epic is not None
+    assert [issue.title for issue in tracker.issues] == ["Add it"]
+    assert result is not None
+    assert result.iteration.outcome == "success"
+    assert "Do not run `bd`" in runner.turns[0]
+
+
+def test_declining_the_decomposition_creates_nothing(config: Config, task: TaskDefinition) -> None:
+    tracker = FakeTracker()
+    session, runner = build(config, task, tracker=tracker, script=[])
+
+    def propose(prompt: str, *, iteration: int) -> TurnResult:
+        session.store.run_dir.mkdir(parents=True, exist_ok=True)
+        (session.store.run_dir / "plan.json").write_text(
+            '{"issues": [{"key": "a", "title": "Add it"}]}', encoding="utf-8"
+        )
+        return TurnResult(agent_state="done")
+
+    runner.run_turn = propose  # ty: ignore[invalid-assignment]
+
+    with pytest.raises(UserAbortError), session as opened:
+        opened.ensure_epic(confirm=lambda plan: False)
+
+    assert tracker.epic is None
 
 
 # -- reporting an empty queue --------------------------------------------------

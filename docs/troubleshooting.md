@@ -18,7 +18,7 @@ Start with `milhouse doctor`. It checks every external dependency and the herdr 
 
 ## Run artifacts
 
-Everything milhouse records about a run lives here, and it is the primary post-mortem surface — there is no event stream ([ADR 0001](decisions/0001-shell-out-to-bd-and-herdr.md)):
+Everything milhouse records about a task lives here, and it is the primary post-mortem surface — there is no event stream from herdr ([ADR 0001](decisions/0001-shell-out-to-bd-and-herdr.md)):
 
 ```
 .milhouse/
@@ -87,14 +87,14 @@ bd show <issue-id>
 
 Then run the verification command yourself. Two things it usually means:
 
-- **The work really is not done.** The note is now in the next agent's prompt, so running again may be enough.
+- **The work really is not done.** The note is now in the next agent's prompt, so stepping again may be enough.
 - **The gate is wrong for the loop.** A command that fails for reasons unrelated to the issue rejects every issue in the epic. Point `[verify] command` at the fast suite rather than the full matrix, and make sure it passes on a clean checkout before pointing milhouse at it.
 
 ## A stale claim
 
 If milhouse is killed with `SIGKILL`, or the machine goes away, an issue is left `in_progress` and assigned. `bd` has no lease expiry, so `bd ready` will never return that issue again.
 
-The normal fix is to **run `milhouse run` or `milhouse step` against the same task again**. It takes the run lock, re-opens the claim it recorded in `state.json`, and carries on ([ADR 0008](decisions/0008-crash-recovery-by-reconciliation.md)). Holding the lock first is what makes that safe: the claim being re-opened cannot belong to a run still working it ([ADR 0015](decisions/0015-one-run-at-a-time.md)).
+The normal fix is to **step against the same task again**. It takes the run lock, re-opens the claim it recorded in `state.json`, and carries on ([ADR 0008](decisions/0008-crash-recovery-by-reconciliation.md)). Holding the lock first is what makes that safe: the claim being re-opened cannot belong to a step still working it ([ADR 0015](decisions/0015-one-run-at-a-time.md)).
 
 To fix it by hand instead:
 
@@ -109,7 +109,7 @@ $ milhouse step docs/tasks/hello.md
 milhouse: another milhouse run holds hello (pid 48213 on carbon, since 2026-07-26T09:14:02+00:00)
 ```
 
-Exit code `10`. One run works a task at a time, because two would drive the same pane and re-open each other's in-flight claim ([ADR 0015](decisions/0015-one-run-at-a-time.md)).
+Exit code `10`. One process works a task at a time, because two would drive the same pane and re-open each other's in-flight claim ([ADR 0015](decisions/0015-one-run-at-a-time.md)).
 
 A lock whose process is dead is taken over automatically. You only see this when the process is alive, or when it ran on another machine and its pid cannot be checked. If you are sure it is gone:
 
@@ -128,16 +128,16 @@ bd list --metadata-field milhouse_task=file:<old-path> --type epic --json
 bd update <epic-id> --set-metadata milhouse_task=file:<new-path>
 ```
 
-## The run stopped saying the working tree is dirty
+## A step reported the working tree is dirty
 
-An iteration left uncommitted changes behind. milhouse stops rather than starting the next agent, because that agent would inherit changes it did not make and cannot explain.
+The iteration left uncommitted changes behind. That matters before you step again, because the next agent would inherit changes it did not make and cannot explain.
 
 ```sh
 git status
 git diff
 ```
 
-Commit them if they are the work, discard them if they are not, then run again.
+Commit them if they are the work, discard them if they are not, then step again.
 
 ## The branch checkout failed
 

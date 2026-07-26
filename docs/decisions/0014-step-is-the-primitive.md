@@ -1,6 +1,8 @@
 # 0014 — The step is the primitive; the loop is a policy over it
 
-**Status:** accepted
+**Status:** accepted, and taken further by [ADR 0017](0017-no-loop-until-it-is-earned.md)
+
+The split below stands and is what everything is built on. `milhouse run`, the loop half of it, has since been removed: the split is what makes putting one back cheap, so there is no reason to ship one before it has been earned.
 
 ## Context
 
@@ -28,7 +30,7 @@ The old `RalphLoop` splits four ways, and the split is the decision:
 | `policy.py`  | What happens next, and whether the run stops                   | yes   |
 | `loop.py`    | Repeating a step until something says stop                     | no    |
 
-`milhouse step` calls `step()` once and hands back to a person. `milhouse run` calls it in a loop. Nothing else differs between them.
+`milhouse step` calls `step()` once and hands back to a person. `milhouse run` called it in a loop, and nothing else differed between them, which is why removing it later cost one file ([ADR 0017](0017-no-loop-until-it-is-earned.md)).
 
 ### One policy, and it is supervised
 

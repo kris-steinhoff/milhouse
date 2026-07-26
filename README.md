@@ -10,7 +10,7 @@ The pieces already existed. milhouse is the thing that wires them together:
 
 The defining property of a [ralph loop](https://ghuntley.com/ralph/) is a **fresh context window every iteration**. milhouse starts a new agent in the pane each time and exits it when the turn ends. State lives in beads and git, never in an accumulating chat session.
 
-**One iteration is the unit.** `milhouse step` runs exactly one and hands back to you. `milhouse run` runs them in a loop, stopping at the first iteration that does not succeed. Making that loop genuinely unattended is a policy that lands over the same step, once there is enough observed behaviour to write it from ([ADR 0014](docs/decisions/0014-step-is-the-primitive.md)).
+**One iteration is the unit, and you type each one.** `milhouse step` claims an issue, gives it to a fresh agent, and hands straight back to you. There is deliberately no command that repeats it: the policy a loop needs is the open question, and the way to answer it is to watch real iterations rather than reason about them ([ADR 0017](docs/decisions/0017-no-loop-until-it-is-earned.md)). The seam for one is already there ([ADR 0014](docs/decisions/0014-step-is-the-primitive.md)).
 
 ## Prerequisites
 
@@ -20,7 +20,7 @@ The defining property of a [ralph loop](https://ghuntley.com/ralph/) is a **fres
 | `herdr`  | everything (server must be up)   | see [herdr.dev](https://herdr.dev)                           |
 | `git`    | everything                       | —                                                            |
 | `gh`     | `gh:owner/repo#123` task sources | see [cli.github.com](https://cli.github.com)                 |
-| `claude` | real runs (not `--dry-run`)      | see [claude.com/claude-code](https://claude.com/claude-code) |
+| `claude` | real steps (not `--dry-run`)     | see [claude.com/claude-code](https://claude.com/claude-code) |
 
 `milhouse doctor` checks all of them.
 
@@ -45,16 +45,13 @@ Add a `hello` subcommand that prints a greeting, with a test and a docs entry.
 EOF
 
 # 3. See what would happen, without starting an agent.
-milhouse run docs/tasks/hello.md --dry-run
+milhouse step docs/tasks/hello.md --dry-run
 
 # 4. Decompose it into issues and inspect the tree.
 milhouse plan docs/tasks/hello.md
 
 # 5. Work one issue, watching the pane. Run it again for the next one.
 milhouse step docs/tasks/hello.md --attach
-
-# 6. Or work them until something needs you.
-milhouse run docs/tasks/hello.md --attach
 ```
 
 `milhouse status docs/tasks/hello.md` shows the issue tree and every iteration so far, at any point.
@@ -70,7 +67,7 @@ milhouse run docs/tasks/hello.md --attach
 
 ## Status
 
-Alpha, and installed locally rather than published to PyPI. The step works and is meant to be driven supervised. The prompts, and the policy that would make a run unattended, are still being tuned by observation, as the ralph methodology expects.
+Alpha, and installed locally rather than published to PyPI. The step works and is meant to be typed by hand. The prompts, and the policy a loop over it would need, are still being learned by observation, as the ralph methodology expects.
 
 ## License
 

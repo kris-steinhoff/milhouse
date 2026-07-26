@@ -20,14 +20,15 @@ One file per settled decision. Each states the context, the decision, and what i
 | [0014](0014-step-is-the-primitive.md)                    | The step is the primitive; the loop is a policy over it          |
 | [0015](0015-one-run-at-a-time.md)                        | One run per task at a time, enforced by a lock                   |
 | [0016](0016-milhouse-verifies.md)                        | milhouse verifies a closed issue rather than trusting it         |
+| [0017](0017-no-loop-until-it-is-earned.md)               | No loop until one is earned                                      |
 
 ## Deferred
 
-Settled, then de-scoped by [ADR 0014](0014-step-is-the-primitive.md). They describe the ralph policy that lands over the step primitive, not what milhouse does today. They are kept because they are the design, not because they are the behaviour.
+Settled, then de-scoped by [ADR 0014](0014-step-is-the-primitive.md) and [ADR 0017](0017-no-loop-until-it-is-earned.md). They describe the loop that lands over the step primitive, not what milhouse does today. They are kept because they are the design, not because they are the behaviour.
 
-- **[ADR 0005](0005-milhouse-owns-the-loop.md), the guardrails.** The attempt cap, the blocked-agent policy, and the stall-then-retry ladder are gone. What survives is the division of labour: milhouse picks the work and decides when to stop, the agent does one issue.
+- **[ADR 0005](0005-milhouse-owns-the-loop.md), the loop and its guardrails.** There is no loop, so there is no attempt cap, blocked-agent policy, or retry ladder either. What survives is the division of labour: milhouse picks the work and bounds the turn, the agent does one issue.
 - **[ADR 0009](0009-permission-posture.md), the unattended posture.** Supervised is no longer merely the default, it is the only mode. The `[agent] args` escape hatch still exists and still means what it said.
-- **[ADR 0012](0012-no-cost-controls-in-v1.md), cost controls.** Still no cost tracking, and the reason is unchanged. It matters less now: a supervised run is bounded by a person's attention rather than by a ceiling.
+- **[ADR 0012](0012-no-cost-controls-in-v1.md), cost controls.** Still no cost tracking, and the reason is unchanged. It matters less now: one step is one turn, and a person decides whether there is another.
 
 ## Still open
 

@@ -21,8 +21,7 @@ def test_defaults_apply_without_a_config_file(repo: Path) -> None:
 
     assert resolved.agent.kind == "claude"
     assert resolved.agent.args == []
-    assert resolved.loop.max_iterations == 50
-    assert resolved.loop.turn_timeout_ms == 1_800_000
+    assert resolved.agent.turn_timeout_ms == 1_800_000
     assert resolved.git.branch_strategy == "task"
     assert resolved.herdr.read_source == "visible"
 
@@ -42,36 +41,36 @@ def test_default_exit_keys_use_the_spelling_herdr_accepts(repo: Path) -> None:
 
 
 def test_file_overrides_defaults_key_by_key(repo: Path) -> None:
-    write_config(repo, "[loop]\nmax_iterations = 7\n")
+    write_config(repo, "[agent]\nturn_timeout_ms = 7000\n")
 
     resolved = config_module.load(repo)
 
-    assert resolved.loop.max_iterations == 7
+    assert resolved.agent.turn_timeout_ms == 7000
     # Untouched keys in the same section keep their defaults.
-    assert resolved.loop.turn_timeout_ms == 1_800_000
+    assert resolved.agent.kind == "claude"
 
 
 def test_env_overrides_the_file(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(repo, "[loop]\nmax_iterations = 7\n")
-    monkeypatch.setenv("MILHOUSE_MAX_ITERATIONS", "9")
+    write_config(repo, "[agent]\nturn_timeout_ms = 7000\n")
+    monkeypatch.setenv("MILHOUSE_TURN_TIMEOUT_MS", "9000")
 
-    assert config_module.load(repo).loop.max_iterations == 9
+    assert config_module.load(repo).agent.turn_timeout_ms == 9000
 
 
 def test_flags_override_the_env(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MILHOUSE_MAX_ITERATIONS", "9")
+    monkeypatch.setenv("MILHOUSE_AGENT_KIND", "codex")
 
-    resolved = config_module.load(repo, overrides={"loop": {"max_iterations": 11}})
+    resolved = config_module.load(repo, overrides={"agent": {"kind": "gemini"}})
 
-    assert resolved.loop.max_iterations == 11
+    assert resolved.agent.kind == "gemini"
 
 
 def test_unset_flags_do_not_erase_configured_values(repo: Path) -> None:
-    write_config(repo, "[loop]\nmax_iterations = 7\n")
+    write_config(repo, '[agent]\nkind = "codex"\n')
 
-    resolved = config_module.load(repo, overrides={"loop": {"max_iterations": None}})
+    resolved = config_module.load(repo, overrides={"agent": {"kind": None}})
 
-    assert resolved.loop.max_iterations == 7
+    assert resolved.agent.kind == "codex"
 
 
 def test_agent_args_are_shell_split_from_the_env(
@@ -119,7 +118,7 @@ def test_an_invalid_enum_value_is_a_config_error(repo: Path) -> None:
 def test_a_non_integer_env_override_is_a_config_error(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("MILHOUSE_MAX_ITERATIONS", "lots")
+    monkeypatch.setenv("MILHOUSE_TURN_TIMEOUT_MS", "lots")
 
     with pytest.raises(ConfigError, match="must be an integer"):
         config_module.load(repo)

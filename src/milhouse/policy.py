@@ -1,8 +1,8 @@
 """What happens after an iteration, as a pure function.
 
-:func:`decide` takes the iteration that just ended and returns two things: what
-becomes of the issue, and whether the run carries on. It performs no I/O, so
-every row of the table below is a unit test — the same reason
+:func:`decide` takes the iteration that just ended and returns what becomes of
+the issue it worked, plus a line for the person who will read it. It performs no
+I/O, so every row of the table below is a unit test — the same reason
 :func:`milhouse.outcome.classify` is pure.
 
 Keeping the decision separate from the mutation that carries it out is the point.
@@ -10,26 +10,24 @@ The mutation lives on :class:`~milhouse.session.Session`, and swapping the polic
 becomes swapping a function
 (:doc:`ADR 0014 <../../docs/decisions/0014-step-is-the-primitive>`).
 
-**There is one policy today: supervised.** It stops at the first iteration that
-does not succeed, and says why in a line the human can act on:
+**There is one policy today: supervised.** Every iteration hands back to a person
+afterwards, so all it has to settle is what state the issue is left in:
 
-===========  ===============================  ==============
-Outcome      Issue becomes                    Run
-===========  ===============================  ==============
-``success``  closed, by the agent             carries on
-``blocked``  open, for a human to unblock     stops
-``rejected`` open, with the failure noted     stops
-everything   open, so the next claim sees it  stops
+===========  ===============================================
+Outcome      Issue becomes
+===========  ===============================================
+``success``  closed, by the agent
+``blocked``  open, for a human to unblock
+``rejected`` open, with the failing verification noted
+everything   open, so the next claim can see it
 else
-===========  ===============================  ==============
+===========  ===============================================
 
-A run that succeeds all the way to an empty ready queue is the only one that
-finishes. Anything else hands back to a person.
-
-Retrying, attempt caps, and waiting out a blocked agent are what the ralph policy
-adds when it lands. They are deliberately absent here: an unattended retry ladder
-is a set of answers to questions that only arise once a run is unattended, and
-this one is not yet.
+Retrying, attempt caps, and waiting out a blocked agent are what a policy for an
+unattended loop adds when there is one
+(:doc:`ADR 0017 <../../docs/decisions/0017-no-loop-until-it-is-earned>`). They are
+deliberately absent: they answer questions that only arise once nobody is
+watching, and right now somebody always is.
 """
 
 from __future__ import annotations
@@ -61,13 +59,12 @@ class Decision:
 
     Attributes:
         issue: What becomes of the issue that was worked.
-        stop: Whether the run ends here.
-        reason: One line for the human, empty when the run carries on.
+        reason: One line for the person reading it, empty when there is nothing
+            to say beyond the outcome itself.
         note: Text to append to the issue before acting, or ``None``.
     """
 
     issue: IssueAction
-    stop: bool
     reason: str = ""
     note: str | None = None
 
@@ -79,27 +76,25 @@ def decide(iteration: Iteration) -> Decision:
         iteration: The iteration that just ended, already classified.
 
     Returns:
-        What becomes of the issue, and whether the run stops.
+        What becomes of the issue, and what to say about it.
     """
     if iteration.outcome == "success":
         if iteration.dirty_after:
             return Decision(
                 issue="none",
-                stop=True,
                 reason=(
                     f"{iteration.issue_id} is closed but the working tree is dirty; "
-                    "commit or discard the leftovers before running again"
+                    "commit or discard the leftovers before stepping again"
                 ),
             )
-        return Decision(issue="none", stop=False)
+        return Decision(issue="none")
 
     if iteration.outcome == "blocked":
         return Decision(
             issue="release",
-            stop=True,
             reason=(
                 f"the agent stopped waiting on a human during {iteration.issue_id}; "
-                "attach to the workspace, then run again"
+                "attach to the workspace, then step again"
             ),
             note=(
                 f"milhouse iteration {iteration.number} left this open: the agent "
@@ -110,7 +105,6 @@ def decide(iteration: Iteration) -> Decision:
     if iteration.outcome == "rejected":
         return Decision(
             issue="release",
-            stop=True,
             reason=(
                 f"{iteration.issue_id} was closed but verification failed; "
                 "it has been re-opened with the output"
@@ -125,7 +119,6 @@ def decide(iteration: Iteration) -> Decision:
     dirty = _DIRTY if iteration.dirty_after else ""
     return Decision(
         issue="release",
-        stop=True,
         reason=(
             f"{iteration.issue_id} did not finish ({iteration.outcome}: {iteration.detail}){dirty}"
         ),

@@ -114,7 +114,7 @@ That last instruction is doing real work. Without it, the incentive is to close 
 
 ### Retries
 
-On attempt 2 and beyond the prompt says so, lists how the earlier attempts ended, and tells the agent to try a different approach. It does not say how many attempts remain, because there is no cap: every earlier attempt stopped the run and a person looked at it before starting this one ([ADR 0014](decisions/0014-step-is-the-primitive.md)).
+On attempt 2 and beyond the prompt says so, lists how the earlier attempts ended, and tells the agent to try a different approach. It does not say how many attempts remain, because there is no cap: every earlier attempt ended a step, and a person typed the next one ([ADR 0017](decisions/0017-no-loop-until-it-is-earned.md)).
 
 The notes on the bead are the only memory that survives between attempts, which is why the failure path insists on writing them, and why a rejected verification pastes its output into one.
 

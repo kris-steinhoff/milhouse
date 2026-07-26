@@ -5,23 +5,24 @@ herdr workspace and pane, the agent runner, the epic, and the claim currently in
 flight. It is a context manager, so opening and tearing all of that down is one
 ``with``.
 
-It holds **no policy**. It does not decide what to work on next, when to retry,
-or when a run is over. That separation is what lets one supervised iteration
-(``milhouse step``) and a loop over many (``milhouse run``) be the same code with
-a different caller
+It holds **no policy**. It does not decide what to work on next or when to
+retry. That separation is what will let a loop over many iterations reuse
+everything ``milhouse step`` already does, whenever there is one worth writing
 (:doc:`ADR 0014 <../../docs/decisions/0014-step-is-the-primitive>`).
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import signal
 from collections.abc import Callable
 from pathlib import Path
-from types import TracebackType
+from types import FrameType, TracebackType
 from typing import Any
 
 from .config import Config
-from .errors import MilhouseError
+from .errors import MilhouseError, UserAbortError
 from .gitrepo import GitRepo
 from .herdr import HerdrClient, Workspace
 from .models import Issue, Iteration, RunState, TaskDefinition
@@ -80,6 +81,7 @@ class Session:
         self.state = self._load()
         self.workspace: Workspace | None = None
         self._runner: Runner | None = runner
+        self._signals: dict[int, Any] = {}
 
     # -- lifecycle --------------------------------------------------------
 
@@ -90,6 +92,7 @@ class Session:
             RunLockedError: Another milhouse process is working this task.
             MilhouseError: The branch could not be prepared.
         """
+        self._catch_signals()
         stale = self.store.lock.acquire()
         if stale is not None:
             self.report(f"took over the run lock from a dead run ({stale.describe()})")
@@ -100,6 +103,7 @@ class Session:
             self.save()
         except BaseException:
             self.store.lock.release()
+            self._restore_signals()
             raise
         return self
 
@@ -111,7 +115,7 @@ class Session:
     ) -> bool:
         """Release any in-flight claim, exit the agent, and drop the lock.
 
-        The workspace is deliberately left open, whether or not the run failed,
+        The workspace is deliberately left open, whether or not the work failed,
         so the panes can be inspected
         (:doc:`ADR 0005 <../../docs/decisions/0005-milhouse-owns-the-loop>`).
         """
@@ -121,9 +125,36 @@ class Session:
             self.exit_agent()
         finally:
             self.store.lock.release()
+            self._restore_signals()
         if self.workspace is not None:
             self.report(f"the herdr workspace {self.workspace.workspace_id} is left open")
         return False
+
+    def _catch_signals(self) -> None:
+        """Turn SIGINT and SIGTERM into an exception, so teardown gets to run.
+
+        The default disposition for ``SIGTERM`` kills the process outright, which
+        would skip :meth:`__exit__` and leave both the claim and the run lock
+        behind. Raising instead unwinds through the ``with``, which is what
+        reverts the claim and drops the lock.
+        """
+
+        def handle(signum: int, frame: FrameType | None) -> None:
+            raise UserAbortError("interrupted")
+
+        for number in (signal.SIGINT, signal.SIGTERM):
+            # ValueError means we are not on the main thread, where handlers
+            # cannot be installed; the caller keeps whatever it had.
+            with contextlib.suppress(ValueError):
+                self._signals[number] = signal.getsignal(number)
+                signal.signal(number, handle)
+
+    def _restore_signals(self) -> None:
+        """Put back whatever handlers were installed before this session."""
+        for number, handler in self._signals.items():
+            with contextlib.suppress(ValueError):
+                signal.signal(number, handler)
+        self._signals.clear()
 
     def _load(self) -> RunState:
         """Read this task's state, creating a fresh one on the first run.

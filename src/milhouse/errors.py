@@ -15,7 +15,6 @@ __all__ = [
     "AgentError",
     "ConfigError",
     "HerdrError",
-    "LoopAbortedError",
     "MilhouseError",
     "MissingDependencyError",
     "ProcessError",
@@ -87,12 +86,12 @@ class HerdrError(MilhouseError):
 class TurnTimeoutError(HerdrError):
     """An agent did not settle within the turn timeout.
 
-    Exit code ``5``, inherited from :class:`HerdrError`. The loop catches this
-    and classifies the iteration as ``timeout`` rather than letting it end the
-    run, so it usually never reaches the CLI.
+    Exit code ``5``, inherited from :class:`HerdrError`. A step catches this and
+    classifies the iteration as ``timeout`` rather than letting it end the
+    process, so it usually never reaches the CLI.
     """
 
-    remedy = "Raise [loop] turn_timeout_ms, or attach to the pane to see what stalled."
+    remedy = "Raise [agent] turn_timeout_ms, or attach to the pane to see what stalled."
 
 
 class AgentError(MilhouseError):
@@ -151,17 +150,6 @@ class ProcessError(MilhouseError):
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
-
-
-class LoopAbortedError(MilhouseError):
-    """A run stopped before finishing the epic.
-
-    Exit code ``9``. The run directory under ``.milhouse/runs/`` is left in place
-    so the run can be inspected and resumed.
-    """
-
-    exit_code = 9
-    remedy = "Inspect .milhouse/runs/<task>/ then re-run `milhouse run` to resume."
 
 
 class RunLockedError(MilhouseError):

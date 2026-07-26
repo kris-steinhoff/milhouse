@@ -132,7 +132,6 @@ def test_workspace_says_nothing_outside_a_repository(
 @pytest.mark.parametrize(
     ("command", "params"),
     [
-        ("run", ["task", "agent", "workspace", "branch_strategy", "repo"]),
         ("step", ["task", "agent", "workspace", "branch_strategy", "repo"]),
         ("plan", ["task", "agent", "workspace", "repo"]),
         ("status", ["task", "repo"]),

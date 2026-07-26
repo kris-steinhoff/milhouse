@@ -1,13 +1,13 @@
 # Configuration
 
-milhouse resolves its settings from four layers. Later layers win **key by key**, so a config file that sets only `[loop] max_iterations` keeps every other default:
+milhouse resolves its settings from four layers. Later layers win **key by key**, so a config file that sets only `[agent] kind` keeps every other default:
 
 1. Built-in defaults (`src/milhouse/config.py`)
 2. `.milhouse/config.toml` in the repository root — committed
 3. Environment variables
 4. Command-line flags
 
-An unset flag is not the same as an explicit one: `None` overrides are dropped before merging, so omitting `--max-iterations` leaves whatever the config file says.
+An unset flag is not the same as an explicit one: `None` overrides are dropped before merging, so omitting `--agent` leaves whatever the config file says.
 
 `.milhouse/config.toml` is optional. Without it, the defaults below apply.
 
@@ -18,9 +18,6 @@ An unset flag is not the same as an explicit one: `None` overrides are dropped b
 [agent]
 kind = "claude"
 args = ["--permission-mode", "acceptEdits"]
-
-[loop]
-max_iterations = 30
 
 [verify]
 command = ["uv", "run", "pytest", "-m", "not herdr and not beads"]
@@ -41,21 +38,11 @@ How the interactive agent is started in its herdr pane. See [ADR 0003](decisions
 | `start_timeout_ms` | int | `60000` | `MILHOUSE_AGENT_START_TIMEOUT_MS` | How long `herdr agent start` may take to report the agent ready. |
 | `exit_timeout_ms` | int | `8000` | `MILHOUSE_AGENT_EXIT_TIMEOUT_MS` | How long to wait for the pane to return to a shell prompt before replacing it. |
 | `exit_keys` | list\[str] | `["ctrl+c", "ctrl+c", "ctrl+d"]` | — | Key sequence returning the pane from the agent TUI to a shell prompt. Use the `ctrl+` spelling. See [ADR 0011](decisions/0011-exiting-the-agent.md). |
+| `turn_timeout_ms` | int | `1800000` (30 minutes) | `MILHOUSE_TURN_TIMEOUT_MS` | Bound on one `herdr agent prompt --wait` turn, so a wedged agent cannot hang a step forever. |
 
 `--agent` on the CLI overrides `agent.kind`.
 
-## `[loop]`
-
-What bounds a run. Small on purpose: the supervised policy stops at the first iteration that does not succeed, so nothing here decides when to retry ([ADR 0014](decisions/0014-step-is-the-primitive.md)).
-
-| Key               | Type | Default                | Environment                | Meaning                                        |
-| ----------------- | ---- | ---------------------- | -------------------------- | ---------------------------------------------- |
-| `max_iterations`  | int  | `50`                   | `MILHOUSE_MAX_ITERATIONS`  | Iterations one `milhouse run` may take.        |
-| `turn_timeout_ms` | int  | `1800000` (30 minutes) | `MILHOUSE_TURN_TIMEOUT_MS` | Bound on one `herdr agent prompt --wait` turn. |
-
-`--max-iterations` overrides the first, and counts **this invocation**: re-running picks up where the last one left off and gets the budget again. Iteration numbers keep counting across invocations, because they name `iter-NNN.prompt`.
-
-`max_attempts`, `on_blocked`, and `blocked_timeout_ms` were removed. They only ever answered questions an unattended run asks, and they come back with the ralph policy.
+There is no `[loop]` section. `max_iterations`, `max_attempts`, `on_blocked`, and `blocked_timeout_ms` were all removed: they only ever answered questions an unattended loop asks, and there is no loop ([ADR 0017](decisions/0017-no-loop-until-it-is-earned.md)). What was left of the section, `turn_timeout_ms`, bounds one agent turn and moved to `[agent]`.
 
 ## `[verify]`
 
@@ -114,8 +101,7 @@ Workspace and transcript settings. See [ADR 0001](decisions/0001-shell-out-to-bd
 | `MILHOUSE_AGENT_ARGS`             | `agent.args`             |
 | `MILHOUSE_AGENT_START_TIMEOUT_MS` | `agent.start_timeout_ms` |
 | `MILHOUSE_AGENT_EXIT_TIMEOUT_MS`  | `agent.exit_timeout_ms`  |
-| `MILHOUSE_MAX_ITERATIONS`         | `loop.max_iterations`    |
-| `MILHOUSE_TURN_TIMEOUT_MS`        | `loop.turn_timeout_ms`   |
+| `MILHOUSE_TURN_TIMEOUT_MS`        | `agent.turn_timeout_ms`  |
 | `MILHOUSE_BRANCH_STRATEGY`        | `git.branch_strategy`    |
 | `MILHOUSE_BRANCH_PREFIX`          | `git.branch_prefix`      |
 | `MILHOUSE_WORKSPACE`              | `herdr.workspace`        |

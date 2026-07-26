@@ -1,7 +1,7 @@
 """Layered configuration: defaults < ``.milhouse/config.toml`` < environment < flags.
 
 Later layers win key by key, not section by section, so a config file that sets
-only ``[loop] max_iterations`` keeps every other default. :func:`load` is the
+only ``[agent] kind`` keeps every other default. :func:`load` is the
 only entry point; it returns a fully resolved, validated :class:`Config`.
 
 Every key here is documented in ``docs/configuration.md`` with its type,
@@ -25,7 +25,6 @@ __all__ = [
     "Config",
     "GitConfig",
     "HerdrConfig",
-    "LoopConfig",
     "TrackerConfig",
     "VerifyConfig",
     "config_path",
@@ -57,6 +56,13 @@ class AgentConfig(BaseModel):
     exit_timeout_ms: int = 8_000
     """How long to wait for the pane to return to a shell prompt after exit_keys."""
 
+    turn_timeout_ms: int = 1_800_000
+    """Bound on a single ``herdr agent prompt --wait`` turn. Default 30 minutes.
+
+    A wedged agent cannot hang a step forever, and the turn is classified
+    ``timeout`` rather than left running.
+    """
+
     exit_keys: list[str] = Field(default_factory=lambda: ["ctrl+c", "ctrl+c", "ctrl+d"])
     """Keys returning the pane from the agent TUI to a shell prompt.
 
@@ -64,26 +70,6 @@ class AgentConfig(BaseModel):
     every control key has a short form: ``c-d`` is rejected with ``invalid_key``
     while ``ctrl+d`` works. ``ctrl-c``, with a hyphen, is rejected too.
     """
-
-
-class LoopConfig(BaseModel):
-    """Bounds on a run.
-
-    Small on purpose. The supervised policy stops at the first iteration that
-    does not succeed, so the ceiling rarely binds and there is nothing here
-    deciding when to retry
-    (:doc:`ADR 0014 <../../docs/decisions/0014-step-is-the-primitive>`).
-    """
-
-    max_iterations: int = 50
-    """Iterations one ``milhouse run`` may take before it stops and reports.
-
-    Per invocation, not per task: re-running picks up where the last one left
-    off and gets the same budget again.
-    """
-
-    turn_timeout_ms: int = 1_800_000
-    """Bound on a single ``herdr agent prompt --wait`` turn. Default 30 minutes."""
 
 
 class VerifyConfig(BaseModel):
@@ -144,7 +130,6 @@ class Config(BaseModel):
     """Root of the git repository milhouse is operating on."""
 
     agent: AgentConfig = Field(default_factory=AgentConfig)
-    loop: LoopConfig = Field(default_factory=LoopConfig)
     verify: VerifyConfig = Field(default_factory=VerifyConfig)
     git: GitConfig = Field(default_factory=GitConfig)
     tracker: TrackerConfig = Field(default_factory=TrackerConfig)
@@ -227,8 +212,7 @@ _ENV_MAP: dict[str, tuple[str, str, str]] = {
     "MILHOUSE_AGENT_ARGS": ("agent", "args", "argv"),
     "MILHOUSE_AGENT_START_TIMEOUT_MS": ("agent", "start_timeout_ms", "int"),
     "MILHOUSE_AGENT_EXIT_TIMEOUT_MS": ("agent", "exit_timeout_ms", "int"),
-    "MILHOUSE_MAX_ITERATIONS": ("loop", "max_iterations", "int"),
-    "MILHOUSE_TURN_TIMEOUT_MS": ("loop", "turn_timeout_ms", "int"),
+    "MILHOUSE_TURN_TIMEOUT_MS": ("agent", "turn_timeout_ms", "int"),
     "MILHOUSE_VERIFY_COMMAND": ("verify", "command", "argv"),
     "MILHOUSE_VERIFY_TIMEOUT_MS": ("verify", "timeout_ms", "int"),
     "MILHOUSE_BRANCH_STRATEGY": ("git", "branch_strategy", "str"),

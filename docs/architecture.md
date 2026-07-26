@@ -2,11 +2,11 @@
 
 ## The step
 
-One iteration is the unit milhouse is built from. `milhouse step` runs exactly one and hands back to a person. `milhouse run` runs them in a loop. Nothing else differs between them ([ADR 0014](decisions/0014-step-is-the-primitive.md)).
+One iteration is the unit milhouse is built from, and one `milhouse step` runs exactly one ([ADR 0014](decisions/0014-step-is-the-primitive.md)). Nothing repeats it: a loop needs a policy, and that policy is the open question ([ADR 0017](decisions/0017-no-loop-until-it-is-earned.md)).
 
 ```
-milhouse step <task_definition>          milhouse run <task_definition>
-  │                                        │
+milhouse step <task_definition>
+  │
   ├─ resolve source ────────► TaskDefinition (title, body, task_id)
   │                            file:docs/feature-x.md  |  gh:owner/repo#123
   │
@@ -19,7 +19,7 @@ milhouse step <task_definition>          milhouse run <task_definition>
   │     └─ no ─────────────► run PLANNING agent (one shot)
   │                           it writes plan.json; milhouse creates the issues
   │
-  └─ ONE step ──────────────┴─ REPEAT the step ──► step():
+  └─ one step ─────────────► step():
         bd ready --parent <epic> --claim --json --limit 1   → issue (empty ⇒ done)
         render iterate prompt for that issue
         herdr agent start    (FRESH agent in the task's pane)
@@ -31,15 +31,15 @@ milhouse step <task_definition>          milhouse run <task_definition>
         policy.decide()      what happens to the issue, and whether to stop
 ```
 
-The defining property of ralph is a **fresh context window every iteration**. milhouse gets that by starting a new agent in the pane each iteration and exiting it when the turn ends, rather than reusing one long-lived session. State lives in beads and git, never in an accumulating chat session. That holds for a single `step` as much as for a loop.
+The defining property of ralph is a **fresh context window every iteration**. milhouse gets that by starting a new agent in the pane each step and exiting it when the turn ends, rather than reusing one long-lived session. State lives in beads and git, never in an accumulating chat session.
 
-**The policy today is supervised**: the run stops at the first iteration that does not succeed and says what needs a person. An unattended ralph policy is a second `decide()` over this same step, not a different loop.
+That is what the ralph methodology is about, and it is not the part that was de-scoped. What is missing is stringing the iterations together automatically, which needs a policy nobody has earned yet. `step()` already takes the policy as an argument, so writing one is writing a function.
 
 ## Modules
 
 ```
 src/milhouse/
-  cli.py         typer app — step, run, plan, status, doctor. Parsing and output only.
+  cli.py         typer app — step, plan, status, doctor. Parsing and output only.
   completion.py  what each parameter offers on tab. Filesystem and constants only.
   config.py      layered: defaults < .milhouse/config.toml < env < flags
   models.py      TaskDefinition, Issue, Iteration, RunState (pydantic values)
@@ -63,7 +63,6 @@ src/milhouse/
   verify.py      run the repo's own gate over an issue the agent closed
   step.py        step(session, epic) -> one Iteration, classified and settled
   planner.py     one-shot decomposition: prompt, plan.json, validate, create
-  loop.py        RalphLoop — repeat step() until something says stop
   prompts/
     plan.md.j2      decomposition prompt
     iterate.md.j2   per-issue prompt
@@ -74,7 +73,7 @@ src/milhouse/
 - **Everything external goes through `proc.py`.** No module calls `subprocess` directly. That is the seam tests fake, and the only place that knows about timeouts and JSON parsing.
 - **`herdr.py` is a narrow client.** Swapping the CLI transport for the socket API ([ADR 0001](decisions/0001-shell-out-to-bd-and-herdr.md)) should be one file, not a refactor. Nothing above it knows argv exists.
 - **`outcome.py` and `policy.py` are pure.** One says what happened, the other says what to do about it. Values in, values out, so every row of both decision tables is a unit test with no subprocess involved.
-- **`session.py` holds no policy.** It does not decide what to work on next or when a run is over. That is what lets `step` and `run` share it.
+- **`session.py` holds no policy.** It does not decide what to work on next or whether there is a next. That is what would let a loop reuse it unchanged.
 - **`cli.py` holds no behaviour, and no private attributes.** It resolves config, drives a `Session` through public methods, and formats the result.
 - **`completion.py` never raises and never calls a server.** Its callbacks run on a keypress, in a shell with nowhere to show a traceback, so they answer from the filesystem and from constants rather than from `bd`, `herdr`, or `gh`.
 - **`tracker/`, `sources/`, and `Runner` are protocols with one implementation each.** The protocol is not speculative generality: it is what `tests/doubles.py` and `tests/fakes.py` implement.
@@ -97,8 +96,8 @@ spec string ──sources──► TaskDefinition ──planner──► epic id
                     outcome.classify(...) ──► Iteration ──► events.jsonl
                               │                    │
                               │                    ▼
-                              └──────────► policy.decide(...) ──► the issue,
-                                                                   and stop?
+                              └──────────► policy.decide(...) ──► the issue's
+                                                                   next status
 ```
 
 `TaskDefinition.task_id` is the join key between the user's file and the beads epic ([ADR 0002](decisions/0002-link-issues-via-bead-metadata.md)). Nothing else links them, and nothing else needs to.
@@ -122,6 +121,6 @@ Everything under `.milhouse/runs/` is gitignored and safe to delete. Doing so lo
 
 Three tiers, because there is no headless path to an interactive agent:
 
-1. **Unit tests with fakes.** `tests/fakes.py` fakes at the `proc.py` boundary, replaying `bd` and `herdr` JSON recorded from the real tools, so the argv every client builds stays under test. `tests/doubles.py` fakes one level up, at the tracker, herdr client, git, and runner, because what the session, step, and loop tests are about is decisions rather than argv. `uv run pytest`.
+1. **Unit tests with fakes.** `tests/fakes.py` fakes at the `proc.py` boundary, replaying `bd` and `herdr` JSON recorded from the real tools, so the argv every client builds stays under test. `tests/doubles.py` fakes one level up, at the tracker, herdr client, git, and runner, because what the session and step tests are about is decisions rather than argv. `uv run pytest`.
 2. **Live-tool tests**, marked `herdr` and `beads`. These drive the real herdr server with plain shell commands (no agents) and a real scratch `bd` database. `uv run pytest -m herdr` / `-m beads`.
-3. **A manual end-to-end run.** Documented in [usage](usage.md#end-to-end-check). It needs eyes on it: confirm the pane returns to a shell prompt between iterations, which is what proves the context is actually fresh.
+3. **A manual end-to-end check.** Documented in [usage](usage.md#end-to-end-check). It needs eyes on it: confirm the pane returns to a shell prompt between iterations, which is what proves the context is actually fresh.

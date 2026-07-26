@@ -1,8 +1,8 @@
 # 0005 — milhouse owns the loop, the agent owns one step
 
-**Status:** accepted, and partly deferred by [ADR 0014](0014-step-is-the-primitive.md)
+**Status:** accepted, and largely deferred by [ADR 0014](0014-step-is-the-primitive.md) and [ADR 0017](0017-no-loop-until-it-is-earned.md)
 
-The division of labour stands: milhouse picks the work and decides when to stop. The guardrails below — the attempt cap, the blocked-agent policy, the retry ladder — were de-scoped. They describe the ralph policy, not what milhouse does today.
+The division of labour stands: milhouse picks the work, the agent does one issue. There is no loop, so the guardrails below — the attempt cap, the blocked-agent policy, the retry ladder, the iteration ceiling — describe the loop that lands later rather than what milhouse does today. The turn timeout and the clean teardown are real and still enforced.
 
 ## Context
 

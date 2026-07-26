@@ -92,7 +92,9 @@ The agent row uses whatever `[agent] kind` is configured, so it checks the agent
 
 ## `milhouse step`
 
-One iteration, then back to you. It claims one ready issue, hands it to a **freshly started** agent, classifies what happened, and stops. This is the supervised entry point, and the one to reach for while the loop's policy is still an open question ([ADR 0014](decisions/0014-step-is-the-primitive.md)).
+One iteration, then back to you. It claims one ready issue, hands it to a **freshly started** agent, classifies what happened, and stops.
+
+This is the whole of how milhouse is driven. There is no command that repeats it, on purpose: the policy a loop would need is still the open question, and the way to answer it is to watch real iterations rather than reason about them ([ADR 0017](decisions/0017-no-loop-until-it-is-earned.md)).
 
 ```
 milhouse step <task> [options]
@@ -103,48 +105,32 @@ milhouse step <task> [options]
 | `--agent`           | `claude`             | Agent kind to run. Any kind herdr supports.                       |
 | `--workspace`       | `HERDR_WORKSPACE_ID` | Reuse this herdr workspace instead of creating one.               |
 | `--branch-strategy` | `task`               | `task` for one branch per task definition; `current` to stay put. |
-| `--attach`          | off                  | Focus the herdr workspace instead of leaving it hidden.           |
-| `--yes`, `-y`       | off                  | Create the proposed issues without asking.                        |
-| `--repo`            | the enclosing repo   | Repository to work in.                                            |
-
-It decomposes the task first if it has not been decomposed yet, exactly as `run` does. Exits `0` when the issue was finished and `9` when it was not, so a shell loop can be your policy while milhouse does not have one:
-
-```sh
-while milhouse step docs/tasks/hello.md; do :; done
-```
-
-## `milhouse run`
-
-`milhouse step` in a loop. Resolves the task, decomposes it if needed, then repeats: claim one ready issue, hand it to a fresh agent, classify, decide.
-
-```
-milhouse run <task> [options]
-```
-
-| Option              | Default              | Meaning                                                           |
-| ------------------- | -------------------- | ----------------------------------------------------------------- |
-| `--max-iterations`  | `50`                 | Iterations this invocation may run.                               |
-| `--agent`           | `claude`             | Agent kind to run. Any kind herdr supports.                       |
-| `--workspace`       | `HERDR_WORKSPACE_ID` | Reuse this herdr workspace instead of creating one.               |
-| `--branch-strategy` | `task`               | `task` for one branch per task definition; `current` to stay put. |
-| `--dry-run`         | off                  | Render the prompts and print the plan; start no agents.           |
+| `--dry-run`         | off                  | Render the prompt and print the plan; start no agent.             |
 | `--attach`          | off                  | Focus the herdr workspace instead of leaving it hidden.           |
 | `--yes`, `-y`       | off                  | Create the proposed issues without asking.                        |
 | `--repo`            | the enclosing repo   | Repository to work in.                                            |
 
 Everything except `--dry-run`, `--attach`, and `--yes` can also be set in [`.milhouse/config.toml`](configuration.md).
 
-**The run stops at the first iteration that does not succeed**, re-opens that issue, and says what needs a person. It does not retry, wait out a blocked agent, or give up on an issue and move to the next: those are decisions a supervised run hands back ([ADR 0014](decisions/0014-step-is-the-primitive.md)).
+It decomposes the task first if that has not happened yet, exactly as `milhouse plan` would.
+
+Exits `0` when the issue was finished and `9` when it was not, so a shell loop can stand in for the policy milhouse does not have:
+
+```sh
+while milhouse step docs/tasks/hello.md; do :; done
+```
+
+That stops at the first iteration that does not succeed, which is what a supervised policy would do anyway. Everything a real loop would add beyond it is the part nobody has earned yet.
 
 ### Resuming
 
-Re-running `milhouse run` or `milhouse step` against the same task **is** the resume mechanism. It re-opens any claim a previous run left behind and carries on ([ADR 0008](decisions/0008-crash-recovery-by-reconciliation.md)). There is no separate `resume` command.
+Stepping again against the same task **is** the resume mechanism. Any claim a previous step left behind is re-opened first ([ADR 0008](decisions/0008-crash-recovery-by-reconciliation.md)). There is no separate `resume` command.
 
-`--max-iterations` bounds the invocation, not the task, so a resumed run gets the whole budget again. Iteration _numbers_ keep counting, because they name `iter-NNN.prompt`.
+Iteration numbers keep counting across invocations, because they name `iter-NNN.prompt`, and the history in `events.jsonl` spans all of them.
 
-### One run at a time
+### One step at a time
 
-A run holds a lock on its task's run directory. A second `milhouse run` or `milhouse step` against the same task refuses to start and names the process holding it, because both would drive the same pane and re-open each other's in-flight claim ([ADR 0015](decisions/0015-one-run-at-a-time.md)):
+A step holds a lock on its task's run directory. A second `milhouse step` against the same task refuses to start and names the process holding it, because both would drive the same pane and re-open each other's in-flight claim ([ADR 0015](decisions/0015-one-run-at-a-time.md)):
 
 ```console
 $ milhouse step docs/tasks/hello.md
@@ -165,105 +151,91 @@ A lock left behind by a dead process is taken over automatically, with a line sa
 7. If the issue is closed and `[verify] command` is set, run it.
 8. Classify the outcome from beads, git, and that command, and record it.
 
-| Outcome    | Means                                         | Issue becomes | Run       |
-| ---------- | --------------------------------------------- | ------------- | --------- |
-| `success`  | The issue is closed, and verification passed. | closed        | continues |
-| `rejected` | The issue is closed, but verification failed. | re-opened     | stops     |
-| `partial`  | Still open, but `HEAD` moved.                 | re-opened     | stops     |
-| `stalled`  | Still open and nothing was committed.         | re-opened     | stops     |
-| `timeout`  | The turn did not settle in time.              | re-opened     | stops     |
-| `blocked`  | The agent is waiting on a human.              | re-opened     | stops     |
-| `error`    | herdr or `bd` failed.                         | re-opened     | stops     |
+| Outcome    | Means                                         | Issue becomes | Exits |
+| ---------- | --------------------------------------------- | ------------- | ----- |
+| `success`  | The issue is closed, and verification passed. | closed        | `0`   |
+| `rejected` | The issue is closed, but verification failed. | re-opened     | `9`   |
+| `partial`  | Still open, but commits landed.               | re-opened     | `9`   |
+| `stalled`  | Still open and nothing was committed.         | re-opened     | `9`   |
+| `timeout`  | The turn did not settle in time.              | re-opened     | `9`   |
+| `blocked`  | The agent is waiting on a human.              | re-opened     | `9`   |
+| `error`    | herdr or `bd` failed.                         | re-opened     | `9`   |
 
 Re-opening matters: a claimed issue is `in_progress`, and `bd ready` excludes those, so an unfinished issue that was simply left alone would never be offered again and the epic would look finished with the work undone.
 
 `partial` distinguishes a commit that names the issue from one that does not, because `HEAD` moving on its own could be anyone — a hook, or you in another terminal. The shas either way are in `events.jsonl` ([ADR 0004](decisions/0004-outcome-from-beads-and-git.md)).
 
-A turn that leaves the working tree dirty also stops the run, whatever its outcome, because the next agent would inherit changes it did not make and cannot explain.
+A turn that leaves the working tree dirty is reported too, whatever its outcome, because the next agent would inherit changes it did not make and cannot explain.
 
 `rejected` is the one milhouse would otherwise miss. `bd close` is run by the agent, so "the issue is closed" is the agent grading its own exam. Point [`[verify] command`](configuration.md) at the repository's own gate and milhouse checks the answer, re-opening the issue with the failing output as a `bd` note ([ADR 0016](decisions/0016-milhouse-verifies.md)). It is empty by default.
 
-What happens after an iteration is one pure function, `policy.decide()`. Changing how milhouse behaves between iterations means writing a second one, not rewriting the loop.
+What happens after an iteration is one pure function, `policy.decide()`. Changing how milhouse behaves between iterations means writing a second one, and that is where a loop's policy will go when there is one to write ([ADR 0017](decisions/0017-no-loop-until-it-is-earned.md)).
 
-### How a run ends
-
-Every iteration succeeded and the epic ran out of work:
+### What a step prints
 
 ```console
-$ milhouse run docs/tasks/farewell.md
+$ milhouse step docs/tasks/farewell.md
 working on branch milhouse/farewell
 created herdr workspace wG (milhouse:farewell)
 using existing epic dogfood-6i2: Add a farewell function
 iteration 1: dogfood-6i2.1 Add goodbye(name) to src/greet/__init__.py and document it in README.md
   → success: dogfood-6i2.1 closed in beads
-iteration 2: dogfood-6i2.2 Make the src-layout greet package importable when running python -m pytest
-  → success: dogfood-6i2.2 closed in beads
-iteration 3: dogfood-6i2.3 Add tests/test_greet.py covering hello and goodbye
-  → success: dogfood-6i2.3 closed in beads
-no issues are ready; the epic is finished
 the herdr workspace wG is left open
 
-finished after 3 iterations: no issues are ready; the epic is finished
+dogfood-6i2.1: success — dogfood-6i2.1 closed in beads
 ```
 
-That is the only ending that exits `0`.
+Exit `0`. Step again for the next issue.
 
-An iteration that does not succeed ends the run there, with the issue re-opened and a line saying what happened:
+An iteration that does not finish its issue re-opens it and says what happened:
 
 ```console
-$ milhouse run docs/tasks/farewell.md
+$ milhouse step docs/tasks/farewell.md
 working on branch milhouse/farewell
-created herdr workspace wG (milhouse:farewell)
 using existing epic dogfood-6i2: Add a farewell function
-iteration 1: dogfood-6i2.1 Add goodbye(name) to src/greet/__init__.py and document it in README.md
-  → success: dogfood-6i2.1 closed in beads
 iteration 2: dogfood-6i2.2 Make the src-layout greet package importable when running python -m pytest
   → stalled: dogfood-6i2.2 is still open and nothing was committed
-dogfood-6i2.2 did not finish (stalled: dogfood-6i2.2 is still open and nothing was committed)
+  dogfood-6i2.2 did not finish (stalled: dogfood-6i2.2 is still open and nothing was committed)
 the herdr workspace wG is left open
 
-stopped after 2 iterations: dogfood-6i2.2 did not finish (stalled: dogfood-6i2.2 is still open and nothing was committed)
+dogfood-6i2.2: stalled — dogfood-6i2.2 is still open and nothing was committed
 ```
 
-Read `iter-002.term`, fix whatever it shows, and run again. The first issue stays closed and the second is claimable, so nothing is repeated.
+Exit `9`. Read `iter-002.term`, fix whatever it shows, and step again. The issue is back in the ready queue, and the next agent is told this is attempt 2 and how attempt 1 ended.
 
 ### Nothing ready is two opposite things
 
-The loop also stops when `bd ready` offers nothing, which means either that everything is closed or that everything left is stuck behind something. milhouse tells them apart by looking at the epic's children:
+A step also does nothing when `bd ready` offers nothing, which means either that everything is closed or that everything left is stuck behind something. milhouse tells them apart by looking at the epic's children:
 
 ```console
-$ milhouse run docs/tasks/farewell.md
-working on branch milhouse/farewell
-created herdr workspace wG (milhouse:farewell)
+$ milhouse step docs/tasks/farewell.md
 using existing epic dogfood-6i2: Add a farewell function
-nothing is ready but 3 issue(s) are unfinished (dogfood-6i2.1, dogfood-6i2.2, dogfood-6i2.3)
 the herdr workspace wG is left open
 
-stopped after 0 iterations: nothing is ready but 3 issue(s) are unfinished (dogfood-6i2.1, dogfood-6i2.2, dogfood-6i2.3)
+nothing is ready but 3 issue(s) are unfinished (dogfood-6i2.1, dogfood-6i2.2, dogfood-6i2.3)
 ```
 
-That exits `9`, not `0`. A run that did no work has to be distinguishable from one that finished, or a script branching on the exit code cannot tell. Hitting the iteration budget exits `9` too.
+That exits `9`. Only "no issues are ready; the epic is finished", with every child closed, exits `0`. A step that did no work has to be distinguishable from one that finished the epic, or the `while` loop above never terminates.
 
 The workspace is deliberately left open so the panes can be inspected ([ADR 0005](decisions/0005-milhouse-owns-the-loop.md)).
 
-### Epics grow while you run them
+### Epics grow while you step through them
 
-An agent that spots work outside its issue is told to file it rather than do it ([ADR 0013](decisions/0013-iteration-prompt-contract.md)), so an epic can gain issues while the loop is working through it. In a dogfood run an agent working the third issue filed a fourth, and the loop picked it up next.
+An agent that spots work outside its issue is told to file it rather than do it ([ADR 0013](decisions/0013-iteration-prompt-contract.md)), so an epic can gain issues while you are working through it. In a dogfood run an agent working the third issue filed a fourth, and the next step picked it up.
 
-This is intended, and it means **a run is not guaranteed to terminate on its own**: agents can add issues as fast as the loop closes them. Two things bound it. The policy stops at the first iteration that does not succeed, and `--max-iterations` bounds the rest, which is why it has a default rather than being optional.
+This is intended, and it is one of the reasons there is no loop yet: agents can add issues as fast as they are closed, so "work until the epic is empty" is not guaranteed to terminate. A person deciding whether to step again is a bound that needs no configuration.
 
 ### `--dry-run`
 
-Shows exactly what a run would do, including the prompt it would send, and starts nothing:
+Shows exactly what the next step would do, including the prompt it would send, and starts nothing:
 
 ```console
-$ milhouse run docs/tasks/hello.md --dry-run
-dry run — no agents will be started
+$ milhouse step docs/tasks/hello.md --dry-run
+dry run — no agent will be started
 task      file:docs/tasks/hello.md
 title     Add a hello command
 branch    milhouse/hello
 agent     claude
-budget    50 iterations for one run
 verify    (none — a closed issue is taken on trust)
 run dir   /home/agent/code/github.com/kris-steinhoff/milhouse/.milhouse/runs/hello
 
@@ -275,7 +247,7 @@ not decomposed yet; the planning agent would be sent:
     …
 ```
 
-Once the task is decomposed, `--dry-run` prints the issue the next iteration would claim and the prompt it would get. It is the cheapest way to see the effect of a prompt or config change.
+Once the task is decomposed, `--dry-run` prints the issue the next step would claim and the prompt it would get. It is the cheapest way to see the effect of a prompt or config change.
 
 ## `milhouse plan`
 
@@ -351,7 +323,7 @@ The manual check that the loop really works. It needs eyes on it, because the th
 
 ```sh
 milhouse doctor                                        # all required rows green
-milhouse run docs/tasks/hello.md --dry-run             # prompts look right
+milhouse step docs/tasks/hello.md --dry-run            # prompts look right
 milhouse plan docs/tasks/hello.md                      # inspect the issue tree
 bd list --metadata-field milhouse_task=file:docs/tasks/hello.md --json
 milhouse step docs/tasks/hello.md --attach             # one iteration, watched
@@ -373,19 +345,19 @@ Finally, run `milhouse step` twice at once in two terminals and confirm the seco
 
 Stable, and safe to branch on in a script.
 
-| Code  | Error                    | Means                                                             |
-| ----- | ------------------------ | ----------------------------------------------------------------- |
-| `0`   | —                        | Success.                                                          |
-| `1`   | `MilhouseError`          | An expected failure with no more specific category.               |
-| `2`   | `ConfigError`            | `.milhouse/config.toml`, an env var, or a flag is invalid.        |
-| `3`   | `SourceError`            | The task definition could not be resolved.                        |
-| `4`   | `TrackerError`           | `bd` failed, or the beads database is missing.                    |
-| `5`   | `HerdrError`             | `herdr` failed, or the server is unreachable.                     |
-| `6`   | `AgentError`             | An agent could not be started, prompted, or exited.               |
-| `7`   | `MissingDependencyError` | A required tool is not on `PATH`. Also `doctor`'s failure code.   |
-| `8`   | `ProcessError`           | A subprocess failed in a way no caller translated.                |
-| `9`   | `LoopAbortedError`       | A run stopped before finishing the epic. State is left to resume. |
-| `10`  | `RunLockedError`         | Another milhouse process is already working this task.            |
-| `130` | `UserAbortError`         | Interrupted, or a confirmation was declined.                      |
+| Code  | Error                    | Means                                                                 |
+| ----- | ------------------------ | --------------------------------------------------------------------- |
+| `0`   | —                        | Success.                                                              |
+| `1`   | `MilhouseError`          | An expected failure with no more specific category.                   |
+| `2`   | `ConfigError`            | `.milhouse/config.toml`, an env var, or a flag is invalid.            |
+| `3`   | `SourceError`            | The task definition could not be resolved.                            |
+| `4`   | `TrackerError`           | `bd` failed, or the beads database is missing.                        |
+| `5`   | `HerdrError`             | `herdr` failed, or the server is unreachable.                         |
+| `6`   | `AgentError`             | An agent could not be started, prompted, or exited.                   |
+| `7`   | `MissingDependencyError` | A required tool is not on `PATH`. Also `doctor`'s failure code.       |
+| `8`   | `ProcessError`           | A subprocess failed in a way no caller translated.                    |
+| `9`   | (no exception)           | A step did not finish its issue. The run directory is left to resume. |
+| `10`  | `RunLockedError`         | Another milhouse process is already working this task.                |
+| `130` | `UserAbortError`         | Interrupted, or a confirmation was declined.                          |
 
-Every error prints one line on stderr, plus a remedy line when there is something specific to try.
+Every error prints one line on stderr, plus a remedy line when there is something specific to try. `9` is the exception: it is an outcome rather than a failure, so it is reported on stdout like any other result.

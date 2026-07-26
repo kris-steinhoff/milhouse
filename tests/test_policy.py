@@ -23,17 +23,17 @@ def iteration(outcome: Outcome, *, detail: str = "because", dirty_after: bool = 
     )
 
 
-def test_success_carries_on_and_leaves_the_issue_closed() -> None:
+def test_success_leaves_the_issue_closed_and_says_nothing() -> None:
     decision = decide(iteration("success"))
 
     assert decision.issue == "none"
-    assert not decision.stop
+    assert not decision.reason
 
 
 @pytest.mark.parametrize(
     "outcome", ["blocked", "rejected", "partial", "stalled", "timeout", "error"]
 )
-def test_anything_but_success_stops_and_reopens_the_issue(outcome: Outcome) -> None:
+def test_anything_but_success_reopens_the_issue(outcome: Outcome) -> None:
     """A claimed issue is in_progress, which `bd ready` excludes.
 
     Leaving it alone would mean it is never offered again and the epic reads as
@@ -42,7 +42,6 @@ def test_anything_but_success_stops_and_reopens_the_issue(outcome: Outcome) -> N
     decision = decide(iteration(outcome))
 
     assert decision.issue == "release"
-    assert decision.stop
     assert decision.reason
 
 
@@ -59,12 +58,11 @@ def test_a_rejected_close_says_verification_failed() -> None:
     assert "verification failed" in decision.reason
 
 
-def test_a_success_that_leaves_the_tree_dirty_stops_the_run() -> None:
+def test_a_success_that_leaves_the_tree_dirty_says_so() -> None:
     """The next agent would inherit changes it did not make and cannot explain."""
     decision = decide(iteration("success", dirty_after=True))
 
     assert decision.issue == "none"
-    assert decision.stop
     assert "dirty" in decision.reason
 
 
