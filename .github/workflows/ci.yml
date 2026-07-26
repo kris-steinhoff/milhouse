@@ -108,14 +108,3 @@ jobs:
         with:
           name: dist
           path: dist/
-
-  ci:
-    name: ci
-    runs-on: ubuntu-latest
-    needs: [lint, pre-commit, typecheck, test, package]
-    if: always()
-    steps:
-      - name: Report whether every job passed
-        run: |
-          echo "${{ toJSON(needs) }}"
-          [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "false" ]

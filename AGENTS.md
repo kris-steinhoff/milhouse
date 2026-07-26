@@ -45,7 +45,7 @@ Two pytest markers cover integration tests that need live services. They are exc
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push to `main`, on pull requests, and on demand. It repeats the local gates off the developer machine: ruff (check and format), the full `pre-commit` run over all files, `ty`, the fast pytest suite on Python 3.11, 3.12, and 3.13, and a packaging job that builds the wheel, installs it into a clean environment, and runs the console script. A final `ci` job aggregates the rest, so branch protection only ever needs that one check.
+`.github/workflows/ci.yml` runs on every push to `main`, on pull requests, and on demand. It repeats the local gates off the developer machine: ruff (check and format), the full `pre-commit` run over all files, `ty`, the fast pytest suite on Python 3.11, 3.12, and 3.13, and a packaging job that builds the wheel, installs it into a clean environment, and runs the console script.
 
 Watch a run with `gh run watch`, and read a failure with `gh run view --log-failed`.
 
