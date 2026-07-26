@@ -19,3 +19,8 @@ build/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Beads audit log. Local only: it is an append-only agent trail, not issue data,
+# so every concurrent commit conflicts on the end of the file. Issues live in
+# Dolt and sync with `bd dolt push`.
+.beads/interactions.jsonl
