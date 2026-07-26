@@ -55,7 +55,7 @@ In order of preference:
    echo "::error file=$file,line=$line,title=short label::What is wrong and how to fix it."
    ```
 
-   Parse the tool's output for paths and line numbers. Set `FORCE_COLOR: "0"` on any step whose output gets parsed, since the workflow sets `FORCE_COLOR: "1"` globally and ANSI escapes break the parsing.
+   Parse the tool's output for paths and line numbers. The workflow sets `FORCE_COLOR: "1"` globally, and ANSI escapes break that parsing, so a step whose output gets parsed needs both defenses: override the job's env with `FORCE_COLOR: ""` and `NO_COLOR: "1"`, and strip escapes anyway with `sed 's/\x1b\[[0-9;]*m//g'`. Setting `FORCE_COLOR: "0"` is not enough on its own, because some tools (prettier among them) color on the presence of the variable rather than on its value.
 
 A step that annotates must still exit non-zero. Annotations decorate a failure, they do not report it.
 
