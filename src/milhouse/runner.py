@@ -20,6 +20,7 @@ from typing import Protocol
 from .config import Config
 from .errors import AgentError, HerdrError, TurnTimeoutError
 from .herdr import AgentStatus, HerdrClient
+from .state import ensure_run_dir
 
 __all__ = ["AgentRunner", "Runner", "TurnResult"]
 
@@ -213,7 +214,7 @@ class AgentRunner:
 
     def _write(self, name: str, text: str) -> Path:
         """Write a run artifact into the run directory and return its path."""
-        self.run_dir.mkdir(parents=True, exist_ok=True)
+        ensure_run_dir(self.run_dir)
         path = self.run_dir / name
         path.write_text(text, encoding="utf-8")
         return path

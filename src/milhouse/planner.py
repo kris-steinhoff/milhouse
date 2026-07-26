@@ -21,6 +21,7 @@ from .config import Config
 from .errors import MilhouseError, UserAbortError
 from .models import Issue, TaskDefinition
 from .runner import Runner
+from .state import ensure_run_dir
 from .tracker.base import Tracker
 
 __all__ = ["Plan", "PlanError", "PlanIssue", "Planner"]
@@ -206,7 +207,7 @@ class Planner:
         Raises:
             PlanError: The agent wrote no plan, or wrote an invalid one.
         """
-        self.run_dir.mkdir(parents=True, exist_ok=True)
+        ensure_run_dir(self.run_dir)
         self.plan_path.unlink(missing_ok=True)
 
         prompt = prompts.render_plan(

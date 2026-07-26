@@ -36,13 +36,47 @@ from pydantic import BaseModel, Field, ValidationError
 from .errors import RunLockedError
 from .models import Iteration, RunState, now
 
-__all__ = ["LockHolder", "RunLock", "RunStore"]
+__all__ = ["LockHolder", "RunLock", "RunStore", "ensure_run_dir"]
 
 log = logging.getLogger(__name__)
 
 STATE_FILENAME = "state.json"
 EVENTS_FILENAME = "events.jsonl"
 LOCK_FILENAME = "lock.json"
+IGNORE_FILENAME = ".gitignore"
+
+IGNORE_BODY = """\
+# Created by milhouse. Everything here is run bookkeeping, not source.
+*
+"""
+"""What goes in ``.milhouse/runs/.gitignore``. ``*`` also ignores the file itself."""
+
+
+def ensure_run_dir(run_dir: Path) -> Path:
+    """Create a run directory that git does not see.
+
+    This has to happen before anything is written into ``.milhouse/runs/``,
+    because that directory lives inside the repository being worked on. The
+    first thing a session writes is the run lock, and an unignored lock file is
+    an uncommitted change — which is what
+    :meth:`~milhouse.session.Session._prepare_branch` refuses to check out a
+    branch over. The very first run in a fresh repository would otherwise
+    always fail, blaming the user for milhouse's own bookkeeping.
+
+    The marker ignores itself, so nobody has to commit anything for it to work,
+    and a fresh clone gets one back on the next run.
+
+    Args:
+        run_dir: ``.milhouse/runs/<task_slug>``. Created along with its parents.
+
+    Returns:
+        ``run_dir``, for chaining.
+    """
+    run_dir.mkdir(parents=True, exist_ok=True)
+    marker = run_dir.parent / IGNORE_FILENAME
+    if not marker.exists():
+        marker.write_text(IGNORE_BODY, encoding="utf-8")
+    return run_dir
 
 
 class LockHolder(BaseModel):
@@ -122,7 +156,7 @@ class RunLock:
         Raises:
             RunLockedError: A live process already holds it.
         """
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_run_dir(self.path.parent)
         stale: LockHolder | None = None
         for _ in range(2):
             try:
@@ -195,7 +229,7 @@ class RunStore:
             state: The state to persist. Its ``updated_at`` is refreshed.
         """
         state.updated_at = now()
-        self.run_dir.mkdir(parents=True, exist_ok=True)
+        ensure_run_dir(self.run_dir)
         payload = json.loads(state.model_dump_json())
         tmp = self.state_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -209,7 +243,7 @@ class RunStore:
         Args:
             iteration: The iteration that just ended.
         """
-        self.run_dir.mkdir(parents=True, exist_ok=True)
+        ensure_run_dir(self.run_dir)
         with self.events_path.open("a", encoding="utf-8") as stream:
             stream.write(iteration.model_dump_json() + "\n")
 

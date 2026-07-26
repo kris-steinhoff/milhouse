@@ -145,6 +145,8 @@ The history is an append-only log rather than a list inside `state.json`, which 
 
 Everything under `.milhouse/runs/` is gitignored and safe to delete. Doing so loses the history, nothing else. See [troubleshooting](troubleshooting.md) for the layout.
 
+milhouse keeps it ignored itself, by writing a self-ignoring `.milhouse/runs/.gitignore` the first time it creates the directory. Nothing has to be committed for that to work, and nobody has to remember to do it. The alternative was worse than untidy: the run lock is the first thing a session writes, an unignored lock file is an uncommitted change, and the branch checkout that comes next refuses to run over one — so the very first step in a fresh repository failed, blaming the user for milhouse's own bookkeeping.
+
 ## Testing
 
 Three tiers, because there is no headless path to an interactive agent:

@@ -10,7 +10,7 @@ import pytest
 
 from milhouse.errors import RunLockedError
 from milhouse.models import Iteration, RunState
-from milhouse.state import LockHolder, RunStore
+from milhouse.state import LockHolder, RunStore, ensure_run_dir
 
 
 @pytest.fixture
@@ -157,6 +157,45 @@ def test_releasing_a_lock_this_process_never_took_is_a_no_op(store: RunStore) ->
     RunStore(store.run_dir).lock.release()
 
     assert store.lock.path.exists()
+
+
+# -- keeping git out of it -----------------------------------------------------
+
+
+def test_the_runs_directory_ignores_itself(store: RunStore) -> None:
+    """Without this, the lock file below is an uncommitted change in the repo.
+
+    A run directory lives inside the repository being worked on, and the branch
+    checkout that follows refuses to run over a dirty tree, so the very first
+    step in a fresh repository would fail on milhouse's own bookkeeping.
+    """
+    store.lock.acquire()
+
+    marker = store.run_dir.parent / ".gitignore"
+    assert marker.read_text(encoding="utf-8").splitlines()[-1] == "*"
+
+
+def test_the_marker_is_written_once_and_not_rewritten(store: RunStore) -> None:
+    ensure_run_dir(store.run_dir)
+    marker = store.run_dir.parent / ".gitignore"
+    marker.write_text("# edited by hand\n*\n", encoding="utf-8")
+
+    ensure_run_dir(store.run_dir)
+    ensure_run_dir(store.run_dir.parent / "other-task")
+
+    assert marker.read_text(encoding="utf-8") == "# edited by hand\n*\n"
+
+
+def test_every_writer_creates_the_directory_the_same_way(store: RunStore) -> None:
+    """save, append, and the lock all go through the same helper."""
+    marker = store.run_dir.parent / ".gitignore"
+
+    store.save(RunState(task_id="file:hello.md", task_slug="hello"))
+    assert marker.exists()
+
+    marker.unlink()
+    store.append(iteration(1))
+    assert marker.exists()
 
 
 def _unused_pid() -> int:
