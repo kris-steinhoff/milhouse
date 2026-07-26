@@ -19,18 +19,18 @@ This repository uses [Conventional Commits](https://www.conventionalcommits.org/
 
 ## Types
 
-| Type       | Use for                                                                 |
-| ---------- | ----------------------------------------------------------------------- |
-| `feat`     | a new capability visible to a user of the package or CLI                 |
-| `fix`      | a bug fix                                                               |
-| `docs`     | documentation only, including README, docstrings, and skills             |
-| `refactor` | code change that neither fixes a bug nor adds a feature                  |
-| `test`     | adding or correcting tests                                              |
-| `perf`     | a change made for performance                                           |
-| `build`    | packaging, dependencies, `pyproject.toml`, lockfiles                     |
-| `ci`       | CI configuration and workflow files                                      |
-| `chore`    | maintenance that fits nothing above                                      |
-| `revert`   | reverting a previous commit                                              |
+| Type       | Use for                                                      |
+| ---------- | ------------------------------------------------------------ |
+| `feat`     | a new capability visible to a user of the package or CLI     |
+| `fix`      | a bug fix                                                    |
+| `docs`     | documentation only, including README, docstrings, and skills |
+| `refactor` | code change that neither fixes a bug nor adds a feature      |
+| `test`     | adding or correcting tests                                   |
+| `perf`     | a change made for performance                                |
+| `build`    | packaging, dependencies, `pyproject.toml`, lockfiles         |
+| `ci`       | CI configuration and workflow files                          |
+| `chore`    | maintenance that fits nothing above                          |
+| `revert`   | reverting a previous commit                                  |
 
 ## Scope
 

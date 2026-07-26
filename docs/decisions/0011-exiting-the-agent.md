@@ -4,33 +4,18 @@
 
 ## Context
 
-[ADR 0003](0003-agents-run-in-herdr-panes.md) needs the pane back at an
-interactive shell prompt at the end of every iteration, because that is what
-`herdr agent start` requires for the next one. The agent is a TUI, so "exit" is a
-key sequence, and the right sequence is agent-specific.
+[ADR 0003](0003-agents-run-in-herdr-panes.md) needs the pane back at an interactive shell prompt at the end of every iteration, because that is what `herdr agent start` requires for the next one. The agent is a TUI, so "exit" is a key sequence, and the right sequence is agent-specific.
 
 ## Decision
 
-Send the configured `[agent] exit_keys` (default `["ctrl+c", "ctrl+c", "ctrl+d"]`
-for `claude`) with `herdr pane send-keys`, then confirm the pane is back at a
-shell prompt by polling `herdr pane get` until it no longer reports an `agent`
-field.
+Send the configured `[agent] exit_keys` (default `["ctrl+c", "ctrl+c", "ctrl+d"]` for `claude`) with `herdr pane send-keys`, then confirm the pane is back at a shell prompt by polling `herdr pane get` until it no longer reports an `agent` field.
 
 Two details, both found against the real TUI rather than assumed:
 
-- **Spell control keys `ctrl+c`.** herdr rejects the hyphenated `ctrl-c` with
-  `invalid_key`. It does accept the short forms `c-c` and `C-c`, but not for
-  every key: `c-d` is rejected while `ctrl+d` works. The short forms are a trap
-  because they work often enough to look correct, so milhouse uses `ctrl+`
-  throughout. This cost a dogfood run, which failed at the exit step with
-  `unsupported key c-d` after the turn itself had succeeded.
-- **Address the pane, not the agent.** `herdr agent send-keys` resolves its
-  target by agent name, and the agent stops existing partway through the
-  sequence — the remaining keys then fail with `agent_not_found`.
-  `herdr pane send-keys` has no such problem.
+- **Spell control keys `ctrl+c`.** herdr rejects the hyphenated `ctrl-c` with `invalid_key`. It does accept the short forms `c-c` and `C-c`, but not for every key: `c-d` is rejected while `ctrl+d` works. The short forms are a trap because they work often enough to look correct, so milhouse uses `ctrl+` throughout. This cost a dogfood run, which failed at the exit step with `unsupported key c-d` after the turn itself had succeeded.
+- **Address the pane, not the agent.** `herdr agent send-keys` resolves its target by agent name, and the agent stops existing partway through the sequence — the remaining keys then fail with `agent_not_found`. `herdr pane send-keys` has no such problem.
 
-If it is not back within a few seconds, fall back to closing the pane and
-splitting a fresh one:
+If it is not back within a few seconds, fall back to closing the pane and splitting a fresh one:
 
 ```sh
 herdr pane close <pane_id>
@@ -39,18 +24,11 @@ herdr pane split <other_pane_id> --direction right --cwd <repo> --no-focus
 
 The new pane id is recorded in `state.json`, so the next iteration uses it.
 
-Two `ctrl+c` rather than one: the first interrupts whatever the agent is doing,
-the second dismisses its confirmation, and `ctrl+d` exits the now-idle prompt.
+Two `ctrl+c` rather than one: the first interrupts whatever the agent is doing, the second dismisses its confirmation, and `ctrl+d` exits the now-idle prompt.
 
 ## Consequences
 
 - The common path costs nothing: three keystrokes and a status check.
-- The fallback is unambiguous but costs a pane churn, and it loses the pane's
-  scrollback. The transcript is captured *before* the exit sequence for exactly
-  this reason, so a post-mortem still has it.
-- `exit_keys` being configurable is what makes a second agent backend plausible
-  ([ADR 0003](0003-agents-run-in-herdr-panes.md)) without new code. It is also
-  the setting most likely to be wrong for a kind nobody has tried.
-- The pane is never closed while an agent is still `working`. milhouse only
-  reaches teardown after the turn has settled or timed out, and a timed-out turn
-  gets the same interrupt sequence first.
+- The fallback is unambiguous but costs a pane churn, and it loses the pane's scrollback. The transcript is captured _before_ the exit sequence for exactly this reason, so a post-mortem still has it.
+- `exit_keys` being configurable is what makes a second agent backend plausible ([ADR 0003](0003-agents-run-in-herdr-panes.md)) without new code. It is also the setting most likely to be wrong for a kind nobody has tried.
+- The pane is never closed while an agent is still `working`. milhouse only reaches teardown after the turn has settled or timed out, and a timed-out turn gets the same interrupt sequence first.

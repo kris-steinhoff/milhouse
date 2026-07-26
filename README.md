@@ -1,29 +1,19 @@
 # milhouse
 
-An agentic AI orchestrator. Point it at a task definition and it decomposes the
-task into tracked issues, then drives a [ralph loop](https://ghuntley.com/ralph/)
-over those issues until the work is done.
+An agentic AI orchestrator. Point it at a task definition and it decomposes the task into tracked issues, then drives a [ralph loop](https://ghuntley.com/ralph/) over those issues until the work is done.
 
-The pieces already existed. milhouse is the thing that wires them together and
-keeps the loop running unattended:
+The pieces already existed. milhouse is the thing that wires them together and keeps the loop running unattended:
 
-- **[beads](https://github.com/steveyegge/beads) (`bd`)** — git-backed,
-  dependency-aware issue tracker. Durable memory, plus `bd ready --claim` for
-  race-free "what do I work on next".
-- **[herdr](https://herdr.dev)** — terminal workspace manager. Every agent runs
-  in a herdr pane, so a human can watch it and intervene.
-- **`claude`** (or any agent herdr supports) — does one unit of work per
-  iteration.
+- **[beads](https://github.com/steveyegge/beads) (`bd`)** — git-backed, dependency-aware issue tracker. Durable memory, plus `bd ready --claim` for race-free "what do I work on next".
+- **[herdr](https://herdr.dev)** — terminal workspace manager. Every agent runs in a herdr pane, so a human can watch it and intervene.
+- **`claude`** (or any agent herdr supports) — does one unit of work per iteration.
 
-The defining property of a ralph loop is a **fresh context window every
-iteration**. milhouse starts a new agent in the pane each time and exits it when
-the turn ends. State lives in beads and git, never in an accumulating chat
-session.
+The defining property of a ralph loop is a **fresh context window every iteration**. milhouse starts a new agent in the pane each time and exits it when the turn ends. State lives in beads and git, never in an accumulating chat session.
 
 ## Prerequisites
 
-| Tool     | Required for                     | Install                                                     |
-| -------- | -------------------------------- | ----------------------------------------------------------- |
+| Tool     | Required for                     | Install                                                      |
+| -------- | -------------------------------- | ------------------------------------------------------------ |
 | `bd`     | everything                       | `brew install beads`, then `bd init` in your repo            |
 | `herdr`  | everything (server must be up)   | see [herdr.dev](https://herdr.dev)                           |
 | `git`    | everything                       | —                                                            |
@@ -61,8 +51,7 @@ milhouse plan docs/tasks/hello.md
 milhouse run docs/tasks/hello.md --max-iterations 2 --attach
 ```
 
-`milhouse status docs/tasks/hello.md` shows the issue tree and this run's
-iteration history at any point.
+`milhouse status docs/tasks/hello.md` shows the issue tree and this run's iteration history at any point.
 
 ## Documentation
 
@@ -76,8 +65,7 @@ iteration history at any point.
 
 ## Status
 
-Alpha, and installed locally rather than published to PyPI. The loop works; the
-prompts are still being tuned by observation, as the ralph methodology expects.
+Alpha, and installed locally rather than published to PyPI. The loop works; the prompts are still being tuned by observation, as the ralph methodology expects.
 
 ## License
 

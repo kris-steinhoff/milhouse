@@ -25,10 +25,7 @@ milhouse run <task_definition>
         classify outcome from beads + git, record it, repeat
 ```
 
-The defining property of ralph is a **fresh context window every iteration**.
-milhouse gets that by starting a new agent in the pane each iteration and exiting
-it when the turn ends, rather than reusing one long-lived session. State lives in
-beads and git, never in an accumulating chat session.
+The defining property of ralph is a **fresh context window every iteration**. milhouse gets that by starting a new agent in the pane each iteration and exiting it when the turn ends, rather than reusing one long-lived session. State lives in beads and git, never in an accumulating chat session.
 
 ## Modules
 
@@ -60,18 +57,11 @@ src/milhouse/
 
 ### The rules the boundaries enforce
 
-- **Everything external goes through `proc.py`.** No module calls
-  `subprocess` directly. That is the seam tests fake, and the only place that
-  knows about timeouts and JSON parsing.
-- **`herdr.py` is a narrow client.** Swapping the CLI transport for the socket
-  API ([ADR 0001](decisions/0001-shell-out-to-bd-and-herdr.md)) should be one
-  file, not a refactor. Nothing above it knows argv exists.
-- **`outcome.py` is pure.** `classify()` takes values and returns an outcome. No
-  I/O, so every row of the decision table is a unit test.
-- **`cli.py` holds no behaviour.** It resolves config, calls into `loop.py` or
-  `planner.py`, and formats the result.
-- **`tracker/` and `sources/` are protocols with one implementation each.** The
-  protocol is not speculative generality: it is what `tests/fakes.py` implements.
+- **Everything external goes through `proc.py`.** No module calls `subprocess` directly. That is the seam tests fake, and the only place that knows about timeouts and JSON parsing.
+- **`herdr.py` is a narrow client.** Swapping the CLI transport for the socket API ([ADR 0001](decisions/0001-shell-out-to-bd-and-herdr.md)) should be one file, not a refactor. Nothing above it knows argv exists.
+- **`outcome.py` is pure.** `classify()` takes values and returns an outcome. No I/O, so every row of the decision table is a unit test.
+- **`cli.py` holds no behaviour.** It resolves config, calls into `loop.py` or `planner.py`, and formats the result.
+- **`tracker/` and `sources/` are protocols with one implementation each.** The protocol is not speculative generality: it is what `tests/fakes.py` implements.
 
 ## Data flow
 
@@ -91,35 +81,25 @@ spec string ──sources──► TaskDefinition ──planner──► epic id
                     outcome.classify(...) ──► Iteration ──► RunState (state.json)
 ```
 
-`TaskDefinition.task_id` is the join key between the user's file and the beads
-epic ([ADR 0002](decisions/0002-link-issues-via-bead-metadata.md)). Nothing else
-links them, and nothing else needs to.
+`TaskDefinition.task_id` is the join key between the user's file and the beads epic ([ADR 0002](decisions/0002-link-issues-via-bead-metadata.md)). Nothing else links them, and nothing else needs to.
 
 ## Where state lives
 
-| State                              | Home                                    | Authoritative? |
-| ---------------------------------- | --------------------------------------- | -------------- |
-| The work: what to do, what is done | beads                                   | yes            |
-| The code                           | git, on a `milhouse/<slug>` branch      | yes            |
-| Which workspace and pane           | `.milhouse/runs/<slug>/state.json`      | bookkeeping    |
-| Attempts per issue                 | `.milhouse/runs/<slug>/state.json`      | bookkeeping    |
-| Iteration history                  | `.milhouse/runs/<slug>/state.json`      | bookkeeping    |
-| Exact prompt sent, pane transcript | `.milhouse/runs/<slug>/iter-NNN.*`      | bookkeeping    |
+| State                              | Home                               | Authoritative? |
+| ---------------------------------- | ---------------------------------- | -------------- |
+| The work: what to do, what is done | beads                              | yes            |
+| The code                           | git, on a `milhouse/<slug>` branch | yes            |
+| Which workspace and pane           | `.milhouse/runs/<slug>/state.json` | bookkeeping    |
+| Attempts per issue                 | `.milhouse/runs/<slug>/state.json` | bookkeeping    |
+| Iteration history                  | `.milhouse/runs/<slug>/state.json` | bookkeeping    |
+| Exact prompt sent, pane transcript | `.milhouse/runs/<slug>/iter-NNN.*` | bookkeeping    |
 
-Everything under `.milhouse/runs/` is gitignored and safe to delete. Doing so
-loses the history and the attempt counts, nothing else. See
-[troubleshooting](troubleshooting.md) for the layout.
+Everything under `.milhouse/runs/` is gitignored and safe to delete. Doing so loses the history and the attempt counts, nothing else. See [troubleshooting](troubleshooting.md) for the layout.
 
 ## Testing
 
 Three tiers, because there is no headless path to an interactive agent:
 
-1. **Unit tests with fakes.** `tests/fakes.py` fakes at the `proc.py` boundary,
-   replaying `bd` and `herdr` JSON recorded from the real tools. This covers the
-   loop logic, classification, config, sources, and prompt rendering. `uv run pytest`.
-2. **Live-tool tests**, marked `herdr` and `beads`. These drive the real herdr
-   server with plain shell commands (no agents) and a real scratch `bd`
-   database. `uv run pytest -m herdr` / `-m beads`.
-3. **A manual end-to-end run.** Documented in [usage](usage.md#end-to-end-check).
-   It needs eyes on it: confirm the pane returns to a shell prompt between
-   iterations, which is what proves the context is actually fresh.
+1. **Unit tests with fakes.** `tests/fakes.py` fakes at the `proc.py` boundary, replaying `bd` and `herdr` JSON recorded from the real tools. This covers the loop logic, classification, config, sources, and prompt rendering. `uv run pytest`.
+2. **Live-tool tests**, marked `herdr` and `beads`. These drive the real herdr server with plain shell commands (no agents) and a real scratch `bd` database. `uv run pytest -m herdr` / `-m beads`.
+3. **A manual end-to-end run.** Documented in [usage](usage.md#end-to-end-check). It needs eyes on it: confirm the pane returns to a shell prompt between iterations, which is what proves the context is actually fresh.
