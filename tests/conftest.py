@@ -17,6 +17,20 @@ from milhouse.config import Config
 from .fakes import FakeProc, install
 
 
+@pytest.fixture(autouse=True)
+def _plain_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Render CLI output unstyled, whatever the ambient environment asks for.
+
+    CI and some terminals export ``FORCE_COLOR``, which makes rich style and
+    re-wrap the help panels. Assertions that look for a flag name then fail on
+    a string that reads correctly on screen.
+    """
+    for name in ("FORCE_COLOR", "CLICOLOR_FORCE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "dumb")
+
+
 @pytest.fixture
 def fake_proc(monkeypatch: pytest.MonkeyPatch) -> FakeProc:
     """Route every subprocess through a fake, and record the calls."""
