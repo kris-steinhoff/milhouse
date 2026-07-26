@@ -115,6 +115,11 @@ def decide(iteration: Iteration) -> Decision:
                 f"{iteration.issue_id} was closed but verification failed; "
                 "it has been re-opened with the output"
             ),
+            note=(
+                f"milhouse re-opened this issue: it was closed in iteration "
+                f"{iteration.number}, but verification failed.\n\n"
+                f"{iteration.verification_output}"
+            ),
         )
 
     return Decision(

@@ -162,18 +162,22 @@ A lock left behind by a dead process is taken over automatically, with a line sa
 4. `herdr agent prompt --wait` until the turn settles.
 5. Capture the pane transcript to `iter-NNN.term`.
 6. Exit the agent, returning the pane to a shell prompt.
-7. Classify the outcome from beads and git, and record it.
+7. If the issue is closed and `[verify] command` is set, run it.
+8. Classify the outcome from beads, git, and that command, and record it.
 
-| Outcome   | Means                                 | Issue becomes | Run       |
-| --------- | ------------------------------------- | ------------- | --------- |
-| `success` | The issue is closed in beads.         | closed        | continues |
-| `partial` | Still open, but `HEAD` moved.         | re-opened     | stops     |
-| `stalled` | Still open and nothing was committed. | re-opened     | stops     |
-| `timeout` | The turn did not settle in time.      | re-opened     | stops     |
-| `blocked` | The agent is waiting on a human.      | re-opened     | stops     |
-| `error`   | herdr or `bd` failed.                 | re-opened     | stops     |
+| Outcome    | Means                                         | Issue becomes | Run       |
+| ---------- | --------------------------------------------- | ------------- | --------- |
+| `success`  | The issue is closed, and verification passed. | closed        | continues |
+| `rejected` | The issue is closed, but verification failed. | re-opened     | stops     |
+| `partial`  | Still open, but `HEAD` moved.                 | re-opened     | stops     |
+| `stalled`  | Still open and nothing was committed.         | re-opened     | stops     |
+| `timeout`  | The turn did not settle in time.              | re-opened     | stops     |
+| `blocked`  | The agent is waiting on a human.              | re-opened     | stops     |
+| `error`    | herdr or `bd` failed.                         | re-opened     | stops     |
 
 Re-opening matters: a claimed issue is `in_progress`, and `bd ready` excludes those, so an unfinished issue that was simply left alone would never be offered again and the epic would look finished with the work undone.
+
+`rejected` is the one milhouse would otherwise miss. `bd close` is run by the agent, so "the issue is closed" is the agent grading its own exam. Point [`[verify] command`](configuration.md) at the repository's own gate and milhouse checks the answer, re-opening the issue with the failing output as a `bd` note ([ADR 0016](decisions/0016-milhouse-verifies.md)). It is empty by default.
 
 What happens after an iteration is one pure function, `policy.decide()`. Changing how milhouse behaves between iterations means writing a second one, not rewriting the loop.
 
@@ -256,6 +260,7 @@ title     Add a hello command
 branch    milhouse/hello
 agent     claude
 budget    50 iterations for one run
+verify    (none — a closed issue is taken on trust)
 run dir   /home/agent/code/github.com/kris-steinhoff/milhouse/.milhouse/runs/hello
 
 not decomposed yet; the planning agent would be sent:

@@ -30,6 +30,7 @@ from .models import Issue, Iteration, now
 from .policy import Decision, decide
 from .runner import TurnResult
 from .session import Session
+from .verify import Verification, verify
 
 __all__ = ["StepResult", "nothing_ready", "step"]
 
@@ -139,6 +140,7 @@ def _work(session: Session, issue: Issue) -> Iteration:
         issue_after = issue
         error = error or f"could not re-read {issue.id} after the turn: {exc}"
 
+    checked = _verify(session, issue_after, error=error)
     verdict = outcome_module.classify(
         issue_after=issue_after,
         head_before=head_before,
@@ -146,6 +148,7 @@ def _work(session: Session, issue: Issue) -> Iteration:
         agent_state=turn.agent_state if turn else "unknown",
         timed_out=bool(turn and turn.timed_out),
         error=error,
+        verification=checked,
     )
 
     return Iteration(
@@ -157,8 +160,24 @@ def _work(session: Session, issue: Issue) -> Iteration:
         agent_state=turn.agent_state if turn else None,
         head_before=head_before,
         head_after=head_after,
+        verified=checked.ok if checked else None,
+        verification_output=checked.output if checked and not checked.ok else "",
         started_at=started,
         ended_at=now(),
         prompt_path=session.relative(turn.prompt_path if turn else None),
         transcript_path=session.relative(turn.transcript_path if turn else None),
     )
+
+
+def _verify(session: Session, issue_after: Issue, *, error: str | None) -> Verification | None:
+    """Run the repository's gate, but only on a turn that claims to be finished.
+
+    Running it every iteration would buy the whole test suite to confirm that an
+    unfinished issue is unfinished. An iteration that already failed for another
+    reason is skipped for the same argument.
+    """
+    command = session.config.verify.command
+    if error or not issue_after.is_closed or not command:
+        return None
+    session.report(f"  verifying: {' '.join(command)}")
+    return verify(session.config)

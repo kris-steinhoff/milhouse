@@ -77,6 +77,19 @@ The agent is exited by then, so attaching shows you the pane rather than a live 
 
 If a run keeps blocking, the posture is wrong rather than the run. Grant the permissions the work needs in `[agent] args`, in the scoped form shown above.
 
+## An issue keeps being rejected
+
+`rejected` means the agent closed the issue and `[verify] command` then failed. The failing output is on the issue as a `bd` note, so start there:
+
+```sh
+bd show <issue-id>
+```
+
+Then run the verification command yourself. Two things it usually means:
+
+- **The work really is not done.** The note is now in the next agent's prompt, so running again may be enough.
+- **The gate is wrong for the loop.** A command that fails for reasons unrelated to the issue rejects every issue in the epic. Point `[verify] command` at the fast suite rather than the full matrix, and make sure it passes on a clean checkout before pointing milhouse at it.
+
 ## A stale claim
 
 If milhouse is killed with `SIGKILL`, or the machine goes away, an issue is left `in_progress` and assigned. `bd` has no lease expiry, so `bd ready` will never return that issue again.

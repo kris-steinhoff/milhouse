@@ -22,6 +22,9 @@ args = ["--permission-mode", "acceptEdits"]
 [loop]
 max_iterations = 30
 
+[verify]
+command = ["uv", "run", "pytest", "-m", "not herdr and not beads"]
+
 [git]
 branch_strategy = "task"
 branch_prefix = "milhouse/"
@@ -53,6 +56,21 @@ What bounds a run. Small on purpose: the supervised policy stops at the first it
 `--max-iterations` overrides the first, and counts **this invocation**: re-running picks up where the last one left off and gets the budget again. Iteration numbers keep counting across invocations, because they name `iter-NNN.prompt`.
 
 `max_attempts`, `on_blocked`, and `blocked_timeout_ms` were removed. They only ever answered questions an unattended run asks, and they come back with the ralph policy.
+
+## `[verify]`
+
+How milhouse checks an issue the agent says it finished. See [ADR 0016](decisions/0016-milhouse-verifies.md).
+
+| Key          | Type       | Default               | Environment                             | Meaning                                                                       |
+| ------------ | ---------- | --------------------- | --------------------------------------- | ----------------------------------------------------------------------------- |
+| `command`    | list\[str] | `[]`                  | `MILHOUSE_VERIFY_COMMAND` (shell-split) | Run in the repo root after an iteration closes its issue. Empty runs nothing. |
+| `timeout_ms` | int        | `600000` (10 minutes) | `MILHOUSE_VERIFY_TIMEOUT_MS`            | How long it may take before it counts as failed.                              |
+
+A non-zero exit re-opens the issue with the outcome `rejected` and appends the tail of the output as a `bd` note, so the next agent sees why the last one's work was turned down.
+
+Empty by default, so out of the box milhouse takes the agent at its word. There is no safe guess about a given repository's gate, and a wrong one fails every iteration. Point it at the fast suite rather than the full matrix: it runs once per closed issue.
+
+No shell is involved, so this is argv rather than a command line. `MILHOUSE_VERIFY_COMMAND` is split with `shlex`, so quoting works the way it does in a shell.
 
 ## `[git]`
 
@@ -103,7 +121,7 @@ Workspace and transcript settings. See [ADR 0001](decisions/0001-shell-out-to-bd
 | `MILHOUSE_WORKSPACE`              | `herdr.workspace`        |
 | `HERDR_WORKSPACE_ID`              | `herdr.workspace`        |
 
-Variables holding an integer must parse as one, or milhouse exits with `ConfigError` (exit code 2). `MILHOUSE_AGENT_ARGS` is split with `shlex`, so quoting works the way it does in a shell.
+Variables holding an integer must parse as one, or milhouse exits with `ConfigError` (exit code 2). `MILHOUSE_AGENT_ARGS` and `MILHOUSE_VERIFY_COMMAND` are split with `shlex`, so quoting works the way it does in a shell.
 
 ## What is not configurable
 

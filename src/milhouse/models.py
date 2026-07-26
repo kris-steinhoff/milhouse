@@ -159,6 +159,13 @@ class Iteration(BaseModel):
     verified: bool | None = None
     """Whether the verification command passed. ``None`` when it was not run."""
 
+    verification_output: str = ""
+    """Tail of the verification command's output, kept only when it failed.
+
+    This is what the note on the re-opened issue carries, and therefore the only
+    way the next agent learns why the last one's work was turned down.
+    """
+
     started_at: datetime = Field(default_factory=now)
     ended_at: datetime | None = None
     detail: str = ""

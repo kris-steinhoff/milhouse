@@ -26,6 +26,7 @@ milhouse step <task_definition>          milhouse run <task_definition>
         herdr agent prompt --wait --until idle --until blocked
         herdr agent read     (capture the transcript)
         exit the agent       (pane returns to a shell prompt)
+        verify()             run the repo's own gate, if the issue closed
         outcome.classify()   what the turn achieved, from beads + git
         policy.decide()      what happens to the issue, and whether to stop
 ```
@@ -59,6 +60,7 @@ src/milhouse/
   session.py     Session — lock, branch, workspace, epic, claim. No policy.
   outcome.py     classify(issue_after, git, agent_state) -> Verdict
   policy.py      decide(iteration) -> Decision. No I/O.
+  verify.py      run the repo's own gate over an issue the agent closed
   step.py        step(session, epic) -> one Iteration, classified and settled
   planner.py     one-shot decomposition: prompt, plan.json, validate, create
   loop.py        RalphLoop — repeat step() until something says stop

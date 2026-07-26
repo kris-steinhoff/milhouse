@@ -27,6 +27,7 @@ __all__ = [
     "HerdrConfig",
     "LoopConfig",
     "TrackerConfig",
+    "VerifyConfig",
     "config_path",
     "load",
     "state_dir",
@@ -85,8 +86,26 @@ class LoopConfig(BaseModel):
     """Bound on a single ``herdr agent prompt --wait`` turn. Default 30 minutes."""
 
 
+class VerifyConfig(BaseModel):
+    """How milhouse checks an issue the agent says it finished.
+
+    Empty by default, which means milhouse takes the agent at its word
+    (:doc:`ADR 0016 <../../docs/decisions/0016-milhouse-verifies>`).
+    """
+
+    command: list[str] = Field(default_factory=list)
+    """The repository's own gate, e.g. ``["uv", "run", "pytest", "-q"]``.
+
+    Run in the repository root after an iteration that closed its issue. No
+    shell is involved, so this is argv rather than a command line.
+    """
+
+    timeout_ms: int = 600_000
+    """How long the command may take before it counts as failed. Default 10 minutes."""
+
+
 class GitConfig(BaseModel):
-    """Where the loop's commits land."""
+    """Where the commits land."""
 
     branch_strategy: BranchStrategy = "task"
     """``task`` creates one branch per task definition; ``current`` stays put."""
@@ -126,6 +145,7 @@ class Config(BaseModel):
 
     agent: AgentConfig = Field(default_factory=AgentConfig)
     loop: LoopConfig = Field(default_factory=LoopConfig)
+    verify: VerifyConfig = Field(default_factory=VerifyConfig)
     git: GitConfig = Field(default_factory=GitConfig)
     tracker: TrackerConfig = Field(default_factory=TrackerConfig)
     herdr: HerdrConfig = Field(default_factory=HerdrConfig)
@@ -209,6 +229,8 @@ _ENV_MAP: dict[str, tuple[str, str, str]] = {
     "MILHOUSE_AGENT_EXIT_TIMEOUT_MS": ("agent", "exit_timeout_ms", "int"),
     "MILHOUSE_MAX_ITERATIONS": ("loop", "max_iterations", "int"),
     "MILHOUSE_TURN_TIMEOUT_MS": ("loop", "turn_timeout_ms", "int"),
+    "MILHOUSE_VERIFY_COMMAND": ("verify", "command", "argv"),
+    "MILHOUSE_VERIFY_TIMEOUT_MS": ("verify", "timeout_ms", "int"),
     "MILHOUSE_BRANCH_STRATEGY": ("git", "branch_strategy", "str"),
     "MILHOUSE_BRANCH_PREFIX": ("git", "branch_prefix", "str"),
     # HERDR_WORKSPACE_ID first: later entries win, and an explicit MILHOUSE_

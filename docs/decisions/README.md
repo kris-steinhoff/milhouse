@@ -19,6 +19,7 @@ One file per settled decision. Each states the context, the decision, and what i
 | [0013](0013-iteration-prompt-contract.md)                | What the iteration prompt promises and demands                   |
 | [0014](0014-step-is-the-primitive.md)                    | The step is the primitive; the loop is a policy over it          |
 | [0015](0015-one-run-at-a-time.md)                        | One run per task at a time, enforced by a lock                   |
+| [0016](0016-milhouse-verifies.md)                        | milhouse verifies a closed issue rather than trusting it         |
 
 ## Deferred
 

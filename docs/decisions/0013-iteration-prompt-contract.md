@@ -21,7 +21,7 @@ The prompt states, in the imperative, that the agent must:
 5. Close the issue with `bd close <id>`, and only if all of the above happened.
 6. If it cannot finish: leave the issue open, append what it learned with `bd note <id>`, and stop. Do **not** close it.
 
-Point 6 matters more than it looks. Without it, the incentive is to close the issue and look successful, which is the one failure milhouse cannot detect — `bd` says closed, so [ADR 0004](0004-outcome-from-beads-and-git.md) says success.
+Point 6 matters more than it looks. Without it, the incentive is to close the issue and look successful — `bd` says closed, so [ADR 0004](0004-outcome-from-beads-and-git.md) says success. That was the one failure milhouse could not detect until [ADR 0016](0016-milhouse-verifies.md) gave it a way to check. The prompt still asks, because it is cheaper for an agent to find its own failure mid-turn than for milhouse to find it afterwards.
 
 ### What goes in
 

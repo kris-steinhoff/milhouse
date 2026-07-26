@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 from .herdr import AgentStatus
 from .models import Issue, Outcome
+from .verify import Verification
 
 __all__ = ["Verdict", "classify"]
 
@@ -49,12 +50,15 @@ def classify(
     agent_state: AgentStatus,
     timed_out: bool = False,
     error: str | None = None,
+    verification: Verification | None = None,
 ) -> Verdict:
     """Decide what an iteration achieved.
 
     The order of the checks is the decision, not an implementation detail. A
     closed issue wins over everything, including an agent that also ended
-    ``blocked``: if the work is done, it is done.
+    ``blocked``: if the work is done, it is done. The one thing that outranks it
+    is a verification that says it is not
+    (:doc:`ADR 0016 <../../docs/decisions/0016-milhouse-verifies>`).
 
     Args:
         issue_after: The issue as beads has it now the turn is over.
@@ -63,11 +67,19 @@ def classify(
         agent_state: The lifecycle state herdr left the agent in.
         timed_out: The turn did not settle within the turn timeout.
         error: A milhouse-side failure (herdr or ``bd``), if any.
+        verification: What the repository's own gate said, when one is
+            configured and the issue was closed. ``None`` means milhouse took
+            the agent at its word.
 
     Returns:
         The outcome and the reason for it.
     """
     if issue_after.is_closed:
+        if verification is not None and not verification.ok:
+            return Verdict(
+                "rejected",
+                f"{issue_after.id} was closed but `{verification.command}` failed",
+            )
         return Verdict("success", f"{issue_after.id} closed in beads")
     if error:
         return Verdict("error", error)

@@ -11,6 +11,7 @@ from milhouse.policy import Decision
 from milhouse.step import nothing_ready, step
 
 from .doubles import FakeTracker, build
+from .fakes import FakeProc, Reply
 
 
 @pytest.fixture
@@ -110,6 +111,60 @@ def test_the_policy_is_injectable(
     assert result is not None
     assert not result.decision.stop
     assert decomposed.released == []
+
+
+# -- verification --------------------------------------------------------------
+
+
+def test_a_closed_issue_is_verified_before_it_counts(
+    config: Config, task: TaskDefinition, decomposed: FakeTracker, fake_proc: FakeProc
+) -> None:
+    config.verify.command = ["make", "check"]
+    fake_proc.expect("make check", Reply(stdout="ok"))
+    session, _ = build(config, task, tracker=decomposed, script=["close"])
+
+    with session as opened:
+        result = step(opened, decomposed.epic)  # ty: ignore[invalid-argument-type]
+
+    assert result is not None
+    assert result.iteration.outcome == "success"
+    assert result.iteration.verified is True
+
+
+def test_a_closed_issue_that_fails_verification_is_reopened_with_the_output(
+    config: Config, task: TaskDefinition, decomposed: FakeTracker, fake_proc: FakeProc
+) -> None:
+    """`bd close` is the agent grading its own exam; this is the second marker."""
+    config.verify.command = ["make", "check"]
+    fake_proc.expect("make check", Reply(stdout="FAILED tests/test_it.py", returncode=1))
+    session, _ = build(config, task, tracker=decomposed, script=["close"])
+
+    with session as opened:
+        result = step(opened, decomposed.epic)  # ty: ignore[invalid-argument-type]
+
+    assert result is not None
+    assert result.iteration.outcome == "rejected"
+    assert result.iteration.verified is False
+    assert decomposed.released == ["bd-e.1"]
+    assert decomposed.issues[0].status == "open"
+    note = decomposed.notes[0][1]
+    assert "FAILED tests/test_it.py" in note
+
+
+def test_an_unfinished_issue_is_not_verified(
+    config: Config, task: TaskDefinition, decomposed: FakeTracker, fake_proc: FakeProc
+) -> None:
+    """The suite would only confirm that unfinished work is unfinished."""
+    config.verify.command = ["make", "check"]
+    session, _ = build(config, task, tracker=decomposed, script=["stall"])
+
+    with session as opened:
+        result = step(opened, decomposed.epic)  # ty: ignore[invalid-argument-type]
+
+    assert result is not None
+    assert result.iteration.outcome == "stalled"
+    assert result.iteration.verified is None
+    assert not fake_proc.ran("make")
 
 
 # -- the prompt a step builds --------------------------------------------------

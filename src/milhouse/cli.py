@@ -486,6 +486,8 @@ def _dry_run(config: Config, definition: TaskDefinition) -> None:
     typer.echo(f"branch    {branch}")
     typer.echo(f"agent     {config.agent.kind} {' '.join(config.agent.args)}".rstrip())
     typer.echo(f"budget    {config.loop.max_iterations} iterations for one run")
+    verify = " ".join(config.verify.command) or "(none — a closed issue is taken on trust)"
+    typer.echo(f"verify    {verify}")
     typer.echo(f"run dir   {config.run_dir(definition.slug)}")
 
     if epic is None:
