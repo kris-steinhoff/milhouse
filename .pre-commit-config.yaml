@@ -30,6 +30,20 @@ repos:
         args: [--fix]
       - id: ruff-format
 
+  # pre-commit provisions node and npm-installs prettier itself, so the repo
+  # needs no local node toolchain.
+  - repo: local
+    hooks:
+      - id: prettier
+        name: prettier
+        entry: prettier --write
+        language: node
+        additional_dependencies: [prettier@3.9.6]
+        types_or: [markdown, yaml, json]
+        # bd owns these; reformatting its managed blocks invalidates the
+        # content hashes in their BEGIN markers.
+        exclude: '^(AGENTS\.md|CLAUDE\.md|\.agents/skills/beads/)'
+
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: v4.4.0
     hooks:

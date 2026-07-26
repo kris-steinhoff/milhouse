@@ -1,0 +1,7 @@
+# Markdown paragraphs live on one line each, so editors soft-wrap them and
+# diffs stay per-sentence instead of reflowing a whole block.
+proseWrap: never
+
+# With proseWrap off, printWidth only decides whether prettier pads markdown
+# tables. Keep it wide enough that they all stay aligned.
+printWidth: 200
