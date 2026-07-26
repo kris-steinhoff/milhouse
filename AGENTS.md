@@ -43,6 +43,12 @@ Two pytest markers cover integration tests that need live services. They are exc
 - `-m herdr` drives a running herdr server (no agents spawned).
 - `-m beads` drives a real scratch `bd` database.
 
+## CI
+
+`.github/workflows/ci.yml` runs on every push to `main`, on pull requests, and on demand. It repeats the local gates off the developer machine: ruff (check and format), the full `pre-commit` run over all files, `ty`, the fast pytest suite on Python 3.11, 3.12, and 3.13, and a packaging job that builds the wheel, installs it into a clean environment, and runs the console script. A final `ci` job aggregates the rest, so branch protection only ever needs that one check.
+
+Watch a run with `gh run watch`, and read a failure with `gh run view --log-failed`.
+
 ## Non-Interactive Shell Commands
 
 `cp`, `mv`, and `rm` may be aliased to `-i` on some systems, which hangs an agent waiting for input that never comes. Always pass the non-interactive form: `cp -f`, `mv -f`, `rm -f`, `rm -rf`, `cp -rf`. Likewise `scp` and `ssh` with `-o BatchMode=yes`, `apt-get -y`, and `HOMEBREW_NO_AUTO_UPDATE=1` for `brew`.
