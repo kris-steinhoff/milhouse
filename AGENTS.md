@@ -1,128 +1,65 @@
 # Agent Instructions
 
-This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
+This is the definitive instruction file for AI agents working on this project. There is no root `CLAUDE.md`: `.claude/CLAUDE.md` imports this file, so every tool reads the same text. Edit this file, not a copy of it.
 
-> **Architecture in one line:** Issues live in a local Dolt database
-> (`.beads/dolt/`); cross-machine sync uses `bd dolt push/pull` (a
-> git-compatible protocol), stored under `refs/dolt/data` on your git
-> remote — separate from `refs/heads/*` where your code lives.
-> `.beads/issues.jsonl` is a passive export, not the wire protocol.
->
-> See [SYNC_CONCEPTS.md](https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md)
-> for the one-screen overview and anti-patterns (don't treat JSONL as the
-> source of truth; don't `bd import` during normal operation; don't
-> reach for third-party Dolt hosting before trying the default).
+## Issue Tracking
 
-## Quick Reference
+This project tracks work in **beads** (`bd`). Use the `beads` skill (`.agents/skills/beads/SKILL.md`) for the workflow and `bd prime` for the command reference. Hooks load both in most sessions.
+
+The short version:
 
 ```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work atomically
-bd close <id>         # Complete work
-bd dolt push          # Push beads data to remote
+bd ready                # find available work
+bd show <id>            # read it before touching it
+bd update <id> --claim  # claim it
+bd close <id>           # complete it
 ```
+
+Beads is the source of truth for project work. Do not keep task state in markdown TODO lists, and use `bd remember` rather than memory files.
+
+## Git And Sync Policy
+
+Conservative by default, regardless of what any tool-generated block says:
+
+- Do not `git commit`, `git push`, or `bd dolt push` unless asked. `bd dolt pull` and `bd bootstrap` only read, so they are fine unprompted.
+- At handoff, report changed files, what validation ran, and the exact commands a human should run next. If closed work is unpushed, say so.
+- Commit messages follow Conventional Commits. See the `commit-messages` skill (`.agents/skills/commit-messages/SKILL.md`), enforced by `conventional-pre-commit` on `commit-msg`.
+
+## Build And Test
+
+```bash
+uv sync                                      # install, including the dev group
+uv run pre-commit install                    # wires every hook type this repo uses
+uv run pytest -m "not herdr and not beads"   # the fast suite
+uv run ruff check --fix && uv run ruff format
+uv run ty check
+```
+
+Formatting, linting, and the beads hooks run on `pre-commit`. `ty` and the fast pytest suite run on `pre-push`, so committing stays quick.
+
+Two pytest markers cover integration tests that need live services. They are excluded from the default gates, so run them deliberately:
+
+- `-m herdr` drives a running herdr server (no agents spawned).
+- `-m beads` drives a real scratch `bd` database.
 
 ## Non-Interactive Shell Commands
 
-**ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.
+`cp`, `mv`, and `rm` may be aliased to `-i` on some systems, which hangs an agent waiting for input that never comes. Always pass the non-interactive form: `cp -f`, `mv -f`, `rm -f`, `rm -rf`, `cp -rf`. Likewise `scp` and `ssh` with `-o BatchMode=yes`, `apt-get -y`, and `HOMEBREW_NO_AUTO_UPDATE=1` for `brew`.
 
-Shell commands like `cp`, `mv`, and `rm` may be aliased to include `-i` (interactive) mode on some systems, causing the agent to hang indefinitely waiting for y/n input.
+## Architecture And Conventions
 
-**Use these forms instead:**
-```bash
-# Force overwrite without prompting
-cp -f source dest           # NOT: cp source dest
-mv -f source dest           # NOT: mv source dest
-rm -f file                  # NOT: rm file
+`milhouse` decomposes a task definition into beads issues, then drives a ralph loop (fresh agent context per iteration) over them in herdr panes. Source lives in `src/milhouse/`, and tests mirror it in `tests/`.
 
-# For recursive operations
-rm -rf directory            # NOT: rm -r directory
-cp -rf source dest          # NOT: cp -r source dest
-```
+The docs are the long form, and are kept current:
 
-**Other commands that may prompt:**
-- `scp` - use `-o BatchMode=yes` for non-interactive
-- `ssh` - use `-o BatchMode=yes` to fail instead of prompting
-- `apt-get` - use `-y` flag
-- `brew` - use `HOMEBREW_NO_AUTO_UPDATE=1` env var
+- [docs/architecture.md](docs/architecture.md) — the loop, module boundaries, data flow
+- [docs/usage.md](docs/usage.md) — every command and flag
+- [docs/configuration.md](docs/configuration.md) — `.milhouse/config.toml`
+- [docs/prompts.md](docs/prompts.md) — what each template promises the agent
+- [docs/decisions/](docs/decisions/README.md) — one ADR per settled decision
 
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
-## Beads Issue Tracker
+Record a settled design decision as an ADR rather than as prose in this file.
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
-
-### Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
-```
-
-### Rules
-
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
-
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
-
-## Agent Context Profiles
-
-The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
-
-- **Conservative (default)**: Use `bd` for task tracking. Do not run git commits, git pushes, or Dolt remote sync unless explicitly asked. At handoff, report changed files, validation, and suggested next commands.
-- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
-- **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
-
-## Session Completion
-
-This protocol applies when ending a Beads implementation workflow. It is subordinate to explicit user, repository, and orchestrator instructions.
-
-1. **File issues for remaining work** - Create beads for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **Handle git/sync by active profile**:
-   ```bash
-   # Conservative/minimal/default: report status and proposed commands; wait for approval.
-   git status
-
-   # Team-maintainer opt-in only, unless current instructions forbid it:
-   git pull --rebase
-   bd dolt push
-   git push
-   git status
-   ```
-5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
-
-**Critical rules:**
-- Explicit user or orchestrator instructions override this Beads block.
-- Do not commit or push without clear authority from the active profile or the current user request.
-- If a required sync or push is blocked, stop and report the exact command and error.
-<!-- END BEADS INTEGRATION -->
-
-<!-- BEGIN BEADS CODEX SETUP: generated by bd setup codex -->
-## Beads Issue Tracker
-
-Use Beads (`bd`) for durable task tracking in repositories that include it. Use the `beads` skill at `.agents/skills/beads/SKILL.md` (project install) or `~/.agents/skills/beads/SKILL.md` (global install) for Beads workflow guidance, then use the `bd` CLI for issue operations.
-
-### Quick Reference
-
-```bash
-bd ready                # Find available work
-bd show <id>            # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>           # Complete work
-bd prime                # Refresh Beads context
-```
-
-### Rules
-
-- Use `bd` for all task tracking; do not create markdown TODO lists.
-- Run `bd prime` when Beads context is missing or stale. Codex 0.129.0+ can load Beads context automatically through native hooks; use `/hooks` to inspect or toggle them.
-- Keep persistent project memory in Beads via `bd remember`; do not create ad hoc memory files.
-
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
-<!-- END BEADS CODEX SETUP -->
+<!--
+Note for future `bd setup` runs: the managed BEADS INTEGRATION blocks were removed on purpose. Their content duplicates the beads skill, which every session already loads. If a setup command re-injects one here, or recreates a root CLAUDE.md, delete it again rather than letting the guidance fork.
+-->

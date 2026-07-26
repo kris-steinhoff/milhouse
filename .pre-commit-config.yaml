@@ -40,9 +40,9 @@ repos:
         language: node
         additional_dependencies: [prettier@3.9.6]
         types_or: [markdown, yaml, json]
-        # bd owns these; reformatting its managed blocks invalidates the
-        # content hashes in their BEGIN markers.
-        exclude: '^(AGENTS\.md|CLAUDE\.md|\.agents/skills/beads/)'
+        # bd owns the beads skill; reformatting its managed blocks invalidates
+        # the content hashes in their BEGIN markers.
+        exclude: '^\.agents/skills/beads/'
 
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: v4.4.0
