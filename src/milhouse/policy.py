@@ -122,11 +122,18 @@ def decide(iteration: Iteration) -> Decision:
             ),
         )
 
+    dirty = _DIRTY if iteration.dirty_after else ""
     return Decision(
         issue="release",
         stop=True,
-        reason=f"{iteration.issue_id} did not finish ({iteration.outcome}: {iteration.detail})",
+        reason=(
+            f"{iteration.issue_id} did not finish ({iteration.outcome}: {iteration.detail}){dirty}"
+        ),
         note=(
             f"milhouse iteration {iteration.number} ended {iteration.outcome}: {iteration.detail}"
         ),
     )
+
+
+_DIRTY = ". The working tree has uncommitted changes; the next agent would inherit them"
+"""Appended to a failure's reason when the turn left work behind uncommitted."""

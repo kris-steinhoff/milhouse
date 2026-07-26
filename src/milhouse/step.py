@@ -132,6 +132,9 @@ def _work(session: Session, issue: Issue) -> Iteration:
     session.state.pane_id = runner.pane_id
 
     head_after = session.repo.head()
+    commits = session.repo.commits_between(head_before, head_after)
+    attributed = bool(session.repo.commits_between(head_before, head_after, grep=issue.id))
+    dirty_after = session.repo.is_dirty()
     try:
         issue_after = session.tracker.get(issue.id)
     except MilhouseError as exc:
@@ -143,8 +146,8 @@ def _work(session: Session, issue: Issue) -> Iteration:
     checked = _verify(session, issue_after, error=error)
     verdict = outcome_module.classify(
         issue_after=issue_after,
-        head_before=head_before,
-        head_after=head_after,
+        commits=commits,
+        attributed=attributed,
         agent_state=turn.agent_state if turn else "unknown",
         timed_out=bool(turn and turn.timed_out),
         error=error,
@@ -160,6 +163,9 @@ def _work(session: Session, issue: Issue) -> Iteration:
         agent_state=turn.agent_state if turn else None,
         head_before=head_before,
         head_after=head_after,
+        commits=commits,
+        attributed=attributed,
+        dirty_after=dirty_after,
         verified=checked.ok if checked else None,
         verification_output=checked.output if checked and not checked.ok else "",
         started_at=started,

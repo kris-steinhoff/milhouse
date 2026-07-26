@@ -8,9 +8,10 @@ from milhouse.config import Config
 from milhouse.errors import MilhouseError
 from milhouse.models import Issue, TaskDefinition
 from milhouse.policy import Decision
+from milhouse.runner import TurnResult
 from milhouse.step import nothing_ready, step
 
-from .doubles import FakeTracker, build
+from .doubles import FakeRepo, FakeRunner, FakeTracker, build
 from .fakes import FakeProc, Reply
 
 
@@ -111,6 +112,63 @@ def test_the_policy_is_injectable(
     assert result is not None
     assert not result.decision.stop
     assert decomposed.released == []
+
+
+# -- what git says -------------------------------------------------------------
+
+
+def test_a_commit_naming_the_issue_is_recorded_as_evidence(
+    config: Config, task: TaskDefinition, decomposed: FakeTracker
+) -> None:
+    session, _ = build(config, task, tracker=decomposed, script=["commit"])
+
+    with session as opened:
+        result = step(opened, decomposed.epic)  # ty: ignore[invalid-argument-type]
+
+    assert result is not None
+    assert result.iteration.outcome == "partial"
+    assert result.iteration.commits == ["sha1"]
+    assert result.iteration.attributed
+
+
+def test_a_commit_that_names_no_issue_is_movement_rather_than_progress(
+    config: Config, task: TaskDefinition, decomposed: FakeTracker
+) -> None:
+    """A hook, or a human in another terminal, moves HEAD too."""
+    session, _ = build(config, task, tracker=decomposed, script=["commit-unrelated"])
+
+    with session as opened:
+        result = step(opened, decomposed.epic)  # ty: ignore[invalid-argument-type]
+
+    assert result is not None
+    assert result.iteration.commits == ["sha1"]
+    assert not result.iteration.attributed
+    assert "none naming it" in result.iteration.detail
+
+
+def test_a_dirty_tree_after_a_turn_is_recorded_and_stops_the_run(
+    config: Config, task: TaskDefinition, decomposed: FakeTracker
+) -> None:
+    """The next agent would inherit changes it did not make and cannot explain."""
+    repo = FakeRepo()
+    session, runner = build(config, task, tracker=decomposed, script=["close"], repo=repo)
+
+    def close_then_leave_a_mess(prompt: str, *, iteration: int) -> TurnResult:
+        result = FakeRunner.run_turn(runner, prompt, iteration=iteration)
+        repo.dirty = True
+        return result
+
+    runner.run_turn = close_then_leave_a_mess  # ty: ignore[invalid-assignment]
+    runner.script = ["close"]
+
+    with session as opened:
+        result = step(opened, decomposed.epic)  # ty: ignore[invalid-argument-type]
+
+    assert result is not None
+    assert result.iteration.outcome == "success"
+    assert result.iteration.dirty_after
+    assert result.decision.stop
+    assert "dirty" in result.decision.reason
 
 
 # -- verification --------------------------------------------------------------

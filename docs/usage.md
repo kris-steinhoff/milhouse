@@ -177,6 +177,10 @@ A lock left behind by a dead process is taken over automatically, with a line sa
 
 Re-opening matters: a claimed issue is `in_progress`, and `bd ready` excludes those, so an unfinished issue that was simply left alone would never be offered again and the epic would look finished with the work undone.
 
+`partial` distinguishes a commit that names the issue from one that does not, because `HEAD` moving on its own could be anyone — a hook, or you in another terminal. The shas either way are in `events.jsonl` ([ADR 0004](decisions/0004-outcome-from-beads-and-git.md)).
+
+A turn that leaves the working tree dirty also stops the run, whatever its outcome, because the next agent would inherit changes it did not make and cannot explain.
+
 `rejected` is the one milhouse would otherwise miss. `bd close` is run by the agent, so "the issue is closed" is the agent grading its own exam. Point [`[verify] command`](configuration.md) at the repository's own gate and milhouse checks the answer, re-opening the issue with the failing output as a `bd` note ([ADR 0016](decisions/0016-milhouse-verifies.md)). It is empty by default.
 
 What happens after an iteration is one pure function, `policy.decide()`. Changing how milhouse behaves between iterations means writing a second one, not rewriting the loop.

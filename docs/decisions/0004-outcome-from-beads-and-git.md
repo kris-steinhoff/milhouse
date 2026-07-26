@@ -29,4 +29,4 @@ Classifying is all this does. What _happens_ as a result is a separate pure func
 
 - `partial` and `stalled` get the same treatment from today's policy but are not the same diagnosis, so they stay distinct in the run history. `partial` means the agent is making progress and probably needs another turn; a run full of `stalled` means the prompt is wrong.
 - `blocked` is not a failure of the agent's, and a policy that retries should not count it as one. An agent waiting on a human has not failed at anything.
-- Classification is a pure function in `outcome.py` over `(issue_after, head_before, head_after, agent_state, timed_out, error)`, so every row of that table is a unit test with no subprocess involved.
+- Classification is a pure function in `outcome.py` over `(issue_after, commits, attributed, agent_state, timed_out, error, verification)`, so every row of that table is a unit test with no subprocess involved. Asking git the two questions is `step.py`'s job.

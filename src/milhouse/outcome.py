@@ -45,8 +45,8 @@ class Verdict:
 def classify(
     *,
     issue_after: Issue,
-    head_before: str | None,
-    head_after: str | None,
+    commits: list[str],
+    attributed: bool = False,
     agent_state: AgentStatus,
     timed_out: bool = False,
     error: str | None = None,
@@ -62,8 +62,8 @@ def classify(
 
     Args:
         issue_after: The issue as beads has it now the turn is over.
-        head_before: Git ``HEAD`` before the turn, or ``None`` in an empty repo.
-        head_after: Git ``HEAD`` after the turn.
+        commits: Short shas of everything that landed during the turn.
+        attributed: Whether any of them names this issue in its message.
         agent_state: The lifecycle state herdr left the agent in.
         timed_out: The turn did not settle within the turn timeout.
         error: A milhouse-side failure (herdr or ``bd``), if any.
@@ -87,8 +87,22 @@ def classify(
         return Verdict("timeout", "the turn did not finish within the turn timeout")
     if agent_state == "blocked":
         return Verdict("blocked", "the agent is waiting on a human")
-    # `head_before` is None in a repository with no commits yet, so the first
-    # commit of all still counts as movement.
-    if head_after and head_before != head_after:
-        return Verdict("partial", f"{issue_after.id} is still open, but HEAD moved")
+    if commits:
+        # A commit naming the issue is evidence the agent did this work. A
+        # commit that does not could be anyone's — a hook, or a human in another
+        # terminal — so it is reported as movement rather than as progress.
+        if attributed:
+            return Verdict(
+                "partial",
+                f"{issue_after.id} is still open, but {_count(commits)} for it",
+            )
+        return Verdict(
+            "partial",
+            f"{issue_after.id} is still open; {_count(commits)}, none naming it",
+        )
     return Verdict("stalled", f"{issue_after.id} is still open and nothing was committed")
+
+
+def _count(commits: list[str]) -> str:
+    """``"1 commit landed"`` or ``"3 commits landed"``, for a detail line."""
+    return f"{len(commits)} commit{'' if len(commits) == 1 else 's'} landed"

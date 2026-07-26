@@ -68,6 +68,12 @@ def test_a_success_that_leaves_the_tree_dirty_stops_the_run() -> None:
     assert "dirty" in decision.reason
 
 
+def test_a_failure_that_leaves_the_tree_dirty_says_so() -> None:
+    decision = decide(iteration("stalled", dirty_after=True))
+
+    assert "uncommitted changes" in decision.reason
+
+
 def test_a_failure_carries_what_happened_into_the_issue_note() -> None:
     """The note is the only memory the next fresh context window gets."""
     decision = decide(iteration("stalled", detail="nothing was committed"))

@@ -18,33 +18,41 @@ def issue(status: str = "in_progress") -> Issue:
 
 
 def test_a_closed_issue_is_success() -> None:
-    verdict = classify(
-        issue_after=issue("closed"),
-        head_before="a",
-        head_after="b",
-        agent_state="done",
-    )
+    verdict = classify(issue_after=issue("closed"), commits=["abc1234"], agent_state="done")
 
     assert verdict.outcome == "success"
     assert not verdict.counts_as_attempt
 
 
 def test_a_blocked_agent_needs_a_human() -> None:
-    verdict = classify(issue_after=issue(), head_before="a", head_after="a", agent_state="blocked")
+    verdict = classify(issue_after=issue(), commits=[], agent_state="blocked")
 
     assert verdict.outcome == "blocked"
     assert not verdict.counts_as_attempt
 
 
-def test_an_open_issue_with_a_commit_is_partial() -> None:
-    verdict = classify(issue_after=issue(), head_before="a", head_after="b", agent_state="done")
+def test_an_open_issue_with_a_commit_for_it_is_partial() -> None:
+    verdict = classify(
+        issue_after=issue(), commits=["abc1234"], attributed=True, agent_state="done"
+    )
 
     assert verdict.outcome == "partial"
     assert verdict.counts_as_attempt
+    assert "1 commit landed for it" in verdict.detail
+
+
+def test_a_commit_that_does_not_name_the_issue_says_so() -> None:
+    """HEAD moving is weak evidence: a hook or another terminal moves it too."""
+    verdict = classify(
+        issue_after=issue(), commits=["abc1234", "def5678"], attributed=False, agent_state="done"
+    )
+
+    assert verdict.outcome == "partial"
+    assert "2 commits landed, none naming it" in verdict.detail
 
 
 def test_an_open_issue_with_no_commit_is_stalled() -> None:
-    verdict = classify(issue_after=issue(), head_before="a", head_after="a", agent_state="done")
+    verdict = classify(issue_after=issue(), commits=[], agent_state="done")
 
     assert verdict.outcome == "stalled"
     assert verdict.counts_as_attempt
@@ -52,11 +60,7 @@ def test_an_open_issue_with_no_commit_is_stalled() -> None:
 
 def test_a_timed_out_turn_is_a_timeout() -> None:
     verdict = classify(
-        issue_after=issue(),
-        head_before="a",
-        head_after="b",
-        agent_state="working",
-        timed_out=True,
+        issue_after=issue(), commits=["abc1234"], agent_state="working", timed_out=True
     )
 
     assert verdict.outcome == "timeout"
@@ -66,8 +70,7 @@ def test_a_timed_out_turn_is_a_timeout() -> None:
 def test_a_milhouse_side_failure_is_an_error() -> None:
     verdict = classify(
         issue_after=issue(),
-        head_before="a",
-        head_after="a",
+        commits=[],
         agent_state="unknown",
         error="could not start the agent",
     )
@@ -86,20 +89,13 @@ def test_a_milhouse_side_failure_is_an_error() -> None:
 )
 def test_a_closed_issue_wins_over_every_other_signal(kwargs: dict) -> None:
     """If the work is done, it is done, whatever else the turn looked like."""
-    verdict = classify(issue_after=issue("closed"), head_before="a", head_after="a", **kwargs)
+    verdict = classify(issue_after=issue("closed"), commits=[], **kwargs)
 
     assert verdict.outcome == "success"
 
 
 def test_an_empty_repository_counts_as_stalled_not_partial() -> None:
-    """No HEAD before and after means no commit was made, not that one was."""
-    verdict = classify(issue_after=issue(), head_before=None, head_after=None, agent_state="done")
+    """No commits landed means no commit was made, not that one was."""
+    verdict = classify(issue_after=issue(), commits=[], agent_state="done")
 
     assert verdict.outcome == "stalled"
-
-
-def test_the_first_commit_in_an_empty_repository_counts_as_progress() -> None:
-    """A repo with no commits yet has no `head_before`, but the commit still happened."""
-    verdict = classify(issue_after=issue(), head_before=None, head_after="a", agent_state="done")
-
-    assert verdict.outcome == "partial"

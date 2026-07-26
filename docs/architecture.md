@@ -46,7 +46,7 @@ src/milhouse/
   state.py       RunStore — state.json, events.jsonl, and the run lock
   proc.py        run() / run_json() — the single subprocess chokepoint
   errors.py      MilhouseError hierarchy, mapped to exit codes
-  gitrepo.py     find the repo, read HEAD, put the run on a branch
+  gitrepo.py     find the repo, read HEAD, ask what landed, put it on a branch
   doctor.py      preflight checks, as data
   sources/
     base.py      Source protocol; resolve(spec) -> TaskDefinition

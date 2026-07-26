@@ -102,8 +102,7 @@ def test_the_tail_marker_is_dropped_for_short_output(config: Config, fake_proc: 
 def test_a_closed_issue_with_a_passing_verification_is_a_success() -> None:
     verdict = classify(
         issue_after=CLOSED,
-        head_before="a",
-        head_after="b",
+        commits=["abc1234"],
         agent_state="done",
         verification=Verification(ok=True, command="pytest"),
     )
@@ -115,8 +114,7 @@ def test_a_closed_issue_with_a_failing_verification_is_rejected() -> None:
     """`bd` saying closed is the agent grading its own exam."""
     verdict = classify(
         issue_after=CLOSED,
-        head_before="a",
-        head_after="b",
+        commits=["abc1234"],
         agent_state="done",
         verification=Verification(ok=False, command="pytest", output="1 failed"),
     )
@@ -127,7 +125,7 @@ def test_a_closed_issue_with_a_failing_verification_is_rejected() -> None:
 
 def test_no_verification_leaves_a_closed_issue_a_success() -> None:
     verdict = classify(
-        issue_after=CLOSED, head_before="a", head_after="b", agent_state="done", verification=None
+        issue_after=CLOSED, commits=["abc1234"], agent_state="done", verification=None
     )
 
     assert verdict.outcome == "success"

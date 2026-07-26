@@ -97,11 +97,16 @@ class FakeClient:
 
 @dataclass
 class FakeRepo:
-    """A git repository whose HEAD only moves when a turn says so."""
+    """A git repository whose HEAD only moves when a turn says so.
+
+    ``messages`` holds one line per commit, so a test can decide whether a
+    commit names the issue it was supposed to be for.
+    """
 
     branch: str | None = "main"
     dirty: bool = False
     commits: int = 0
+    messages: list[str] = field(default_factory=list)
 
     def head(self) -> str | None:
         return f"sha{self.commits}"
@@ -112,6 +117,20 @@ class FakeRepo:
     def ensure_branch(self, name: str) -> str:
         self.branch = name
         return name
+
+    def commits_between(
+        self, before: str | None, after: str | None, *, grep: str = ""
+    ) -> list[str]:
+        first = int(before.removeprefix("sha")) if before else 0
+        last = int(after.removeprefix("sha")) if after else 0
+        landed = range(first + 1, last + 1)
+        if not grep:
+            return [f"sha{n}" for n in landed]
+        return [f"sha{n}" for n in landed if grep in self._message(n)]
+
+    def _message(self, number: int) -> str:
+        index = number - 1
+        return self.messages[index] if index < len(self.messages) else ""
 
     def is_dirty(self) -> bool:
         return self.dirty
@@ -132,14 +151,17 @@ class FakeRunner:
         self.turns.append(prompt)
         action = self.script.pop(0) if self.script else "stall"
         if action == "close":
-            self.repo.commits += 1
+            self._commit()
             for issue in self.tracker.issues:
                 if issue.status == "in_progress":
                     issue.status = "closed"
                     break
             return TurnResult(agent_state="done")
         if action == "commit":
-            self.repo.commits += 1
+            self._commit()
+            return TurnResult(agent_state="done")
+        if action == "commit-unrelated":
+            self._commit(message="chore: something else entirely")
             return TurnResult(agent_state="done")
         if action == "block":
             return TurnResult(agent_state="blocked")
@@ -151,6 +173,14 @@ class FakeRunner:
 
     def exit_agent(self) -> None:
         return None
+
+    def _commit(self, message: str | None = None) -> None:
+        """Move HEAD, recording a message naming the claimed issue by default."""
+        claimed = next(
+            (issue.id for issue in self.tracker.issues if issue.status == "in_progress"), ""
+        )
+        self.repo.commits += 1
+        self.repo.messages.append(message or f"feat: do the thing ({claimed})")
 
 
 def build(

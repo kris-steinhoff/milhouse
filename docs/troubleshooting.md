@@ -128,6 +128,17 @@ bd list --metadata-field milhouse_task=file:<old-path> --type epic --json
 bd update <epic-id> --set-metadata milhouse_task=file:<new-path>
 ```
 
+## The run stopped saying the working tree is dirty
+
+An iteration left uncommitted changes behind. milhouse stops rather than starting the next agent, because that agent would inherit changes it did not make and cannot explain.
+
+```sh
+git status
+git diff
+```
+
+Commit them if they are the work, discard them if they are not, then run again.
+
 ## The branch checkout failed
 
 milhouse refuses to touch a dirty working tree. Commit or stash your changes first. It will not stash for you: losing uncommitted work to a checkout you did not ask for is the worst failure available ([ADR 0007](decisions/0007-branch-per-task.md)).

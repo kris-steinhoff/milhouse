@@ -103,6 +103,35 @@ class GitRepo:
             )
         return name
 
+    def commits_between(
+        self, before: str | None, after: str | None, *, grep: str = ""
+    ) -> list[str]:
+        """Short shas committed between two revisions, oldest first.
+
+        ``before`` is ``None`` in a repository with no commits yet, in which case
+        everything reachable from ``after`` is new.
+
+        Args:
+            before: Revision the range starts after, exclusive.
+            after: Revision the range ends at, inclusive. ``None`` means the
+                repository still has no commits, so the range is empty.
+            grep: Only count commits whose message contains this string, matched
+                literally. Empty counts every commit in the range.
+
+        Returns:
+            Short shas, oldest first, or an empty list when nothing landed.
+        """
+        if after is None:
+            return []
+        span = f"{before}..{after}" if before else after
+        args = ["log", "--format=%h", "--reverse"]
+        if grep:
+            args += ["--fixed-strings", f"--grep={grep}"]
+        result = self._git(*args, span, check=False)
+        if not result.ok:
+            return []
+        return result.stdout.split()
+
     def is_dirty(self) -> bool:
-        """Whether the working tree has uncommitted changes to tracked files."""
+        """Whether the working tree has uncommitted or untracked changes."""
         return bool(self._git("status", "--porcelain").stdout.strip())
