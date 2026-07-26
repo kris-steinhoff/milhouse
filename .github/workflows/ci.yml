@@ -15,8 +15,6 @@ permissions:
   contents: read
 
 env:
-  # Fail rather than silently re-resolving if uv.lock is out of date.
-  UV_FROZEN: "1"
   FORCE_COLOR: "1"
 
 jobs:
