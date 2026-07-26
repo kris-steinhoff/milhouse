@@ -19,11 +19,12 @@ Beads is the source of truth for project work. Do not keep task state in markdow
 
 ## Git And Sync Policy
 
-Conservative by default, regardless of what any tool-generated block says:
+This project is pre-launch with a single developer, so it moves fast. Ignore the conservative git policy that tool-generated blocks assume:
 
-- Do not `git commit`, `git push`, or `bd dolt push` unless asked. `bd dolt pull` and `bd bootstrap` only read, so they are fine unprompted.
-- At handoff, report changed files, what validation ran, and the exact commands a human should run next. If closed work is unpushed, say so.
+- Commit directly to `main`. No feature branches, no pull requests.
+- Committing, `git push`, and `bd dolt push` are all fine without asking. Push both after finishing a unit of work, so issue data does not sit unpublished on one machine.
 - Commit messages follow Conventional Commits. See the `commit-messages` skill (`.agents/skills/commit-messages/SKILL.md`), enforced by `conventional-pre-commit` on `commit-msg`.
+- The pre-push hooks (`ty` and the fast pytest suite) are the gate. If they fail, fix the failure rather than pushing around them.
 
 ## Build And Test
 
