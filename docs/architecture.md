@@ -32,6 +32,7 @@ The defining property of ralph is a **fresh context window every iteration**. mi
 ```
 src/milhouse/
   cli.py         typer app — run, plan, status, doctor. Parsing and output only.
+  completion.py  what each parameter offers on tab. Filesystem and constants only.
   config.py      layered: defaults < .milhouse/config.toml < env < flags
   models.py      TaskDefinition, Issue, Iteration, RunState (pydantic)
   proc.py        run() / run_json() — the single subprocess chokepoint
@@ -61,6 +62,7 @@ src/milhouse/
 - **`herdr.py` is a narrow client.** Swapping the CLI transport for the socket API ([ADR 0001](decisions/0001-shell-out-to-bd-and-herdr.md)) should be one file, not a refactor. Nothing above it knows argv exists.
 - **`outcome.py` is pure.** `classify()` takes values and returns an outcome. No I/O, so every row of the decision table is a unit test.
 - **`cli.py` holds no behaviour.** It resolves config, calls into `loop.py` or `planner.py`, and formats the result.
+- **`completion.py` never raises and never calls a server.** Its callbacks run on a keypress, in a shell with nowhere to show a traceback, so they answer from the filesystem and from constants rather than from `bd`, `herdr`, or `gh`.
 - **`tracker/` and `sources/` are protocols with one implementation each.** The protocol is not speculative generality: it is what `tests/fakes.py` implements.
 
 ## Data flow

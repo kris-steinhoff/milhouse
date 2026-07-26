@@ -8,10 +8,37 @@ Every command and flag, with worked examples. Output shown here was captured fro
 milhouse [--version] [--verbose] <command> [options]
 ```
 
-| Option            | Meaning                                                            |
-| ----------------- | ------------------------------------------------------------------ |
-| `--version`       | Print the milhouse version and exit.                               |
-| `--verbose`, `-v` | Log every subprocess milhouse runs, to stderr. The debugging tool. |
+| Option                 | Meaning                                                            |
+| ---------------------- | ------------------------------------------------------------------ |
+| `--version`            | Print the milhouse version and exit.                               |
+| `--verbose`, `-v`      | Log every subprocess milhouse runs, to stderr. The debugging tool. |
+| `--install-completion` | Install shell completion for milhouse, then exit.                  |
+| `--show-completion`    | Print the completion script instead of installing it.              |
+
+## Shell completion
+
+Install it once, then restart the shell:
+
+```console
+$ milhouse --install-completion
+zsh completion installed in /home/you/.zfunc/_milhouse
+Completion will take effect once you restart the terminal
+```
+
+The shell is detected from the process tree, and bash, zsh, fish, and PowerShell are supported. `--show-completion` prints the same script instead of writing anything, which is what you want when your shell config is generated or version-controlled elsewhere.
+
+What completes:
+
+| Parameter           | Offers                                                                            |
+| ------------------- | --------------------------------------------------------------------------------- |
+| `<task>`            | Markdown files and the directories holding them, `file:` prefix preserved.        |
+| `--repo`            | Directories.                                                                      |
+| `--agent`           | The common herdr agent kinds. Any kind herdr supports still works.                |
+| `--on-blocked`      | `wait`, `skip`, `abort`, each with what it does.                                  |
+| `--branch-strategy` | `task`, `current`.                                                                |
+| `--workspace`       | Workspace ids from this repo's earlier runs, most recent first, with their tasks. |
+
+`gh:` task specs are not completed: that would mean a call to GitHub on a keypress. Nothing here contacts the herdr server either — `--workspace` reads `.milhouse/runs/*/state.json` — so completion stays instant and works with the server down.
 
 ## Task definitions
 

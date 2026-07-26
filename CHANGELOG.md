@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `loop.py`, the ralph loop and its guardrails: the iteration ceiling, the per-issue attempt cap, stall detection, the `--on-blocked` policy, crash reconciliation on startup, and teardown that reverts the in-flight claim on SIGINT/SIGTERM without closing anyone's pane.
 - `milhouse run`, `milhouse plan`, and `milhouse status`, including `--dry-run`, which renders the prompts and prints the plan without starting an agent.
 - `docs/tasks/hello.md`, the example task definition the quickstart and the end-to-end check both point at.
+- Shell completion: `milhouse --install-completion` (and `--show-completion`) for bash, zsh, fish, and PowerShell, plus value completion for `<task>`, `--repo`, `--agent`, `--on-blocked`, `--branch-strategy`, and `--workspace`. Completion answers from the filesystem — no GitHub call for a `gh:` spec, no herdr call for a workspace id — so pressing tab costs nothing and works with the server down.
 
 ### Verified
 

@@ -20,7 +20,7 @@ from typing import Annotated, Any
 import typer
 from typer.core import TyperGroup
 
-from . import __version__, prompts, sources
+from . import __version__, completion, prompts, sources
 from . import doctor as doctor_checks
 from .config import Config, load
 from .errors import MilhouseError
@@ -41,7 +41,9 @@ app = typer.Typer(
         "agent running in a herdr pane."
     ),
     no_args_is_help=True,
-    add_completion=False,
+    # Gives --install-completion and --show-completion. The values each
+    # parameter offers come from milhouse.completion.
+    add_completion=True,
 )
 
 
@@ -102,7 +104,11 @@ def main_options(
 def doctor(
     repo: Annotated[
         Path | None,
-        typer.Option("--repo", help="Repository to check. Defaults to the current one."),
+        typer.Option(
+            "--repo",
+            help="Repository to check. Defaults to the current one.",
+            autocompletion=completion.complete_repo,
+        ),
     ] = None,
 ) -> None:
     """Verify the tools milhouse depends on and the herdr server's state.
@@ -133,7 +139,10 @@ def doctor(
 
 @app.command()
 def run(
-    task: Annotated[str, typer.Argument(help=TASK_HELP)],
+    task: Annotated[
+        str,
+        typer.Argument(help=TASK_HELP, autocompletion=completion.complete_task),
+    ],
     max_iterations: Annotated[
         int | None,
         typer.Option("--max-iterations", help="Hard ceiling on iterations for the whole run."),
@@ -147,21 +156,31 @@ def run(
         typer.Option(
             "--on-blocked",
             help="What to do when the agent waits on a human: wait, skip, or abort.",
+            autocompletion=completion.complete_on_blocked,
         ),
     ] = None,
     agent: Annotated[
         str | None,
-        typer.Option("--agent", help="Agent kind to run, e.g. claude, codex, gemini."),
+        typer.Option(
+            "--agent",
+            help="Agent kind to run, e.g. claude, codex, gemini.",
+            autocompletion=completion.complete_agent,
+        ),
     ] = None,
     workspace: Annotated[
         str | None,
-        typer.Option("--workspace", help="Reuse this herdr workspace instead of creating one."),
+        typer.Option(
+            "--workspace",
+            help="Reuse this herdr workspace instead of creating one.",
+            autocompletion=completion.complete_workspace,
+        ),
     ] = None,
     branch_strategy: Annotated[
         str | None,
         typer.Option(
             "--branch-strategy",
             help="task creates one branch per task definition; current stays where you are.",
+            autocompletion=completion.complete_branch_strategy,
         ),
     ] = None,
     dry_run: Annotated[
@@ -178,7 +197,11 @@ def run(
     ] = False,
     repo: Annotated[
         Path | None,
-        typer.Option("--repo", help="Repository to work in. Defaults to the current one."),
+        typer.Option(
+            "--repo",
+            help="Repository to work in. Defaults to the current one.",
+            autocompletion=completion.complete_repo,
+        ),
     ] = None,
 ) -> None:
     """Resolve a task, decompose it if needed, then loop until the work is done.
@@ -220,22 +243,37 @@ def run(
 
 @app.command()
 def plan(
-    task: Annotated[str, typer.Argument(help=TASK_HELP)],
+    task: Annotated[
+        str,
+        typer.Argument(help=TASK_HELP, autocompletion=completion.complete_task),
+    ],
     yes: Annotated[
         bool,
         typer.Option("--yes", "-y", help="Create the proposed issues without asking."),
     ] = False,
     workspace: Annotated[
         str | None,
-        typer.Option("--workspace", help="Reuse this herdr workspace instead of creating one."),
+        typer.Option(
+            "--workspace",
+            help="Reuse this herdr workspace instead of creating one.",
+            autocompletion=completion.complete_workspace,
+        ),
     ] = None,
     agent: Annotated[
         str | None,
-        typer.Option("--agent", help="Agent kind to run, e.g. claude, codex, gemini."),
+        typer.Option(
+            "--agent",
+            help="Agent kind to run, e.g. claude, codex, gemini.",
+            autocompletion=completion.complete_agent,
+        ),
     ] = None,
     repo: Annotated[
         Path | None,
-        typer.Option("--repo", help="Repository to work in. Defaults to the current one."),
+        typer.Option(
+            "--repo",
+            help="Repository to work in. Defaults to the current one.",
+            autocompletion=completion.complete_repo,
+        ),
     ] = None,
 ) -> None:
     """Decompose a task into issues, print the tree, and stop.
@@ -265,10 +303,17 @@ def plan(
 
 @app.command()
 def status(
-    task: Annotated[str, typer.Argument(help=TASK_HELP)],
+    task: Annotated[
+        str,
+        typer.Argument(help=TASK_HELP, autocompletion=completion.complete_task),
+    ],
     repo: Annotated[
         Path | None,
-        typer.Option("--repo", help="Repository to inspect. Defaults to the current one."),
+        typer.Option(
+            "--repo",
+            help="Repository to inspect. Defaults to the current one.",
+            autocompletion=completion.complete_repo,
+        ),
     ] = None,
 ) -> None:
     """Show a task's issue tree and this run's iteration history.

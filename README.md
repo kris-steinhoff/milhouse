@@ -26,6 +26,7 @@ The defining property of a ralph loop is a **fresh context window every iteratio
 
 ```sh
 uv tool install --editable .
+milhouse --install-completion   # optional: tab completion for bash, zsh, fish, PowerShell
 ```
 
 ## Quickstart
