@@ -62,7 +62,6 @@ milhouse run docs/tasks/hello.md --max-iterations 2 --attach
 - [Prompts](docs/prompts.md) — what each template promises the agent, and why
 - [Troubleshooting](docs/troubleshooting.md) — blocked agents, stale claims, run artifacts
 - [Decisions](docs/decisions/README.md) — one ADR per settled design decision
-- [Changelog](CHANGELOG.md)
 
 ## Status
 

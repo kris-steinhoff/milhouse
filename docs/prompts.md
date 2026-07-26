@@ -1,6 +1,6 @@
 # Prompts
 
-For a ralph loop the prompt _is_ the product. milhouse ships two, both inside the package rather than user-configurable, so a run is reproducible from a milhouse version. Every prompt change is a behaviour change and gets a [changelog](../CHANGELOG.md) entry.
+For a ralph loop the prompt _is_ the product. milhouse ships two, both inside the package rather than user-configurable, so a run is reproducible from a milhouse version. Every prompt change is a behaviour change, so it lands with a doc change and a commit message that says what the agent will now do differently.
 
 Both are Jinja templates rendered with `StrictUndefined`: a typo in a variable name fails at render time rather than quietly sending an agent a prompt with a hole in it. Each opens with a comment block stating its contract and its variables.
 
@@ -122,5 +122,4 @@ On attempt 2 and beyond the prompt says so, says how many attempts remain, lists
 1. Edit the template. Update its header comment if the contract changed.
 2. Update this file. A prompt change with no doc change is an incomplete change.
 3. Update `tests/test_prompts.py`. Those tests assert on the _contract_ — that the plan prompt still forbids `bd`, that the iterate prompt still forbids closing an unfinished issue — not on the wording, so tuning prose does not break them but dropping a promise does.
-4. Add a `CHANGELOG.md` entry.
-5. Watch a real run. That is the actual test ([ADR 0013](decisions/0013-iteration-prompt-contract.md)).
+4. Watch a real run. That is the actual test ([ADR 0013](decisions/0013-iteration-prompt-contract.md)).

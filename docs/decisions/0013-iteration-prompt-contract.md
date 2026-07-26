@@ -38,7 +38,7 @@ Point 6 matters more than it looks. Without it, the incentive is to close the is
 
 ## Consequences
 
-- Every prompt change is a behaviour change and gets a `CHANGELOG.md` entry.
+- Every prompt change is a behaviour change, so it lands with the doc change that describes it rather than as a silent edit.
 - The templates ship in the package rather than being user-configurable ([ADR 0010](0010-config-file-schema.md)), so a run is reproducible from a milhouse version.
 - The rendered prompt is saved to `.milhouse/runs/<task>/iter-NNN.prompt` every iteration, so tuning by observation has something to observe.
 - This ADR will be revised. That is the expected outcome, not a failure of the decision.

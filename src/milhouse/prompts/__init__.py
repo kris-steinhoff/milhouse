@@ -7,7 +7,7 @@ opens with a comment block stating the contract it imposes on the agent and the
 variables it expects; ``docs/prompts.md`` is the prose version.
 
 For a ralph loop the prompt *is* the product, so expect these to change. Every
-change is a behaviour change and gets a changelog entry.
+change is a behaviour change and lands with the doc change describing it.
 """
 
 from __future__ import annotations

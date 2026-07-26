@@ -123,7 +123,6 @@ The iteration prompt is deliberately narrow: here is one issue, do it, verify it
 ```
 pyproject.toml               # uv/hatchling, requires-python >=3.11, script: milhouse
 README.md                    # what it is, install, quickstart
-CHANGELOG.md                 # keep-a-changelog, updated per user-visible change
 docs/
   usage.md                   # every command and flag, worked examples
   configuration.md           # .milhouse/config.toml reference
@@ -220,7 +219,6 @@ Everything is documented. This is a build requirement, not a cleanup pass at the
 | Errors           | Every `MilhouseError` subclass documents its exit code and what a user should do about it.                           |
 | Decisions        | One ADR per settled decision under `docs/decisions/`, including the numbered decisions above.                        |
 | Open questions   | Each resolved [open question](#open-questions) becomes an ADR. The answer never lives only in a commit message.      |
-| `CHANGELOG.md`   | Keep-a-changelog format, one entry per user-visible change.                                                          |
 | Run artifacts    | `.milhouse/runs/` layout documented in `docs/troubleshooting.md`, since it is the primary post-mortem surface.       |
 
 Two rules make this stick:
@@ -232,7 +230,7 @@ The same expectation is passed down the loop: `iterate.md.j2` tells the agent th
 
 ## Build order
 
-1. **Bootstrap** — `pyproject.toml`, package skeleton, `milhouse doctor`, ruff + pytest config (including the `D` docstring rules), `.gitignore`, the `docs/` skeleton, `CHANGELOG.md`. Verify `uv tool install --editable .` works.
+1. **Bootstrap** — `pyproject.toml`, package skeleton, `milhouse doctor`, ruff + pytest config (including the `D` docstring rules), `.gitignore`, the `docs/` skeleton. Verify `uv tool install --editable .` works.
 2. **Sources** — `TaskDefinition`, file and GitHub resolvers, `task_id` derivation.
 3. **Tracker** — `proc.py` chokepoint, then the `bd` wrapper against a scratch `bd init` database.
 4. **herdr client** — `herdr.py` against the live server: create a workspace, split a pane, run a command, read it back, close it. No agents yet.
