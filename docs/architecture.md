@@ -28,12 +28,40 @@ milhouse step <task_definition>
         exit the agent       (pane returns to a shell prompt)
         verify()             run the repo's own gate, if the issue closed
         outcome.classify()   what the turn achieved, from beads + git
-        policy.decide()      what happens to the issue, and whether to stop
+        policy.decide()      what happens to the issue as a result
 ```
 
 The defining property of ralph is a **fresh context window every iteration**. milhouse gets that by starting a new agent in the pane each step and exiting it when the turn ends, rather than reusing one long-lived session. State lives in beads and git, never in an accumulating chat session.
 
 That is what the ralph methodology is about, and it is not the part that was de-scoped. What is missing is stringing the iterations together automatically, which needs a policy nobody has earned yet. `step()` already takes the policy as an argument, so writing one is writing a function.
+
+## The layering
+
+Five layers, each defined by what it is **not** allowed to do. The filenames below are what they happen to be called here. The constraints are the design, and they are what any new piece of milhouse gets sorted into.
+
+| Layer           | Owns                                             | Pure? | May not                                    |
+| --------------- | ------------------------------------------------ | ----- | ------------------------------------------ |
+| **Resources**   | The lock, branch, workspace, pane, runner, claim | no    | decide anything                            |
+| **Work**        | One unit of work, start to finish                | no    | decide what it means, or whether to repeat |
+| **Observation** | What happened                                    | yes   | perform I/O                                |
+| **Judgement**   | What to do about what happened                   | yes   | perform I/O, or observe                    |
+| **Repetition**  | How many units of work happen                    | no    | anything else                              |
+
+In this codebase: `session.py`, `step.py`, `outcome.py`, `policy.py`, and — today — nothing at all.
+
+### Why observation and judgement are separate
+
+The usual advice would stop at a functional core and an imperative shell, with one pure core. Splitting the core in two is the part worth keeping, because the two halves change for different reasons and at different rates.
+
+**Observation** changes when the tools change: a new herdr agent status, a different question to ask git, a verification result to fold in. **Judgement** changes when you learn something about how runs actually fail. Keeping them apart means tuning what milhouse does about a stalled iteration never touches the code that reads `git log`, and adding a new outcome never silently changes what happens to an issue.
+
+It also means two decision tables instead of one, and a table is the cheapest thing in the world to test exhaustively. `test_outcome.py` and `test_policy.py` between them run no subprocess and start no agent.
+
+### Why the empty layer matters
+
+**Repetition is a layer with nothing in it.** That is not an omission, it is the current state of the design ([ADR 0017](decisions/0017-no-loop-until-it-is-earned.md)): `milhouse step` runs one unit of work and a person decides whether there is another.
+
+Having it named and empty is what made removing the loop cost one file. Nothing below it had a position on how many iterations there would be, so nothing below it changed. The same property is what will make putting one back cheap, and it is the test to apply when adding anything: if a new piece would need to know how many units of work are coming, it is in the wrong layer.
 
 ## Modules
 
@@ -72,7 +100,7 @@ src/milhouse/
 
 - **Everything external goes through `proc.py`.** No module calls `subprocess` directly. That is the seam tests fake, and the only place that knows about timeouts and JSON parsing.
 - **`herdr.py` is a narrow client.** Swapping the CLI transport for the socket API ([ADR 0001](decisions/0001-shell-out-to-bd-and-herdr.md)) should be one file, not a refactor. Nothing above it knows argv exists.
-- **`outcome.py` and `policy.py` are pure.** One says what happened, the other says what to do about it. Values in, values out, so every row of both decision tables is a unit test with no subprocess involved.
+- **`outcome.py` and `policy.py` are pure.** See [the layering](#the-layering): values in, values out, so every row of both decision tables is a unit test with no subprocess involved.
 - **`session.py` holds no policy.** It does not decide what to work on next or whether there is a next. That is what would let a loop reuse it unchanged.
 - **`cli.py` holds no behaviour, and no private attributes.** It resolves config, drives a `Session` through public methods, and formats the result.
 - **`completion.py` never raises and never calls a server.** Its callbacks run on a keypress, in a shell with nowhere to show a traceback, so they answer from the filesystem and from constants rather than from `bd`, `herdr`, or `gh`.

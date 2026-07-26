@@ -20,7 +20,7 @@ Meanwhile the part that had been observed to work — claim one issue, hand it t
 
 **One iteration is the unit. Everything else is built from it.**
 
-The old `RalphLoop` splits four ways, and the split is the decision:
+The old `RalphLoop` splits four ways, and the split is the decision. It is stated as a general rule, with what each layer may not do, in [the architecture](../architecture.md#the-layering):
 
 | Module       | Owns                                                           | Pure? |
 | ------------ | -------------------------------------------------------------- | ----- |
