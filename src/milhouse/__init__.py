@@ -13,9 +13,3 @@ never in an accumulating chat session.
 
 See ``docs/architecture.md`` for the module boundaries and the data flow.
 """
-
-from __future__ import annotations
-
-__all__ = ["__version__"]
-
-__version__ = "0.1.0"

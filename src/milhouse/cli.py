@@ -19,13 +19,14 @@ from __future__ import annotations
 
 import logging
 import sys
+from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
 from typer.core import TyperGroup
 
-from . import __version__, completion, prompts, sources
+from . import completion, prompts, sources
 from . import doctor as doctor_checks
 from .config import Config, load
 from .errors import MilhouseError
@@ -82,7 +83,7 @@ app.info.cls = _MilhouseGroup
 def _version_callback(value: bool) -> None:
     """Print the version and exit, for ``--version``."""
     if value:
-        typer.echo(f"milhouse {__version__}")
+        typer.echo(f"milhouse {package_version('milhouse')}")
         raise typer.Exit()
 
 

@@ -1,6 +1,6 @@
 [project]
 name = "milhouse"
-version = "0.1.0"
+version = "0.1"
 description = "Agentic AI orchestrator: decompose a task into tracked issues, then drive a ralph loop over them."
 readme = "README.md"
 requires-python = ">=3.11"
