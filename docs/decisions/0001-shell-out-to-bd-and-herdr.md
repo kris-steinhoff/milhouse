@@ -25,3 +25,5 @@ What it costs, stated plainly so the trade is revisitable:
 ## Revisit when
 
 Concurrency lands. Waiting on N panes is the point where one connection watching everything beats N blocking processes, and it is the reason to write the socket client.
+
+**This condition has been reached.** [ADR 0020](0020-a-lane-is-a-herdr-worktree.md) works several issues at once, one lane each. It splits the primitive into `dispatch` and `reap` rather than blocking on every lane, which is what lets the CLI transport survive the first parallel runs — `reap` polls `herdr tab list` for `agent_status` instead of holding a process per pane. That is a reprieve, not an answer: polling is what `events.subscribe` exists to replace, and the socket client is the fix once the lane count makes the polling interval matter.
