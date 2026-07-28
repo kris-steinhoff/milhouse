@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from . import outcome as outcome_module
 from . import prompts
@@ -110,17 +111,17 @@ def _work(session: Session, issue: Issue) -> Iteration:
     suffix = f" (attempt {attempt})" if attempt > 1 else ""
     session.report(f"iteration {number}: {issue.id} {issue.title}{suffix}")
 
+    runner = session.runner_for(issue)
     prompt = prompts.render_iterate(
         issue,
         background=session.background(issue),
-        branch=session.branch,
+        branch=session.repo.at(runner.workdir).current_branch(),
         attempt=attempt,
         previous=[{"outcome": item.outcome, "detail": item.detail} for item in previous],
     )
-    runner = session.runner
-    # Read git where the turn will actually happen. That is the repository root
-    # today and a lane's worktree later, and anywhere else would credit this
-    # issue with somebody else's commits (ADR 0020).
+    # Read git where the turn will actually happen — the lane's worktree, not
+    # the repository root. Anywhere else would credit this issue with somebody
+    # else's commits (ADR 0020).
     repo = session.repo.at(runner.workdir)
     head_before = repo.head()
     started = now()
@@ -146,7 +147,7 @@ def _work(session: Session, issue: Issue) -> Iteration:
         issue_after = issue
         error = error or f"could not re-read {issue.id} after the turn: {exc}"
 
-    checked = _verify(session, issue_after, error=error)
+    checked = _verify(session, issue_after, error=error, cwd=runner.workdir)
     verdict = outcome_module.classify(
         issue_after=issue_after,
         commits=commits,
@@ -178,15 +179,23 @@ def _work(session: Session, issue: Issue) -> Iteration:
     )
 
 
-def _verify(session: Session, issue_after: Issue, *, error: str | None) -> Verification | None:
+def _verify(
+    session: Session, issue_after: Issue, *, error: str | None, cwd: Path
+) -> Verification | None:
     """Run the repository's gate, but only on a turn that claims to be finished.
 
     Running it every iteration would buy the whole test suite to confirm that an
     unfinished issue is unfinished. An iteration that already failed for another
     reason is skipped for the same argument.
+
+    It runs in the lane, not in the primary checkout, because the lane is where
+    the work is. That is also where the per-lane bootstrap problem shows up: a
+    fresh worktree has no `.venv` and no `node_modules`, so a gate that assumes
+    one fails for environmental reasons rather than real ones
+    (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
     """
     command = session.config.verify.command
     if error or not issue_after.is_closed or not command:
         return None
-    session.report(f"  verifying: {' '.join(command)}")
-    return verify(session.config)
+    session.report(f"  verifying in {cwd}: {' '.join(command)}")
+    return verify(session.config, cwd=cwd)

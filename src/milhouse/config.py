@@ -24,6 +24,7 @@ __all__ = [
     "AgentConfig",
     "Config",
     "HerdrConfig",
+    "LaneConfig",
     "TrackerConfig",
     "VerifyConfig",
     "config_path",
@@ -87,6 +88,19 @@ class VerifyConfig(BaseModel):
     """How long the command may take before it counts as failed. Default 10 minutes."""
 
 
+class LaneConfig(BaseModel):
+    """Where an issue's agent works.
+
+    A lane is a herdr worktree labelled with the issue id
+    (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
+    herdr chooses the checkout path, under ``~/.herdr/worktrees``, so nothing
+    here says where the lanes go.
+    """
+
+    branch_prefix: str = "milhouse/"
+    """Prefix for the branch a lane is created on, e.g. ``milhouse/bd-e.1``."""
+
+
 class TrackerConfig(BaseModel):
     """Which issues in the tracker milhouse is allowed to work.
 
@@ -133,6 +147,7 @@ class Config(BaseModel):
 
     agent: AgentConfig = Field(default_factory=AgentConfig)
     verify: VerifyConfig = Field(default_factory=VerifyConfig)
+    lane: LaneConfig = Field(default_factory=LaneConfig)
     tracker: TrackerConfig = Field(default_factory=TrackerConfig)
     herdr: HerdrConfig = Field(default_factory=HerdrConfig)
 
@@ -205,6 +220,7 @@ _ENV_MAP: dict[str, tuple[str, str, str]] = {
     "MILHOUSE_TURN_TIMEOUT_MS": ("agent", "turn_timeout_ms", "int"),
     "MILHOUSE_VERIFY_COMMAND": ("verify", "command", "argv"),
     "MILHOUSE_VERIFY_TIMEOUT_MS": ("verify", "timeout_ms", "int"),
+    "MILHOUSE_LANE_BRANCH_PREFIX": ("lane", "branch_prefix", "str"),
     "MILHOUSE_TRACKER_LABEL": ("tracker", "label", "str"),
     "MILHOUSE_TRACKER_PARENT": ("tracker", "parent", "str"),
     # HERDR_WORKSPACE_ID first: later entries win, and an explicit MILHOUSE_

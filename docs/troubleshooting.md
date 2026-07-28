@@ -78,11 +78,11 @@ This is the general shape of the problem: an agent flag that opens an interactiv
 
 ## The agent is blocked
 
-herdr reports `blocked` when the agent is waiting on a human, which is almost always a permission prompt. milhouse re-opens the issue, stops, and names the workspace to attach to:
+herdr reports `blocked` when the agent is waiting on a human, which is almost always a permission prompt. milhouse re-opens the issue and stops. The agent runs in the issue's lane, so that is where to look:
 
 ```sh
-herdr workspace list          # find the milhouse:<repo> workspace
-herdr agent attach milhouse-<repo>
+milhouse status               # the lanes, and which issue each one is for
+herdr agent attach milhouse-<issue-id>
 ```
 
 The agent is exited by then, so attaching shows you the pane rather than a live turn. If the agent was sitting on a dialog the exit keys do not dismiss, milhouse will have replaced the pane and the scrollback is gone with it — `iter-NNN.term` survives either way, because the transcript is captured before the agent is exited. Read it, decide what the agent needed, then run again: the issue is back in the ready queue.
@@ -150,6 +150,36 @@ milhouse step --label agent
 
 Epics are excluded whatever the fence says.
 
+## milhouse refuses because an issue depends on two lanes
+
+```console
+$ milhouse step
+milhouse: bd-e.3 depends on work in more than one lane (bd-e.1 on milhouse/bd-e.1, bd-e.2 on milhouse/bd-e.2),
+and which branch it should continue from is not decided. Land one of them first.
+```
+
+`--base` takes one ref, and an issue whose blockers ran in separate lanes has two candidates. Which one to build on is [deliberately undecided](decisions/README.md#still-open), so milhouse stops rather than guessing.
+
+Merge one of the lane branches into the other, or into your main line, and step again: with one live lane left, the issue stacks onto it.
+
+## Where did the work go?
+
+Nothing is committed in your checkout. Every turn happens in a lane — a herdr worktree under `~/.herdr/worktrees/<repo>/<branch>`, on its own branch ([ADR 0020](decisions/0020-a-lane-is-a-herdr-worktree.md)):
+
+```sh
+milhouse status                       # the lanes and their branches
+git log --oneline milhouse/<issue-id> # what an agent actually committed
+git merge milhouse/<issue-id>         # landing it is yours to do
+```
+
+A lane outlives the workspace holding it: closing the workspace leaves the checkout and the branch alone, and stepping the same issue again re-opens it. `herdr worktree remove` is how you get rid of one for good.
+
+## Verification fails in a lane but passes in my checkout
+
+A fresh worktree has no `.venv` and no `node_modules`, and `[verify] command` runs in the lane. A gate that assumes a built environment therefore fails for environmental reasons rather than real ones, and the issue is re-opened with a note saying so.
+
+The per-lane bootstrap is [an open question](decisions/README.md#still-open). Until it has an answer: point the gate at something that bootstraps itself (`uv run …` creates the environment it needs), or leave `[verify] command` unset and take the agent at its word.
+
 ## A step reported the working tree is dirty
 
 The iteration left uncommitted changes behind. That matters before you step again, because the next agent would inherit changes it did not make and cannot explain.
@@ -167,7 +197,7 @@ If `git status` shows only files your issue tracker wrote, that is not the agent
 echo '.beads/interactions.jsonl' >> .gitignore
 ```
 
-milhouse's own bookkeeping cannot cause this: it keeps `.milhouse/runs/` ignored itself.
+milhouse's own bookkeeping cannot cause this: it keeps `.milhouse/runs/` ignored itself, and lanes live outside the repository. A lane that does land inside one gets a `.git/info/exclude` entry.
 
 ## The pane did not return to a shell prompt
 

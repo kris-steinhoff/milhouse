@@ -13,9 +13,10 @@ milhouse step
   │
   └─ one step ─────────────► step():
         bd ready --claim --limit 1 --exclude-type epic  → issue (empty ⇒ nothing ready)
-        bd show <issue.parent>   → the background the prompt carries
+        bd show <issue>          → its blockers, and its parent's description
+        open the issue's LANE (a herdr worktree, found or created)
         render iterate prompt for that issue
-        herdr agent start    (FRESH agent in the pane)
+        herdr agent start    (FRESH agent in the lane's pane)
         herdr agent prompt --wait --until idle --until blocked
         herdr agent read     (capture the transcript)
         exit the agent       (pane returns to a shell prompt)
@@ -26,6 +27,25 @@ milhouse step
 
 Nothing above puts work _into_ the tracker. There is no task definition and no planning agent: issues arrive in beads by whatever process the human wants, and milhouse works whatever `bd ready` offers ([ADR 0018](decisions/0018-no-task-milhouse-works-the-ready-queue.md)).
 
+## Lanes
+
+Every turn happens in a **lane**: a herdr worktree labelled with the issue id, which is a checkout of its own, on a branch of its own, in a workspace of its own ([ADR 0020](decisions/0020-a-lane-is-a-herdr-worktree.md)). That container is what will let several agents work at once, and herdr already had it.
+
+**herdr is the registry.** `herdr worktree list` says what lanes exist and on what branches; `herdr workspace list` says which issue each one is for, because the id is the workspace label. milhouse keeps no lane state — the same rule it applies to issues.
+
+Assignment is the one part that is milhouse's own judgement, and it is four rules over the dependency graph:
+
+| The issue                               | Gets                                           |
+| --------------------------------------- | ---------------------------------------------- |
+| already has a lane                      | that lane, on the branch it is already on      |
+| has one blocker in a live lane          | a new **tab** in that lane, same branch        |
+| has none, or blockers with no live lane | a new worktree, branched from the primary      |
+| has blockers in **two** lanes           | refused — two candidate bases, and no rule yet |
+
+A second attempt at an issue therefore lands on the branch the first one committed to, and a chain of dependent issues stacks on one branch rather than forking. The last row is [deliberately undecided](decisions/README.md#still-open) and is the first thing that will bite.
+
+herdr checks lanes out under `~/.herdr/worktrees/`, outside the repository, so a lane's untracked files cannot show up as a dirty tree in another lane's classification. milhouse writes a `.git/info/exclude` entry for any lane that lands inside the repository anyway, because that failure would be silent.
+
 The defining property of ralph is a **fresh context window every iteration**. milhouse gets that by starting a new agent in the pane each step and exiting it when the turn ends, rather than reusing one long-lived session. State lives in beads and git, never in an accumulating chat session.
 
 That is what the ralph methodology is about, and it is not the part that was de-scoped. What is missing is stringing the iterations together automatically, which needs a policy nobody has earned yet. `step()` already takes the policy as an argument, so writing one is writing a function.
@@ -34,13 +54,13 @@ That is what the ralph methodology is about, and it is not the part that was de-
 
 Five layers, each defined by what it is **not** allowed to do. The filenames below are what they happen to be called here. The constraints are the design, and they are what any new piece of milhouse gets sorted into.
 
-| Layer           | Owns                                             | Pure? | May not                                    |
-| --------------- | ------------------------------------------------ | ----- | ------------------------------------------ |
-| **Resources**   | The lock, branch, workspace, pane, runner, claim | no    | decide anything                            |
-| **Work**        | One unit of work, start to finish                | no    | decide what it means, or whether to repeat |
-| **Observation** | What happened                                    | yes   | perform I/O                                |
-| **Judgement**   | What to do about what happened                   | yes   | perform I/O, or observe                    |
-| **Repetition**  | How many units of work happen                    | no    | anything else                              |
+| Layer           | Owns                                      | Pure? | May not                                    |
+| --------------- | ----------------------------------------- | ----- | ------------------------------------------ |
+| **Resources**   | The lock, the lane, the runner, the claim | no    | decide anything                            |
+| **Work**        | One unit of work, start to finish         | no    | decide what it means, or whether to repeat |
+| **Observation** | What happened                             | yes   | perform I/O                                |
+| **Judgement**   | What to do about what happened            | yes   | perform I/O, or observe                    |
+| **Repetition**  | How many units of work happen             | no    | anything else                              |
 
 In this codebase: `session.py`, `step.py`, `outcome.py`, `policy.py`, and — today — nothing at all.
 
@@ -68,6 +88,7 @@ src/milhouse/
   models.py      Issue, Iteration (pydantic values)
   rundir.py      .milhouse/runs — turn artifacts and the run lock
   audit.py       AuditLog — the iteration history, in bd's audit trail
+  lanes.py       Lane, Lanes — which worktree an issue is worked in
   proc.py        run() / run_json() — the single subprocess chokepoint
   errors.py      MilhouseError hierarchy, mapped to exit codes
   gitrepo.py     one working directory: read HEAD, ask what landed, branch it
@@ -77,7 +98,7 @@ src/milhouse/
     beads.py     bd wrapper
   herdr.py       narrow client over the herdr CLI — swappable transport
   runner.py      Runner protocol, and AgentRunner — start/prompt/read/exit
-  session.py     Session — lock, branch, workspace, claim. No policy.
+  session.py     Session — lock, branch, workspace, lane, claim. No policy.
   outcome.py     classify(issue_after, git, agent_state) -> Verdict
   policy.py      decide(iteration) -> Decision. No I/O.
   verify.py      run the repo's own gate over an issue the agent closed
@@ -123,9 +144,9 @@ The dependency graph is the only structure milhouse reads, and `bd` owns it. Not
 | State                              | Home                                   | Authoritative? |
 | ---------------------------------- | -------------------------------------- | -------------- |
 | The work: what to do, what is done | beads                                  | yes            |
-| The code                           | git, on the checked-out branch         | yes            |
-| Which workspace and pane           | herdr, found by workspace label        | yes            |
-| Which branch                       | git, whatever is checked out           | yes            |
+| The code                           | git, on each lane's branch             | yes            |
+| Which lane an issue is worked in   | herdr, found by workspace label        | yes            |
+| Which branch a lane is on          | herdr's worktree list, and git         | yes            |
 | Iteration history                  | `.beads/interactions.jsonl`, via `bd`  | bookkeeping    |
 | Who is running in this repository  | `.milhouse/runs/lock.json`             | bookkeeping    |
 | Exact prompt sent, pane transcript | `.milhouse/runs/<issue-id>/iter-NNN.*` | bookkeeping    |

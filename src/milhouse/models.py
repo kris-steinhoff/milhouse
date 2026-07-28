@@ -57,6 +57,28 @@ class Issue(BaseModel):
         """Whether ``bd`` considers this issue closed."""
         return self.status == "closed"
 
+    @property
+    def blocked_by(self) -> list[str]:
+        """Ids of the issues this one depends on, oldest relation first.
+
+        ``bd show`` puts every relation in one ``dependencies`` array and tells
+        them apart by ``dependency_type``, so the parent epic appears there too
+        as ``parent-child``. Only ``blocks`` is a real ordering constraint, and
+        only ordering constraints decide which lane an issue goes in
+        (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
+
+        Empty when the bead came from a query that does not carry relations,
+        such as ``bd ready``.
+        """
+        relations = self.raw.get("dependencies")
+        if not isinstance(relations, list):
+            return []
+        return [
+            str(item["id"])
+            for item in relations
+            if isinstance(item, dict) and item.get("dependency_type") == "blocks" and item.get("id")
+        ]
+
 
 class Iteration(BaseModel):
     """The record of one turn: one issue, one fresh agent, one classification.

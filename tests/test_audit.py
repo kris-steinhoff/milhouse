@@ -158,7 +158,7 @@ def test_iterations_are_read_back_oldest_first(audit: AuditLog) -> None:
 
 
 def test_bd_s_own_entries_are_not_iterations(audit: AuditLog) -> None:
-    """Milhouse shares this file with bd, which writes a field_change per mutation."""
+    """This file is shared with bd, which writes a field_change per mutation."""
     append(
         audit,
         {"kind": "field_change", "issue_id": "bd-e.1", "extra": {"field": "status"}},

@@ -21,7 +21,7 @@ from typing import Any
 from milhouse.audit import AuditLog
 from milhouse.config import Config
 from milhouse.errors import MilhouseError
-from milhouse.herdr import Workspace
+from milhouse.herdr import Workspace, Worktree
 from milhouse.models import Issue
 from milhouse.runner import TurnResult
 from milhouse.session import Session
@@ -83,16 +83,33 @@ class FakeTracker:
 
 @dataclass
 class FakeClient:
-    """A herdr client that hands out one workspace and never fails."""
+    """A herdr client holding workspaces, worktrees, and tabs in memory.
+
+    It models the shape that matters to lane assignment: a worktree is opened in
+    a workspace of its own, the workspace label carries the issue id, and a
+    stacked issue is a labelled tab inside somebody else's lane.
+    """
 
     workspaces: dict[str, str] = field(default_factory=dict)
     """Open workspaces, as ``{workspace_id: label}``."""
 
+    checkouts: list[Worktree] = field(default_factory=list)
+    """The worktree registry, primary checkout included."""
+
+    tab_labels: dict[str, dict[str, str]] = field(default_factory=dict)
+    """Tabs per workspace, as ``{workspace_id: {tab_id: label}}``."""
+
     focused: bool = False
     avoided: str | None = None
+    _next: int = 0
+
+    # -- workspaces -------------------------------------------------------
 
     def workspace_exists(self, workspace_id: str) -> bool:
         return workspace_id in self.workspaces
+
+    def workspace_labels(self) -> dict[str, str]:
+        return dict(self.workspaces)
 
     def find_workspace(self, label: str) -> str | None:
         for workspace_id, existing in self.workspaces.items():
@@ -103,17 +120,88 @@ class FakeClient:
     def create_workspace(self, cwd: Path, label: str, *, focus: bool = False) -> Workspace:
         self.focused = focus
         self.workspaces["wG"] = label
+        self.checkouts.append(Worktree(path=cwd, branch="main", workspace_id="wG"))
         return Workspace(workspace_id="wG", pane_id="wG:p1", label=label)
 
     def first_pane(self, workspace_id: str) -> str:
         return f"{workspace_id}:p1"
 
-    def pane_to_work_in(self, workspace_id: str, cwd: Path, *, avoid: str | None = None) -> str:
+    def pane_to_work_in(
+        self,
+        workspace_id: str,
+        cwd: Path,
+        *,
+        avoid: str | None = None,
+        tab_id: str | None = None,
+    ) -> str:
         """Hand out ``:p1``, or ``:p2`` when ``:p1`` is the caller's own pane."""
         self.avoided = avoid
+        if tab_id is not None:
+            return f"{tab_id}:p1"
         if avoid == f"{workspace_id}:p1":
             return f"{workspace_id}:p2"
         return f"{workspace_id}:p1"
+
+    # -- worktrees and tabs -----------------------------------------------
+
+    def worktrees(self, repo_root: Path) -> list[Worktree]:
+        return list(self.checkouts)
+
+    def tabs(self, workspace_id: str) -> list[dict[str, str]]:
+        return [
+            {"tab_id": tab_id, "label": label}
+            for tab_id, label in self.tab_labels.get(workspace_id, {}).items()
+        ]
+
+    def create_worktree(
+        self,
+        *,
+        source_workspace: str,
+        branch: str,
+        base: str,
+        label: str,
+        focus: bool = False,
+    ) -> Worktree:
+        self._next += 1
+        workspace_id = f"wL{self._next}"
+        worktree = Worktree(
+            path=Path("/worktrees") / branch.replace("/", "-"),
+            branch=branch,
+            workspace_id=workspace_id,
+            pane_id=f"{workspace_id}:p1",
+        )
+        self.workspaces[workspace_id] = label
+        self.checkouts.append(worktree)
+        self.tab_labels.setdefault(workspace_id, {})[f"{workspace_id}:t1"] = "1"
+        return worktree
+
+    def open_worktree(
+        self, *, source_workspace: str, path: Path, label: str, focus: bool = False
+    ) -> Worktree:
+        self._next += 1
+        workspace_id = f"wL{self._next}"
+        dormant = next(item for item in self.checkouts if item.path == path)
+        reopened = Worktree(
+            path=path,
+            branch=dormant.branch,
+            workspace_id=workspace_id,
+            pane_id=f"{workspace_id}:p1",
+        )
+        self.workspaces[workspace_id] = label
+        self.checkouts = [reopened if item.path == path else item for item in self.checkouts]
+        return reopened
+
+    def create_tab(self, workspace_id: str, cwd: Path, label: str, *, focus: bool = False) -> str:
+        tabs = self.tab_labels.setdefault(workspace_id, {})
+        tab_id = f"{workspace_id}:t{len(tabs) + 1}"
+        tabs[tab_id] = label
+        return f"{tab_id}:p1"
+
+    # -- agents -----------------------------------------------------------
+
+    def pane_agent(self, pane_id: str) -> str | None:
+        """Always a shell prompt: no agent is ever started against this fake."""
+        return None
 
 
 @dataclass

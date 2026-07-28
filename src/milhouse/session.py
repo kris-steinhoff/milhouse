@@ -31,6 +31,7 @@ from .config import Config
 from .errors import MilhouseError, UserAbortError
 from .gitrepo import GitRepo
 from .herdr import HerdrClient, Workspace
+from .lanes import Lanes
 from .models import Issue, Iteration
 from .policy import Decision
 from .rundir import LOCK_FILENAME, RunLock
@@ -83,11 +84,13 @@ class Session:
         self.audit = audit or AuditLog(config.repo_root)
         self.report = report
         self.attach = attach
+        self.lanes = Lanes(client, config)
         self.lock = RunLock(config.run_dir() / LOCK_FILENAME)
         self.branch: str | None = None
         self.claimed_issue: str | None = None
         self.workspace: Workspace | None = None
         self._runner: Runner | None = runner
+        self._active: Runner | None = None
         self._signals: dict[int, Any] = {}
 
     # -- lifecycle --------------------------------------------------------
@@ -194,62 +197,78 @@ class Session:
     def open_workspace(self) -> None:
         """Reuse the configured workspace, find milhouse's own, or create one.
 
+        This is the **source** workspace: the primary checkout, which is how
+        herdr knows which repository a lane's worktree comes from. No agent runs
+        in it — every turn happens in a lane
+        (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
+
         milhouse writes no workspace id down. It asks the tool that owns them:
         the configured id if there is one, otherwise the open workspace carrying
         this repository's label, otherwise a fresh one.
-
-        A reused workspace is not an empty one. Its panes may be running agents,
-        including the one milhouse was typed into, so the pane to work in is
-        chosen rather than taken.
         """
         configured = self.config.herdr.workspace
         existing = configured if configured and self.client.workspace_exists(configured) else None
         existing = existing or self.client.find_workspace(self.workspace_label)
         if existing:
-            workspace = Workspace(
-                workspace_id=existing,
-                pane_id=self.client.pane_to_work_in(
-                    existing,
-                    self.config.repo_root,
-                    avoid=self.config.herdr.self_pane,
-                ),
-                label=self.workspace_label,
+            self.workspace = Workspace(
+                workspace_id=existing, pane_id="", label=self.workspace_label
             )
-        else:
-            workspace = self.client.create_workspace(
-                self.config.repo_root,
-                self.workspace_label,
-                focus=self.attach,
-            )
-            self.report(f"created herdr workspace {workspace.workspace_id} ({workspace.label})")
+            return
+        self.workspace = self.client.create_workspace(
+            self.config.repo_root,
+            self.workspace_label,
+            focus=self.attach,
+        )
+        self.report(
+            f"created herdr workspace {self.workspace.workspace_id} ({self.workspace.label})"
+        )
 
-        self.workspace = workspace
-        if self._runner is None:
-            self._runner = AgentRunner(
-                self.client,
-                self.config,
-                run_dir=self.config.run_dir(),
-                pane_id=workspace.pane_id,
-                agent_name=f"milhouse-{self.config.repo_root.name}",
-            )
+    def runner_for(self, issue: Issue) -> Runner:
+        """Open ``issue``'s lane and return a runner bound to it.
 
-    @property
-    def runner(self) -> Runner:
-        """Whatever runs this session's turns.
+        Each issue gets its own lane, its own branch, and its own agent name, so
+        two turns can be in flight without either seeing the other's pane or
+        commits.
+
+        Args:
+            issue: The claimed issue.
+
+        Returns:
+            A runner working in that lane.
 
         Raises:
-            MilhouseError: Called before the workspace was opened, which is a bug.
+            MilhouseError: The workspace has not been opened, or the issue's
+                blockers ran in more than one lane.
         """
-        if self._runner is None:
+        if self._runner is not None:
+            # Injected by the tests, which run no agent and need no lane.
+            return self._runner
+        if self.workspace is None:
             raise MilhouseError("no herdr workspace has been opened yet")
-        return self._runner
+        lane = self.lanes.open(
+            issue,
+            source_workspace=self.workspace.workspace_id,
+            base=self.branch or "HEAD",
+            focus=self.attach,
+        )
+        self.report(f"  lane {lane.workspace_id} on {lane.branch} ({lane.path})")
+        self._active = AgentRunner(
+            self.client,
+            self.config,
+            run_dir=self.config.run_dir(),
+            pane_id=lane.pane_id,
+            agent_name=lane.agent_name,
+            workdir=lane.path,
+        )
+        return self._active
 
     def exit_agent(self) -> None:
-        """Best-effort return of the pane to a shell prompt."""
-        if self._runner is None:
+        """Best-effort return of the last lane's pane to a shell prompt."""
+        runner = self._runner or self._active
+        if runner is None:
             return
         try:
-            self._runner.exit_agent()
+            runner.exit_agent()
         except MilhouseError as exc:
             log.warning("could not exit the agent: %s", exc)
 
@@ -270,7 +289,21 @@ class Session:
             return None
         self.claimed_issue = issue.id
         self.audit.claimed(issue.id)
-        return issue
+        return self._full(issue)
+
+    def _full(self, issue: Issue) -> Issue:
+        """Re-read a claimed issue, since ``bd ready`` does not carry relations.
+
+        Lane assignment needs :attr:`~milhouse.models.Issue.blocked_by`, which
+        only ``bd show`` returns. A tracker that will not answer is not worth
+        failing the turn over: the issue is claimed either way, and the worst
+        case is a lane of its own rather than a tab in its predecessor's.
+        """
+        try:
+            return self.tracker.get(issue.id)
+        except MilhouseError as exc:
+            log.warning("could not re-read %s after claiming it: %s", issue.id, exc)
+            return issue
 
     def background(self, issue: Issue) -> str:
         """The parent epic's description, which is this issue's wider context.

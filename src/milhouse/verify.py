@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
 from . import proc
 from .config import Config
@@ -54,11 +55,14 @@ class Verification:
     output: str = ""
 
 
-def verify(config: Config) -> Verification | None:
-    """Run the configured verification command in the repository.
+def verify(config: Config, *, cwd: Path | None = None) -> Verification | None:
+    """Run the configured verification command.
 
     Args:
         config: Resolved configuration, holding the command and its timeout.
+        cwd: Where to run it. Defaults to the repository root; a step passes the
+            lane the turn happened in, because that is where the work is
+            (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
 
     Returns:
         What the command reported, or ``None`` when none is configured — which
@@ -73,7 +77,7 @@ def verify(config: Config) -> Verification | None:
     try:
         result = proc.run(
             argv,
-            cwd=config.repo_root,
+            cwd=cwd or config.repo_root,
             timeout=config.verify.timeout_ms / 1000,
             check=False,
         )

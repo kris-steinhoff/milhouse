@@ -1,6 +1,6 @@
 # 0020 — A lane is a herdr worktree, and herdr is the lane registry
 
-**Status:** accepted, not yet implemented. The docs describe today's behaviour until it lands.
+**Status:** accepted and implemented, except for the joins it leaves open.
 
 ## Context
 
@@ -41,6 +41,14 @@ Assignment and the base-branch decision are the only steps needing the dependenc
 - `milhouse step` stays as dispatch-one-and-wait
 
 This keeps every pure function intact and does not require a repetition policy, so [ADR 0017](0017-no-loop-until-it-is-earned.md) still holds. The run lock becomes per-lane, and `bd ready --claim` is what makes two dispatchers safe.
+
+## What implementation corrected
+
+The decision held. Two things said about herdr above did not, and both made the result better rather than worse.
+
+**A worktree gets a workspace of its own, not a tab set inside the repository's.** The context describes "one workspace per repository, one lane per worktree", which is not herdr's containment: `herdr worktree create --workspace <ws>` reads `--workspace` as _which repository to branch from_ and opens the new checkout in a **new** workspace, labelled with `--label`. So the repository's workspace is the source, no agent ever runs in it, and a lane is a workspace of its own. `herdr worktree list` returns `path`, `branch`, and `open_workspace_id` but carries the repository's name as its `label`, so the registry is that list joined to `herdr workspace list` — the issue id is on the workspace. A stacked issue is still a tab, labelled with its own id, inside its predecessor's lane workspace.
+
+**Lanes did not need ignoring.** herdr checks linked worktrees out under `~/.herdr/worktrees/<repo>/<branch>`, outside the repository, so the untracked-files problem never arises. milhouse still writes a `.git/info/exclude` entry for any lane that lands inside the repo, because the failure it prevents is silent and the guard is three lines.
 
 ## Consequences
 

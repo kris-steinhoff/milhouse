@@ -35,6 +35,8 @@ from .config import Config, load
 from .errors import MilhouseError
 from .gitrepo import GitRepo, find_repo_root
 from .herdr import HerdrClient
+from .lanes import Lanes
+from .models import Issue
 from .rundir import LOCK_FILENAME, RunLock
 from .session import Session
 from .step import nothing_ready
@@ -272,6 +274,7 @@ def status(
 
     typer.echo("")
     _print_tree(tracker)
+    _print_lanes(client, config)
 
     history = audit.iterations()
     if history:
@@ -339,9 +342,57 @@ def _dry_run(config: Config) -> None:
     if next_issue is None:
         typer.echo("\nno issues are ready; a step would do nothing")
         return
+    next_issue = tracker.get(next_issue.id)
     background = tracker.get(next_issue.parent).description if next_issue.parent else ""
+    lane_branch, note = _lane_branch(config, next_issue)
+    typer.echo(f"lane      {lane_branch}  ({note})")
     typer.echo(f"\nthe next step would work {next_issue.id} and send:\n")
-    typer.echo(_indent(prompts.render_iterate(next_issue, background=background, branch=branch)))
+    typer.echo(
+        _indent(prompts.render_iterate(next_issue, background=background, branch=lane_branch))
+    )
+
+
+def _lane_branch(config: Config, issue: Issue) -> tuple[str, str]:
+    """Which branch the next step would commit to, and why, opening nothing.
+
+    An issue already in a lane, or whose blocker is in one, continues on that
+    lane's branch. Anything else gets a new one
+    (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
+    """
+    fresh = f"{config.lane.branch_prefix}{issue.id}"
+    try:
+        held = {
+            lane.issue_id: lane
+            for lane in Lanes(HerdrClient(cwd=config.repo_root), config).registry()
+        }
+    except MilhouseError as exc:
+        return fresh, f"herdr unavailable, so this is a guess: {exc}"
+    for issue_id in (issue.id, *issue.blocked_by):
+        lane = held.get(issue_id)
+        if lane is not None:
+            return lane.branch, f"the existing lane for {issue_id}"
+    return fresh, "a new lane"
+
+
+def _print_lanes(client: HerdrClient, config: Config) -> None:
+    """Print the lanes herdr is holding for this repository, if any.
+
+    milhouse keeps no lane state, so this is a read of ``herdr worktree list``
+    joined to the workspace labels
+    (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
+    """
+    try:
+        lanes = Lanes(client, config).registry()
+    except MilhouseError as exc:
+        typer.secho(f"\nlanes   unavailable: {exc}", fg=typer.colors.YELLOW)
+        return
+    if not lanes:
+        return
+    typer.echo("")
+    typer.echo(f"lanes ({len(lanes)})")
+    for lane in lanes:
+        held = lane.issue_id or "(no workspace holds it)"
+        typer.echo(f"  {held}  {lane.branch}  {lane.path}")
 
 
 def _print_tree(tracker: BeadsTracker) -> None:

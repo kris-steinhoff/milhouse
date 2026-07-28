@@ -47,10 +47,10 @@ There is no `[loop]` section. `max_iterations`, `max_attempts`, `on_blocked`, an
 
 How milhouse checks an issue the agent says it finished. See [ADR 0016](decisions/0016-milhouse-verifies.md).
 
-| Key          | Type       | Default               | Environment                             | Meaning                                                                       |
-| ------------ | ---------- | --------------------- | --------------------------------------- | ----------------------------------------------------------------------------- |
-| `command`    | list\[str] | `[]`                  | `MILHOUSE_VERIFY_COMMAND` (shell-split) | Run in the repo root after an iteration closes its issue. Empty runs nothing. |
-| `timeout_ms` | int        | `600000` (10 minutes) | `MILHOUSE_VERIFY_TIMEOUT_MS`            | How long it may take before it counts as failed.                              |
+| Key          | Type       | Default               | Environment                             | Meaning                                                                  |
+| ------------ | ---------- | --------------------- | --------------------------------------- | ------------------------------------------------------------------------ |
+| `command`    | list\[str] | `[]`                  | `MILHOUSE_VERIFY_COMMAND` (shell-split) | Run in the lane after an iteration closes its issue. Empty runs nothing. |
+| `timeout_ms` | int        | `600000` (10 minutes) | `MILHOUSE_VERIFY_TIMEOUT_MS`            | How long it may take before it counts as failed.                         |
 
 A non-zero exit re-opens the issue with the outcome `rejected` and appends the tail of the output as a `bd` note, so the next agent sees why the last one's work was turned down.
 
@@ -58,7 +58,17 @@ Empty by default, so out of the box milhouse takes the agent at its word. There 
 
 No shell is involved, so this is argv rather than a command line. `MILHOUSE_VERIFY_COMMAND` is split with `shlex`, so quoting works the way it does in a shell.
 
-There is no `[git]` section either. `branch_strategy` and `branch_prefix` named a branch after the task definition, and there is no task definition ([ADR 0018](decisions/0018-no-task-milhouse-works-the-ready-queue.md)). The agent commits on whatever branch is checked out, until lanes decide otherwise ([ADR 0020](decisions/0020-a-lane-is-a-herdr-worktree.md)).
+There is no `[git]` section. `branch_strategy` and `branch_prefix` named a branch after the task definition, and there is no task definition ([ADR 0018](decisions/0018-no-task-milhouse-works-the-ready-queue.md)). Where commits land is `[lane]`'s answer now.
+
+## `[lane]`
+
+Where an issue's agent works. See [ADR 0020](decisions/0020-a-lane-is-a-herdr-worktree.md).
+
+| Key             | Type   | Default       | Environment                   | Meaning                                             |
+| --------------- | ------ | ------------- | ----------------------------- | --------------------------------------------------- |
+| `branch_prefix` | string | `"milhouse/"` | `MILHOUSE_LANE_BRANCH_PREFIX` | Prefix for a lane's branch, e.g. `milhouse/bd-e.1`. |
+
+A lane is a herdr worktree labelled with the issue id, and herdr chooses where it goes — under `~/.herdr/worktrees/<repo>/<branch>` — so there is no key saying where lanes live. Nothing here turns lanes off: every turn happens in one.
 
 ## `[tracker]`
 
@@ -103,6 +113,7 @@ A reused workspace is not an empty one, which is why `self_pane` exists. Its pan
 | `MILHOUSE_TURN_TIMEOUT_MS`        | `agent.turn_timeout_ms`  |
 | `MILHOUSE_VERIFY_COMMAND`         | `verify.command`         |
 | `MILHOUSE_VERIFY_TIMEOUT_MS`      | `verify.timeout_ms`      |
+| `MILHOUSE_LANE_BRANCH_PREFIX`     | `lane.branch_prefix`     |
 | `MILHOUSE_TRACKER_LABEL`          | `tracker.label`          |
 | `MILHOUSE_TRACKER_PARENT`         | `tracker.parent`         |
 | `MILHOUSE_WORKSPACE`              | `herdr.workspace`        |

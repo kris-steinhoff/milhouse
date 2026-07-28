@@ -112,9 +112,29 @@ milhouse step [options]
 
 Everything except `--dry-run` and `--attach` can also be set in [`.milhouse/config.toml`](configuration.md).
 
-Run from inside a herdr pane, `--workspace` defaults to the workspace that pane is in. Otherwise milhouse looks for an open workspace labelled `milhouse:<repo>` — the one an earlier step left behind — and creates one if there is none. Either way it works in a free pane, never the one you typed into, splitting a new pane if it has to ([configuration](configuration.md#herdr)).
+Run from inside a herdr pane, `--workspace` defaults to the workspace that pane is in. Otherwise milhouse looks for an open workspace labelled `milhouse:<repo>` — the one an earlier step left behind — and creates one if there is none. Either way, that workspace is only the **source**: no agent runs in it, so the pane you typed into is never taken.
 
-The agent commits on whatever branch is checked out. milhouse no longer creates one: there is no task to name a branch after, and lanes are what decides this next ([ADR 0020](decisions/0020-a-lane-is-a-herdr-worktree.md)).
+### Lanes
+
+The agent works in a **lane**: a herdr worktree of its own, on a branch of its own, labelled with the issue id ([ADR 0020](decisions/0020-a-lane-is-a-herdr-worktree.md)). Your own checkout is left alone — milhouse never checks anything out in it.
+
+Which lane an issue gets follows the dependency graph:
+
+| The issue                               | Gets                                                         |
+| --------------------------------------- | ------------------------------------------------------------ |
+| already has a lane                      | that lane, so a retry lands on the branch the last one used  |
+| has one blocker in a live lane          | a new tab in that lane, continuing on the same branch        |
+| has none, or blockers with no live lane | a new worktree, branched from your current branch            |
+| has blockers in **two** lanes           | nothing — milhouse refuses and names both. Land one of them. |
+
+herdr checks lanes out under `~/.herdr/worktrees/<repo>/<branch>`, outside the repository, so they cannot show up as untracked files in another lane. `milhouse status` lists them, and `herdr worktree list` is where they actually live — milhouse keeps no record of its own.
+
+Lanes stay as branches. milhouse reports them, you merge them: building a merge queue before watching a parallel run is exactly the guessing [ADR 0017](decisions/0017-no-loop-until-it-is-earned.md) exists to prevent.
+
+Two things to know before pointing this at a real repository:
+
+- **A fresh worktree has no `.venv` and no `node_modules`.** `[verify] command` runs in the lane, so a gate that assumes a built environment fails for environmental reasons rather than real ones. Leave it unset, or point it at something that bootstraps itself (`uv run …` does).
+- **Two green lanes can be red together.** Serial work on one branch could not produce that. Nothing in milhouse checks for it yet.
 
 Exits `0` when the issue was finished and `9` when it was not, so a shell loop can stand in for the policy milhouse does not have:
 
@@ -145,13 +165,15 @@ A lock left behind by a dead process is taken over automatically, with a line sa
 ### What each iteration does
 
 1. `bd ready --claim --limit 1 --exclude-type epic`, plus the configured fence — an empty result means nothing is ready.
-2. Render `iterate.md.j2` for that issue and save it to `<issue-id>/iter-NNN.prompt`.
-3. `herdr agent start` a **new** agent in the pane.
-4. `herdr agent prompt --wait` until the turn settles.
-5. Capture the pane transcript to `<issue-id>/iter-NNN.term`.
-6. Exit the agent, returning the pane to a shell prompt.
-7. If the issue is closed and `[verify] command` is set, run it.
-8. Classify the outcome from beads, git, and that command, and record it.
+2. `bd show` it, for its blockers and its parent's description.
+3. Find or create its lane, per the table above.
+4. Render `iterate.md.j2` for that issue and save it to `<issue-id>/iter-NNN.prompt`.
+5. `herdr agent start` a **new** agent in the lane's pane.
+6. `herdr agent prompt --wait` until the turn settles.
+7. Capture the pane transcript to `<issue-id>/iter-NNN.term`.
+8. Exit the agent, returning the pane to a shell prompt.
+9. If the issue is closed and `[verify] command` is set, run it **in the lane**.
+10. Classify the outcome from beads, git in the lane, and that command, and record it.
 
 | Outcome    | Means                                         | Issue becomes | Exits |
 | ---------- | --------------------------------------------- | ------------- | ----- |
@@ -181,6 +203,7 @@ What happens after an iteration is one pure function, `policy.decide()`. Changin
 $ milhouse step
 created herdr workspace wG (milhouse:greet)
 iteration 1: dogfood-6i2.1 Add goodbye(name) to src/greet/__init__.py and document it in README.md
+  lane wL4 on milhouse/dogfood-6i2.1 (/home/you/.herdr/worktrees/greet/milhouse-dogfood-6i2-1)
   → success: dogfood-6i2.1 closed in beads
 the herdr workspace wG is left open
 
@@ -194,6 +217,7 @@ An iteration that does not finish its issue re-opens it and says what happened:
 ```console
 $ milhouse step
 iteration 2: dogfood-6i2.2 Make the src-layout greet package importable when running python -m pytest
+  lane wL5 on milhouse/dogfood-6i2.2 (/home/you/.herdr/worktrees/greet/milhouse-dogfood-6i2-2)
   → stalled: dogfood-6i2.2 is still open and nothing was committed
   dogfood-6i2.2 did not finish (stalled: dogfood-6i2.2 is still open and nothing was committed)
 the herdr workspace wG is left open
@@ -238,6 +262,7 @@ branch    main
 agent     claude
 verify    (none — a closed issue is taken on trust)
 run dir   /home/agent/code/github.com/kris-steinhoff/milhouse/.milhouse/runs
+lane      milhouse/dogfood-6i2.2  (a new lane)
 
 the next step would work dogfood-6i2.2 and send:
 
@@ -250,7 +275,7 @@ It is the cheapest way to see the effect of a prompt, fence, or config change.
 
 ## `milhouse status`
 
-What is in scope, what is claimed, and this repository's iteration history. Reads beads and the run state; starts nothing and changes nothing.
+What is in scope, what lanes are open, what is claimed, and this repository's iteration history. Reads beads, herdr, and git; starts nothing and changes nothing.
 
 ```
 milhouse status [--repo PATH]
@@ -261,11 +286,15 @@ $ milhouse status
 repo    /home/agent/code/github.com/kris-steinhoff/greet
 scope   every ready issue in the repository
 branch  main
-herdr   workspace wY, pane wY:p3
+herdr   workspace wY (labelled milhouse:greet)
 
   [x] dogfood-6i2.1  Add goodbye(name) to src/greet/__init__.py and document it in README.md  (closed)
   [ ] dogfood-6i2.2  Make the src-layout greet package importable when running python -m pytest  (open)
   [ ] dogfood-6i2.3  Add tests/test_greet.py covering hello and goodbye  (open)
+
+lanes (2)
+  dogfood-6i2.1  milhouse/dogfood-6i2.1  /home/you/.herdr/worktrees/greet/milhouse-dogfood-6i2-1
+  dogfood-6i2.2  milhouse/dogfood-6i2.2  /home/you/.herdr/worktrees/greet/milhouse-dogfood-6i2-2
 
 iterations (2)
     1  success   dogfood-6i2.1  dogfood-6i2.1 closed in beads

@@ -14,6 +14,8 @@ The defining property of a [ralph loop](https://ghuntley.com/ralph/) is a **fres
 
 **Getting work into the tracker is your job.** milhouse does not decompose anything and has no planning agent. Issues arrive in beads however you like — by hand, from `bd create --graph`, or from an agent session driven by a prompt you own — and milhouse works whatever `bd ready` offers ([ADR 0018](docs/decisions/0018-no-task-milhouse-works-the-ready-queue.md)).
 
+**Each issue is worked in a lane**, a git worktree of its own on a branch of its own, so your checkout is left alone and several agents can eventually run at once. herdr owns the worktrees and milhouse keeps no record of them ([ADR 0020](docs/decisions/0020-a-lane-is-a-herdr-worktree.md)). Landing the branches is still yours.
+
 ## Prerequisites
 
 | Tool     | Required for                   | Install                                                      |

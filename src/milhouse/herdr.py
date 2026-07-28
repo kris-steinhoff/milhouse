@@ -22,7 +22,7 @@ from typing import Any, Literal
 from . import proc
 from .errors import HerdrError, MilhouseError, TurnTimeoutError
 
-__all__ = ["AgentInfo", "AgentStatus", "HerdrClient", "Workspace"]
+__all__ = ["AgentInfo", "AgentStatus", "HerdrClient", "Workspace", "Worktree"]
 
 AgentStatus = Literal["idle", "working", "blocked", "done", "unknown"]
 """The lifecycle states herdr reports for an agent pane."""
@@ -47,6 +47,30 @@ class Workspace:
     workspace_id: str
     pane_id: str
     label: str = ""
+
+
+@dataclass(frozen=True)
+class Worktree:
+    """A git worktree herdr knows about, and the workspace holding it open.
+
+    herdr's ``worktree create`` opens the checkout in a **workspace of its own**,
+    labelled with whatever ``--label`` was given. That containment is what makes
+    a worktree usable as a lane
+    (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
+
+    Attributes:
+        path: The checkout on disk. herdr puts linked worktrees under
+            ``~/.herdr/worktrees/<repo>/<branch>``, outside the repository.
+        branch: The branch checked out there.
+        workspace_id: The workspace holding it, or ``""`` when nothing has it
+            open — a worktree that outlived the workspace it was created in.
+        pane_id: A pane to work in, when the call that produced this made one.
+    """
+
+    path: Path
+    branch: str
+    workspace_id: str = ""
+    pane_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -147,10 +171,39 @@ class HerdrClient:
         """Close a workspace. milhouse only ever does this to one it created."""
         self._call(["workspace", "close", workspace_id])
 
-    def panes_in(self, workspace_id: str) -> list[dict[str, Any]]:
-        """Every pane herdr reports for ``workspace_id``, in its own order."""
+    def workspace_labels(self) -> dict[str, str]:
+        """Every open workspace's label, keyed by id.
+
+        The lane registry is built from this and :meth:`worktrees`: a lane is a
+        worktree of this repository whose workspace is labelled with an issue id.
+        """
+        workspaces = self._call(["workspace", "list"]).get("workspaces", [])
+        return {
+            str(item["workspace_id"]): str(item.get("label") or "")
+            for item in workspaces
+            if isinstance(item, dict) and item.get("workspace_id")
+        }
+
+    def panes_in(self, workspace_id: str, *, tab_id: str | None = None) -> list[dict[str, Any]]:
+        """Every pane herdr reports for ``workspace_id``, in its own order.
+
+        Args:
+            workspace_id: The workspace to look in.
+            tab_id: Narrow to one tab. A stacked issue gets a tab of its own
+                inside its predecessor's lane, and its agent has to start there
+                rather than anywhere in the workspace.
+        """
         panes = self._call(["pane", "list"]).get("panes", [])
-        return [pane for pane in panes if pane.get("workspace_id") == workspace_id]
+        return [
+            pane
+            for pane in panes
+            if pane.get("workspace_id") == workspace_id
+            and (tab_id is None or pane.get("tab_id") == tab_id)
+        ]
+
+    def tabs(self, workspace_id: str) -> list[dict[str, Any]]:
+        """Every tab herdr reports for ``workspace_id``, in its own order."""
+        return list(self._call(["tab", "list", "--workspace", workspace_id]).get("tabs", []))
 
     def first_pane(self, workspace_id: str) -> str:
         """Return a pane id belonging to ``workspace_id``.
@@ -169,7 +222,14 @@ class HerdrClient:
             raise HerdrError(f"herdr workspace {workspace_id} has no panes")
         return str(panes[0]["pane_id"])
 
-    def pane_to_work_in(self, workspace_id: str, cwd: Path, *, avoid: str | None = None) -> str:
+    def pane_to_work_in(
+        self,
+        workspace_id: str,
+        cwd: Path,
+        *,
+        avoid: str | None = None,
+        tab_id: str | None = None,
+    ) -> str:
         """Find a pane in ``workspace_id`` that milhouse may drive, or make one.
 
         A pane is only usable if it is empty. A pane already running an agent is
@@ -182,21 +242,171 @@ class HerdrClient:
             workspace_id: The workspace to find a pane in.
             cwd: Working directory for a pane that has to be created.
             avoid: A pane to skip whatever its state, namely the caller's own.
+            tab_id: Narrow the search to one tab of the workspace.
 
         Returns:
             An empty pane's id, splitting a new one when every pane is in use.
 
         Raises:
-            HerdrError: The workspace has no panes at all.
+            HerdrError: The workspace, or the named tab, has no panes at all.
         """
-        panes = self.panes_in(workspace_id)
+        panes = self.panes_in(workspace_id, tab_id=tab_id)
         if not panes:
-            raise HerdrError(f"herdr workspace {workspace_id} has no panes")
+            where = f"{workspace_id} tab {tab_id}" if tab_id else workspace_id
+            raise HerdrError(f"herdr workspace {where} has no panes")
         for pane in panes:
             pane_id = str(pane["pane_id"])
             if pane_id != avoid and not pane.get("agent"):
                 return pane_id
         return self.split_pane(str(panes[0]["pane_id"]), cwd)
+
+    # -- worktrees and tabs ----------------------------------------------
+
+    def worktrees(self, repo_root: Path) -> list[Worktree]:
+        """Every worktree of the repository at ``repo_root``, primary one included.
+
+        This is the lane registry, which is why milhouse keeps no lane state of
+        its own. herdr owns the worktree, so herdr is asked
+        (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
+
+        Args:
+            repo_root: The primary checkout, which herdr resolves the repo from.
+
+        Returns:
+            One :class:`Worktree` per checkout, without panes.
+        """
+        result = self._call(["worktree", "list", "--cwd", str(repo_root)])
+        found = []
+        for item in result.get("worktrees", []):
+            if not isinstance(item, dict) or not item.get("path"):
+                continue
+            found.append(
+                Worktree(
+                    path=Path(str(item["path"])),
+                    branch=str(item.get("branch") or ""),
+                    workspace_id=str(item.get("open_workspace_id") or ""),
+                )
+            )
+        return found
+
+    def create_worktree(
+        self,
+        *,
+        source_workspace: str,
+        branch: str,
+        base: str,
+        label: str,
+        focus: bool = False,
+    ) -> Worktree:
+        """Create a worktree and open it in a workspace of its own.
+
+        Args:
+            source_workspace: The workspace of the primary checkout, which is how
+                herdr knows which repository to branch from.
+            branch: Branch to create, e.g. ``milhouse/bd-e.1``.
+            base: Ref to branch from.
+            label: Label for the new workspace. milhouse uses the issue id, which
+                is what :meth:`worktrees` plus :meth:`workspace_labels` then finds
+                it again by.
+            focus: Bring the new workspace to the front.
+
+        Returns:
+            The worktree, its workspace, and the pane it opened with.
+
+        Raises:
+            HerdrError: The worktree could not be created — most often because
+                the branch or the checkout path already exists.
+        """
+        result = self._call(
+            [
+                "worktree",
+                "create",
+                "--workspace",
+                source_workspace,
+                "--branch",
+                branch,
+                "--base",
+                base,
+                "--label",
+                label,
+                "--focus" if focus else "--no-focus",
+            ]
+        )
+        return Worktree(
+            path=Path(_dig(result, "worktree", "path")),
+            branch=_dig(result, "worktree", "branch"),
+            workspace_id=_dig(result, "workspace", "workspace_id"),
+            pane_id=_dig(result, "root_pane", "pane_id"),
+        )
+
+    def open_worktree(
+        self, *, source_workspace: str, path: Path, label: str, focus: bool = False
+    ) -> Worktree:
+        """Re-open a worktree that exists on disk but has no workspace holding it.
+
+        A lane outlives the workspace it was created in: closing the workspace
+        leaves the checkout and its branch alone. Resuming that issue means
+        opening it again rather than creating anything.
+
+        Args:
+            source_workspace: The workspace of the primary checkout.
+            path: The existing checkout.
+            label: Label for the workspace, namely the issue id.
+            focus: Bring it to the front.
+
+        Returns:
+            The worktree, its workspace, and the pane it opened with.
+        """
+        result = self._call(
+            [
+                "worktree",
+                "open",
+                "--workspace",
+                source_workspace,
+                "--path",
+                str(path),
+                "--label",
+                label,
+                "--focus" if focus else "--no-focus",
+            ]
+        )
+        return Worktree(
+            path=Path(_dig(result, "worktree", "path")),
+            branch=_dig(result, "worktree", "branch"),
+            workspace_id=_dig(result, "workspace", "workspace_id"),
+            pane_id=_dig(result, "root_pane", "pane_id"),
+        )
+
+    def create_tab(self, workspace_id: str, cwd: Path, label: str, *, focus: bool = False) -> str:
+        """Add a tab to a workspace and return the pane it opened with.
+
+        This is how an issue whose blocker ran in a live lane continues on the
+        same branch: a new tab in that lane, rather than a worktree branched
+        from it (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
+
+        Args:
+            workspace_id: The lane's workspace.
+            cwd: Working directory for the tab, namely the lane's checkout.
+            label: Label for the tab, namely the issue id.
+            focus: Bring it to the front.
+
+        Returns:
+            The new tab's root pane id.
+        """
+        result = self._call(
+            [
+                "tab",
+                "create",
+                "--workspace",
+                workspace_id,
+                "--cwd",
+                str(cwd),
+                "--label",
+                label,
+                "--focus" if focus else "--no-focus",
+            ]
+        )
+        return _dig(result, "root_pane", "pane_id")
 
     def pane_agent(self, pane_id: str) -> str | None:
         """The kind of agent occupying ``pane_id``, or ``None`` for a shell prompt.

@@ -177,7 +177,7 @@ def test_a_workspace_is_created_and_labelled_after_the_repository(
 def test_a_second_run_finds_the_first_one_s_workspace_by_label(
     config: Config, decomposed: FakeTracker
 ) -> None:
-    """Milhouse writes no workspace id down, so it asks the tool that owns them."""
+    """No workspace id is written down, so milhouse asks the tool that owns them."""
     client = FakeClient(workspaces={"wY": f"milhouse:{config.repo_root.name}"})
     session, _ = build(config, tracker=decomposed, script=[], client=client)
 
@@ -188,13 +188,27 @@ def test_a_second_run_finds_the_first_one_s_workspace_by_label(
     assert not client.focused
 
 
-def test_a_reused_workspace_does_not_take_the_callers_own_pane(
+def test_a_turn_runs_in_the_issue_s_own_lane(config: Config, decomposed: FakeTracker) -> None:
+    """No agent runs in the source workspace: every turn happens in a worktree."""
+    client = FakeClient()
+    session, _ = build(config, tracker=decomposed, script=[], client=client)
+    session._runner = None
+
+    with session as opened:
+        runner = opened.runner_for(decomposed.issues[0])
+
+    assert runner.workdir != config.repo_root
+    assert runner.agent_name == "milhouse-bd-e.1"
+    assert client.workspaces[runner.pane_id.split(":")[0]] == "bd-e.1"
+
+
+def test_a_configured_workspace_is_the_source_rather_than_a_new_one(
     config: Config, decomposed: FakeTracker
 ) -> None:
     """Run from inside a pane, HERDR_WORKSPACE_ID names the workspace it is in.
 
-    That workspace contains the caller's pane, and starting an iteration agent
-    there sends the exit keys to the session that launched milhouse.
+    That is the checkout a lane's worktree comes from, and no agent runs in it,
+    so nothing here can take the pane milhouse was typed into.
     """
     config.herdr.workspace = "wG"
     config.herdr.self_pane = "wG:p1"
@@ -202,6 +216,7 @@ def test_a_reused_workspace_does_not_take_the_callers_own_pane(
     session, _ = build(config, tracker=decomposed, script=[], client=client)
 
     with session as opened:
-        assert client.avoided == "wG:p1"
         assert opened.workspace is not None
-        assert opened.workspace.pane_id == "wG:p2"
+        assert opened.workspace.workspace_id == "wG"
+
+    assert client.workspaces == {"wG": "somebody-elses-label"}

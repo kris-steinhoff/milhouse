@@ -23,6 +23,7 @@ from .test_herdr import wrapped
 runner = CliRunner()
 
 NO_WORKSPACES = wrapped("workspace:list", {"workspaces": []})
+NO_LANES = wrapped("worktree:list", {"worktrees": []})
 
 EPIC = {
     "id": "bd-e",
@@ -43,6 +44,7 @@ def worked_repo(repo: Path, fake_proc: FakeProc, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(cli, "find_repo_root", lambda path: repo)
     fake_proc.expect("git", Reply(stdout="main\n"))
     fake_proc.expect("herdr workspace list", Reply(stdout=NO_WORKSPACES))
+    fake_proc.expect("herdr worktree list", Reply(stdout=NO_LANES))
     (repo / ".beads").mkdir()
     return repo
 
@@ -149,6 +151,42 @@ def test_status_names_the_workspace_herdr_still_has_open(
     assert f"workspace wY (labelled milhouse:{worked_repo.name})" in result.output
 
 
+def test_status_lists_the_lanes_herdr_is_holding(worked_repo: Path, fake_proc: FakeProc) -> None:
+    """No lane state is kept, so this is a read of herdr's registry."""
+    fake_proc.expect("bd", Reply(stdout="[]"))
+    fake_proc.expect(
+        "herdr workspace list",
+        Reply(
+            stdout=wrapped(
+                "workspace:list", {"workspaces": [{"workspace_id": "wL1", "label": "bd-e.1"}]}
+            )
+        ),
+    )
+    fake_proc.expect(
+        "herdr worktree list",
+        Reply(
+            stdout=wrapped(
+                "worktree:list",
+                {
+                    "worktrees": [
+                        {"path": str(worked_repo), "branch": "main", "open_workspace_id": "wG"},
+                        {
+                            "path": "/worktrees/milhouse-bd-e.1",
+                            "branch": "milhouse/bd-e.1",
+                            "open_workspace_id": "wL1",
+                        },
+                    ]
+                },
+            )
+        ),
+    )
+
+    result = invoke("status")
+
+    assert "lanes (1)" in result.output
+    assert "bd-e.1  milhouse/bd-e.1  /worktrees/milhouse-bd-e.1" in result.output
+
+
 def test_status_flags_a_claim_left_by_an_unfinished_run(
     worked_repo: Path, fake_proc: FakeProc
 ) -> None:
@@ -160,11 +198,17 @@ def test_status_flags_a_claim_left_by_an_unfinished_run(
     assert "bd-e.2 is claimed by an unfinished run" in result.output
 
 
+def bd_reads_the_tree(argv: tuple[str, ...]) -> Reply:
+    """Answer `bd show <id>` from the fixture tree, and anything else with the ready issue."""
+    if "show" in argv:
+        target = argv[argv.index("show") + 1]
+        found = EPIC if target == "bd-e" else next(c for c in CHILDREN if c["id"] == target)
+        return Reply(stdout=json.dumps([found]))
+    return Reply(stdout=json.dumps([CHILDREN[1]]))
+
+
 def test_dry_run_shows_the_next_iteration_prompt(worked_repo: Path, fake_proc: FakeProc) -> None:
-    fake_proc.expect(
-        "bd",
-        lambda argv: Reply(stdout=json.dumps([EPIC] if "show" in argv else [CHILDREN[1]])),
-    )
+    fake_proc.expect("bd", bd_reads_the_tree)
 
     result = invoke("step", "--dry-run")
 
@@ -174,7 +218,17 @@ def test_dry_run_shows_the_next_iteration_prompt(worked_repo: Path, fake_proc: F
     assert "bd close bd-e.2" in result.output
     # The epic's description is the background the prompt carries now.
     assert "It should greet." in result.output
-    assert not fake_proc.ran("herdr")
+    assert not fake_proc.ran("herdr", "agent")
+
+
+def test_dry_run_names_the_lane_the_next_step_would_use(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    fake_proc.expect("bd", bd_reads_the_tree)
+
+    result = invoke("step", "--dry-run")
+
+    assert "lane      milhouse/bd-e.2  (a new lane)" in result.output
 
 
 def test_dry_run_reports_an_empty_ready_queue(worked_repo: Path, fake_proc: FakeProc) -> None:

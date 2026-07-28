@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -386,3 +387,59 @@ def test_the_pane_to_work_in_avoids_the_caller_against_the_live_server(tmp_path:
         )
     finally:
         client.close_workspace(workspace.workspace_id)
+
+
+@pytest.mark.herdr
+def test_the_lane_registry_against_the_live_server(tmp_path: Path) -> None:
+    """A worktree, its workspace label, and a tab in it, through the real herdr.
+
+    The recorded tests prove the argv. This proves the fields lane assignment
+    reads back — the workspace label, the checkout path, and the tab label — are
+    the fields herdr actually sends.
+    """
+    if shutil.which("herdr") is None:
+        pytest.skip("herdr is not installed")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "i"], check=True)
+
+    client = HerdrClient()
+    try:
+        source = client.create_workspace(repo, "milhouse:test-lanes")
+    except HerdrError as exc:
+        pytest.skip(f"herdr server unavailable: {exc}")
+
+    lane = None
+    try:
+        lane = client.create_worktree(
+            source_workspace=source.workspace_id,
+            branch="milhouse/bd-e.1",
+            base="main",
+            label="bd-e.1",
+        )
+        assert lane.branch == "milhouse/bd-e.1"
+        assert lane.path.is_dir()
+        # A lane herdr chose the path for is outside the repository, so no
+        # amount of untracked files in it can dirty another lane's checkout.
+        assert not lane.path.is_relative_to(repo)
+        assert client.workspace_labels()[lane.workspace_id] == "bd-e.1"
+
+        registry = {item.path: item for item in client.worktrees(repo)}
+        assert registry[lane.path].workspace_id == lane.workspace_id
+        assert registry[repo].workspace_id == source.workspace_id
+
+        # A stacked issue is a labelled tab in the same lane.
+        pane = client.create_tab(lane.workspace_id, lane.path, "bd-e.2")
+        stacked = next(
+            tab for tab in client.tabs(lane.workspace_id) if tab.get("label") == "bd-e.2"
+        )
+        assert pane in {
+            str(item["pane_id"])
+            for item in client.panes_in(lane.workspace_id, tab_id=str(stacked["tab_id"]))
+        }
+    finally:
+        if lane is not None:
+            client.close_workspace(lane.workspace_id)
+            shutil.rmtree(lane.path, ignore_errors=True)
+        client.close_workspace(source.workspace_id)
