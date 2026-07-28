@@ -128,7 +128,7 @@ That stops at the first iteration that does not succeed, which is what a supervi
 
 Stepping again against the same task **is** the resume mechanism. Any claim a previous step left behind is re-opened first ([ADR 0008](decisions/0008-crash-recovery-by-reconciliation.md)). There is no separate `resume` command.
 
-Iteration numbers keep counting across invocations, because they name `iter-NNN.prompt`, and the history in `events.jsonl` spans all of them.
+Iteration numbers keep counting across invocations, because they name `<issue-id>/iter-NNN.prompt`, and the history in `events.jsonl` spans all of them.
 
 ### One step at a time
 
@@ -145,10 +145,10 @@ A lock left behind by a dead process is taken over automatically, with a line sa
 ### What each iteration does
 
 1. `bd ready --parent <epic> --claim --limit 1` — an empty result means the epic is finished.
-2. Render `iterate.md.j2` for that issue and save it to `iter-NNN.prompt`.
+2. Render `iterate.md.j2` for that issue and save it to `<issue-id>/iter-NNN.prompt`.
 3. `herdr agent start` a **new** agent in the task's pane.
 4. `herdr agent prompt --wait` until the turn settles.
-5. Capture the pane transcript to `iter-NNN.term`.
+5. Capture the pane transcript to `<issue-id>/iter-NNN.term`.
 6. Exit the agent, returning the pane to a shell prompt.
 7. If the issue is closed and `[verify] command` is set, run it.
 8. Classify the outcome from beads, git, and that command, and record it.

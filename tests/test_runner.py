@@ -68,6 +68,35 @@ def test_a_turn_starts_prompts_captures_and_exits(
     assert happy.ran("herdr", "pane", "send-keys")
 
 
+def test_an_issues_artifacts_go_in_a_directory_of_its_own(
+    runner: AgentRunner, happy: FakeProc, run_dir: Path
+) -> None:
+    """Two agents working different issues must not collide on a filename."""
+    result = runner.run_turn("do the thing", iteration=7, issue_id="bd-42")
+
+    assert (run_dir / "bd-42" / "iter-007.prompt").read_text() == "do the thing"
+    assert (run_dir / "bd-42" / "iter-007.term").read_text() == "claude did the thing\n"
+    assert not (run_dir / "iter-007.prompt").exists()
+    assert result.prompt_path == run_dir / "bd-42" / "iter-007.prompt"
+    assert result.transcript_path == run_dir / "bd-42" / "iter-007.term"
+
+
+def test_every_attempt_at_one_issue_lands_together(
+    runner: AgentRunner, happy: FakeProc, run_dir: Path
+) -> None:
+    """The point of the directory: one issue's history is one listing."""
+    runner.run_turn("first go", iteration=3, issue_id="bd-42")
+    happy.expect("herdr agent read", Reply(stdout="second\n"))
+    runner.run_turn("second go", iteration=9, issue_id="bd-42")
+
+    assert sorted(path.name for path in (run_dir / "bd-42").iterdir()) == [
+        "iter-003.prompt",
+        "iter-003.term",
+        "iter-009.prompt",
+        "iter-009.term",
+    ]
+
+
 def test_the_transcript_is_captured_before_the_agent_exits(
     runner: AgentRunner, happy: FakeProc
 ) -> None:

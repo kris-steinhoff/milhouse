@@ -87,7 +87,7 @@ Workspace and transcript settings. See [ADR 0001](decisions/0001-shell-out-to-bd
 | ------------- | ------ | ----------- | ------------------------------------------ | ---------------------------------------------------------------------------------------- |
 | `workspace`   | string | unset       | `MILHOUSE_WORKSPACE`, `HERDR_WORKSPACE_ID` | Reuse this workspace instead of creating one. Unset creates (and owns) one.              |
 | `self_pane`   | string | unset       | `HERDR_PANE_ID`                            | The pane milhouse is running in, which it will never start an agent in.                  |
-| `read_lines`  | int    | `400`       | —                                          | Lines of pane transcript captured after each turn into `iter-NNN.term`.                  |
+| `read_lines`  | int    | `400`       | —                                          | Lines of pane transcript captured after each turn into `<issue-id>/iter-NNN.term`.       |
 | `read_source` | enum   | `"visible"` | —                                          | `herdr agent read --source` value: `visible`, `recent`, `recent-unwrapped`, `detection`. |
 
 `HERDR_WORKSPACE_ID` is exported by herdr into every pane it launches, so milhouse running inside a pane reuses that workspace by default. `MILHOUSE_WORKSPACE` takes precedence over it, and `--workspace` over both.

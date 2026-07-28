@@ -39,7 +39,7 @@ def decomposed() -> FakeTracker:
 def test_a_step_claims_works_and_records_one_issue(
     config: Config, task: TaskDefinition, decomposed: FakeTracker
 ) -> None:
-    session, _ = build(config, task, tracker=decomposed, script=["close"])
+    session, runner = build(config, task, tracker=decomposed, script=["close"])
 
     with session as opened:
         result = step(opened, decomposed.epic)  # ty: ignore[invalid-argument-type]
@@ -47,6 +47,8 @@ def test_a_step_claims_works_and_records_one_issue(
     assert result is not None
     assert result.iteration.issue_id == "bd-e.1"
     assert result.iteration.outcome == "success"
+    # The runner files this turn's artifacts under the issue it worked.
+    assert runner.issue_ids == ["bd-e.1"]
     assert [item.outcome for item in session.store.history()] == ["success"]
     assert decomposed.issues[0].is_closed
     assert decomposed.issues[1].status == "open"
@@ -153,8 +155,10 @@ def test_a_dirty_tree_after_a_turn_is_recorded_and_reported(
     repo = FakeRepo()
     session, runner = build(config, task, tracker=decomposed, script=["close"], repo=repo)
 
-    def close_then_leave_a_mess(prompt: str, *, iteration: int) -> TurnResult:
-        result = FakeRunner.run_turn(runner, prompt, iteration=iteration)
+    def close_then_leave_a_mess(
+        prompt: str, *, iteration: int, issue_id: str | None = None
+    ) -> TurnResult:
+        result = FakeRunner.run_turn(runner, prompt, iteration=iteration, issue_id=issue_id)
         repo.dirty = True
         return result
 
@@ -266,7 +270,9 @@ def test_decomposition_runs_when_there_is_no_epic(config: Config, task: TaskDefi
     tracker = FakeTracker()
     session, runner = build(config, task, tracker=tracker, script=[])
 
-    def propose_then_close(prompt: str, *, iteration: int) -> TurnResult:
+    def propose_then_close(
+        prompt: str, *, iteration: int, issue_id: str | None = None
+    ) -> TurnResult:
         runner.turns.append(prompt)
         if iteration == 0:
             session.store.run_dir.mkdir(parents=True, exist_ok=True)
@@ -296,7 +302,7 @@ def test_declining_the_decomposition_creates_nothing(config: Config, task: TaskD
     tracker = FakeTracker()
     session, runner = build(config, task, tracker=tracker, script=[])
 
-    def propose(prompt: str, *, iteration: int) -> TurnResult:
+    def propose(prompt: str, *, iteration: int, issue_id: str | None = None) -> TurnResult:
         session.store.run_dir.mkdir(parents=True, exist_ok=True)
         (session.store.run_dir / "plan.json").write_text(
             '{"issues": [{"key": "a", "title": "Add it"}]}', encoding="utf-8"

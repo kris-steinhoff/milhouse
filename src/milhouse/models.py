@@ -124,8 +124,8 @@ class Iteration(BaseModel):
     number: int
     """1-based iteration counter, over the whole task rather than one invocation.
 
-    It names the run artifacts (``iter-007.prompt``), so it has to keep counting
-    across invocations even though the iteration budget does not.
+    It names the run artifacts (``<issue-id>/iter-007.prompt``), so it has to
+    keep counting across invocations even though the iteration budget does not.
     """
 
     issue_id: str

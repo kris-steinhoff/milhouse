@@ -132,14 +132,14 @@ spec string ──sources──► TaskDefinition ──planner──► epic id
 
 ## Where state lives
 
-| State                              | Home                                 | Authoritative? |
-| ---------------------------------- | ------------------------------------ | -------------- |
-| The work: what to do, what is done | beads                                | yes            |
-| The code                           | git, on a `milhouse/<slug>` branch   | yes            |
-| Which workspace, pane, and branch  | `.milhouse/runs/<slug>/state.json`   | bookkeeping    |
-| Iteration history                  | `.milhouse/runs/<slug>/events.jsonl` | bookkeeping    |
-| Who is running this task           | `.milhouse/runs/<slug>/lock.json`    | bookkeeping    |
-| Exact prompt sent, pane transcript | `.milhouse/runs/<slug>/iter-NNN.*`   | bookkeeping    |
+| State                              | Home                                          | Authoritative? |
+| ---------------------------------- | --------------------------------------------- | -------------- |
+| The work: what to do, what is done | beads                                         | yes            |
+| The code                           | git, on a `milhouse/<slug>` branch            | yes            |
+| Which workspace, pane, and branch  | `.milhouse/runs/<slug>/state.json`            | bookkeeping    |
+| Iteration history                  | `.milhouse/runs/<slug>/events.jsonl`          | bookkeeping    |
+| Who is running this task           | `.milhouse/runs/<slug>/lock.json`             | bookkeeping    |
+| Exact prompt sent, pane transcript | `.milhouse/runs/<slug>/<issue-id>/iter-NNN.*` | bookkeeping    |
 
 The history is an append-only log rather than a list inside `state.json`, which keeps the state file small enough to rewrite atomically on every save and gives a post-mortem something to read ([ADR 0014](decisions/0014-step-is-the-primitive.md)).
 

@@ -65,7 +65,7 @@ class Runner(Protocol):
     agent_name: str
     """The herdr agent name, e.g. ``milhouse-hello``."""
 
-    def run_turn(self, prompt: str, *, iteration: int) -> TurnResult:
+    def run_turn(self, prompt: str, *, iteration: int, issue_id: str | None = None) -> TurnResult:
         """Run one whole turn and leave the pane ready for the next one."""
         ...
 
@@ -102,7 +102,7 @@ class AgentRunner:
         self.pane_id = pane_id
         self.agent_name = agent_name
 
-    def run_turn(self, prompt: str, *, iteration: int) -> TurnResult:
+    def run_turn(self, prompt: str, *, iteration: int, issue_id: str | None = None) -> TurnResult:
         """Run one whole turn and always leave the pane at a shell prompt.
 
         The transcript is captured *before* the agent is exited, so a
@@ -112,11 +112,15 @@ class AgentRunner:
         Args:
             prompt: The rendered prompt to send.
             iteration: 1-based iteration number, used to name the artifacts.
+            issue_id: The issue this turn works, which gets its own artifact
+                directory. ``None`` writes to the run directory itself, which is
+                what the planning turn does — it decomposes a task rather than
+                working an issue, so it has no issue to file under.
 
         Returns:
             What happened, for :func:`milhouse.outcome.classify` to interpret.
         """
-        prompt_path = self._write(f"iter-{iteration:03d}.prompt", prompt)
+        prompt_path = self._write(f"iter-{iteration:03d}.prompt", prompt, issue_id=issue_id)
         result = TurnResult(agent_state="unknown", prompt_path=prompt_path)
         try:
             self._ensure_shell()
@@ -143,7 +147,7 @@ class AgentRunner:
         except HerdrError as exc:
             result.error = f"could not prompt the agent: {exc}"
 
-        result.transcript_path = self._capture(iteration)
+        result.transcript_path = self._capture(iteration, issue_id=issue_id)
         self.exit_agent()
         return result
 
@@ -197,7 +201,7 @@ class AgentRunner:
         if self.client.pane_agent(self.pane_id) is not None:
             raise AgentError(f"pane {self.pane_id} will not return to a shell prompt")
 
-    def _capture(self, iteration: int) -> Path | None:
+    def _capture(self, iteration: int, *, issue_id: str | None = None) -> Path | None:
         """Save the pane transcript, the primary post-mortem artifact."""
         try:
             transcript = self.client.read_agent(
@@ -210,11 +214,30 @@ class AgentRunner:
             return None
         if not transcript.strip():
             return None
-        return self._write(f"iter-{iteration:03d}.term", transcript)
+        return self._write(f"iter-{iteration:03d}.term", transcript, issue_id=issue_id)
 
-    def _write(self, name: str, text: str) -> Path:
-        """Write a run artifact into the run directory and return its path."""
+    def _write(self, name: str, text: str, *, issue_id: str | None = None) -> Path:
+        """Write a run artifact and return its path.
+
+        Artifacts for an issue go in a directory of their own, so every attempt
+        at one issue sits together and two agents working different issues
+        cannot collide on a filename. That collision is not reachable today,
+        because a run works one issue at a time, but the filename is the only
+        thing keeping them apart and iteration numbers are handed out per run
+        rather than per issue.
+
+        Args:
+            name: The artifact filename, e.g. ``iter-007.prompt``.
+            text: What to write.
+            issue_id: Whose artifact this is, or ``None`` for a turn that
+                belongs to the run rather than to an issue.
+
+        Returns:
+            The path written.
+        """
         ensure_run_dir(self.run_dir)
-        path = self.run_dir / name
+        directory = self.run_dir / issue_id if issue_id else self.run_dir
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / name
         path.write_text(text, encoding="utf-8")
         return path

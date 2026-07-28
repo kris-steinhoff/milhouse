@@ -154,9 +154,11 @@ class FakeRunner:
     pane_id: str = "wG:p1"
     agent_name: str = "milhouse-hello"
     turns: list[str] = field(default_factory=list)
+    issue_ids: list[str | None] = field(default_factory=list)
 
-    def run_turn(self, prompt: str, *, iteration: int) -> TurnResult:
+    def run_turn(self, prompt: str, *, iteration: int, issue_id: str | None = None) -> TurnResult:
         self.turns.append(prompt)
+        self.issue_ids.append(issue_id)
         action = self.script.pop(0) if self.script else "stall"
         if action == "close":
             self._commit()

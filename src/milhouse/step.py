@@ -124,7 +124,7 @@ def _work(session: Session, issue: Issue) -> Iteration:
     runner = session.runner
     turn: TurnResult | None
     try:
-        turn = runner.run_turn(prompt, iteration=number)
+        turn = runner.run_turn(prompt, iteration=number, issue_id=issue.id)
     except (AgentError, HerdrError) as exc:
         turn = None
         error: str | None = str(exc)

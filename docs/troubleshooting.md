@@ -28,9 +28,13 @@ Everything milhouse records about a task lives here, and it is the primary post-
     events.jsonl               # one iteration per line, append-only, every invocation
     lock.json                  # pid and host of the run holding this task, while it runs
     plan.json                  # what the planning agent proposed
-    iter-007.prompt            # the exact prompt sent that iteration
-    iter-007.term              # pane transcript captured after the turn
+    iter-000.prompt            # the prompt the planning agent was sent
+    <issue-id>/
+      iter-007.prompt          # the exact prompt sent that iteration
+      iter-007.term            # pane transcript captured after the turn
 ```
+
+Each issue gets a directory, so every attempt at one issue sits together and two agents working different issues cannot collide on a filename. The planning turn writes at the top level, because it decomposes a task rather than working an issue.
 
 `.milhouse/runs/` is gitignored. Beads and git remain the source of truth for the work itself; everything under `runs/` is bookkeeping and is safe to delete. Deleting it loses the iteration history, nothing else.
 

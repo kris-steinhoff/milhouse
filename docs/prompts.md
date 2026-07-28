@@ -4,7 +4,7 @@ For a ralph loop the prompt _is_ the product. milhouse ships two, both inside th
 
 Both are Jinja templates rendered with `StrictUndefined`: a typo in a variable name fails at render time rather than quietly sending an agent a prompt with a hole in it. Each opens with a comment block stating its contract and its variables.
 
-The exact rendered prompt is saved to `.milhouse/runs/<task>/iter-NNN.prompt` every iteration, so tuning by observation has something to observe.
+The exact rendered prompt is saved to `.milhouse/runs/<task>/<issue-id>/iter-NNN.prompt` every iteration, so tuning by observation has something to observe.
 
 ## `plan.md.j2` — decomposition
 

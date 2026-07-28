@@ -3,14 +3,19 @@
 One task gets one directory under ``.milhouse/runs/<task_slug>/``, and
 :class:`RunStore` owns everything in it:
 
-======================  ====================================================
-``state.json``          Session facts. Small, rewritten, atomic.
-``events.jsonl``        One :class:`~milhouse.models.Iteration` per line,
-                        append-only. The history and the post-mortem log.
-``lock.json``           Who is running this task right now.
-``iter-NNN.prompt``     The exact prompt sent for iteration ``NNN``.
-``iter-NNN.term``       The pane transcript captured after it.
-======================  ====================================================
+==============================  ============================================
+``state.json``                  Session facts. Small, rewritten, atomic.
+``events.jsonl``                One :class:`~milhouse.models.Iteration` per
+                                line, append-only. The history and the
+                                post-mortem log.
+``lock.json``                   Who is running this task right now.
+``<issue-id>/``                 Every artifact of every attempt at one issue.
+``<issue-id>/iter-NNN.prompt``  The exact prompt sent for iteration ``NNN``.
+``<issue-id>/iter-NNN.term``    The pane transcript captured after it.
+==============================  ============================================
+
+The planning turn writes ``iter-000.*`` at the top level instead, because it
+decomposes a task rather than working an issue.
 
 Splitting the history out of ``state.json`` is what makes the state file small
 enough to rewrite safely on every save, and it gives post-mortems a log to read
