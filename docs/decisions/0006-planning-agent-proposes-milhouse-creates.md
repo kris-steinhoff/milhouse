@@ -1,6 +1,6 @@
 # 0006 — The planning agent proposes a plan; milhouse creates the issues
 
-**Status:** accepted
+**Status:** retired by [ADR 0018](0018-no-task-milhouse-works-the-ready-queue.md). Kept as the record of why the machinery existed.
 
 ## Context
 

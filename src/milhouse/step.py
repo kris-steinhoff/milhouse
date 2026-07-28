@@ -8,7 +8,7 @@ seam for one is already here: the ``policy`` argument is what a loop would swap
 
 The steps, in order:
 
-1. Claim one ready issue from the tracker.
+1. Claim the next ready issue from the tracker.
 2. Render the iteration prompt, including whatever earlier attempts left behind.
 3. Start a fresh agent, prompt it once, capture the transcript, exit it.
 4. Read back what changed in beads and git.
@@ -52,19 +52,18 @@ class StepResult:
     decision: Decision
 
 
-def step(session: Session, epic: Issue, *, policy: Policy = decide) -> StepResult | None:
-    """Work one ready issue under ``epic``, or report that none is ready.
+def step(session: Session, *, policy: Policy = decide) -> StepResult | None:
+    """Work the next ready issue, or report that none is ready.
 
     Args:
         session: An open session, holding the lock, branch, and workspace.
-        epic: The epic whose children are worked.
         policy: What decides the aftermath. Injectable so a different policy is
             a different function rather than different plumbing.
 
     Returns:
         The iteration and the decision, or ``None`` when nothing was ready.
     """
-    issue = session.claim(epic)
+    issue = session.claim()
     if issue is None:
         return None
 
@@ -77,28 +76,28 @@ def step(session: Session, epic: Issue, *, policy: Policy = decide) -> StepResul
     return StepResult(iteration=iteration, decision=decision)
 
 
-def nothing_ready(session: Session, epic: Issue) -> tuple[str, bool]:
-    """Explain an empty ready queue, and say whether the epic is actually done.
+def nothing_ready(session: Session) -> tuple[str, bool]:
+    """Explain an empty ready queue, and say whether the work is actually done.
 
     ``bd ready`` returns nothing both when every issue is closed and when
     everything left is stuck behind something. Those are opposite outcomes, and
-    reporting the second as "the epic is finished" exits 0 having done nothing —
-    which is how a dogfood run whose issues all blocked on a permission prompt
-    reported success.
+    reporting the second as "finished" exits 0 having done nothing — which is
+    how a dogfood run whose issues all blocked on a permission prompt reported
+    success.
 
     Args:
         session: The open session.
-        epic: The epic being worked.
 
     Returns:
-        A line for the human, and whether the epic is genuinely finished.
+        A line for the human, and whether the work is genuinely finished.
     """
-    unfinished = session.unfinished(epic)
+    unfinished = session.unfinished()
     if not unfinished:
-        return "no issues are ready; the epic is finished", True
+        return "no issues are ready; everything in scope is closed", True
     detail = ", ".join(issue.id for issue in unfinished)
     return (
-        f"nothing is ready but {len(unfinished)} issue(s) are unfinished ({detail})",
+        f"nothing is ready but {len(unfinished)} issue(s) are unfinished ({detail}); "
+        "`bd blocked` says what is stuck",
         False,
     )
 
@@ -112,8 +111,8 @@ def _work(session: Session, issue: Issue) -> Iteration:
     session.report(f"iteration {number}: {issue.id} {issue.title}{suffix}")
 
     prompt = prompts.render_iterate(
-        session.task,
         issue,
+        background=session.background(issue),
         branch=session.state.branch,
         attempt=attempt,
         previous=[{"outcome": item.outcome, "detail": item.detail} for item in previous],

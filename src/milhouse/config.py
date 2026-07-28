@@ -23,7 +23,6 @@ from .errors import ConfigError
 __all__ = [
     "AgentConfig",
     "Config",
-    "GitConfig",
     "HerdrConfig",
     "TrackerConfig",
     "VerifyConfig",
@@ -37,8 +36,6 @@ CONFIG_RELPATH = Path(".milhouse/config.toml")
 
 RUNS_RELPATH = Path(".milhouse/runs")
 """Where per-run bookkeeping lives. Gitignored; safe to delete."""
-
-BranchStrategy = Literal["task", "current"]
 
 
 class AgentConfig(BaseModel):
@@ -90,24 +87,20 @@ class VerifyConfig(BaseModel):
     """How long the command may take before it counts as failed. Default 10 minutes."""
 
 
-class GitConfig(BaseModel):
-    """Where the commits land."""
-
-    branch_strategy: BranchStrategy = "task"
-    """``task`` creates one branch per task definition; ``current`` stays put."""
-
-    branch_prefix: str = "milhouse/"
-    """Prefix for branches created under the ``task`` strategy."""
-
-
 class TrackerConfig(BaseModel):
-    """How milhouse marks its own issues in beads."""
+    """Which issues in the tracker milhouse is allowed to work.
 
-    label: str = "milhouse"
-    """Label applied to every issue milhouse creates."""
+    Unfiltered by default: a repository whose beads database is only agent work
+    needs no fence. Set one where the ready queue also carries issues that were
+    never meant for an agent
+    (:doc:`ADR 0018 <../../docs/decisions/0018-no-task-milhouse-works-the-ready-queue>`).
+    """
 
-    metadata_key: str = "milhouse_task"
-    """Bead metadata key holding the task id that owns an epic."""
+    label: str | None = None
+    """Only work issues carrying this label. ``None`` considers every issue."""
+
+    parent: str | None = None
+    """Only work issues under this epic. ``None`` considers the whole repository."""
 
 
 class HerdrConfig(BaseModel):
@@ -140,24 +133,12 @@ class Config(BaseModel):
 
     agent: AgentConfig = Field(default_factory=AgentConfig)
     verify: VerifyConfig = Field(default_factory=VerifyConfig)
-    git: GitConfig = Field(default_factory=GitConfig)
     tracker: TrackerConfig = Field(default_factory=TrackerConfig)
     herdr: HerdrConfig = Field(default_factory=HerdrConfig)
 
-    def runs_dir(self) -> Path:
-        """Absolute path of ``.milhouse/runs`` for this repo."""
+    def run_dir(self) -> Path:
+        """Absolute path of ``.milhouse/runs`` for this repo. Not created by this call."""
         return self.repo_root / RUNS_RELPATH
-
-    def run_dir(self, task_slug: str) -> Path:
-        """Absolute path of the bookkeeping directory for one task.
-
-        Args:
-            task_slug: The task's filesystem-safe slug.
-
-        Returns:
-            ``<repo>/.milhouse/runs/<task_slug>``. Not created by this call.
-        """
-        return self.runs_dir() / task_slug
 
 
 def config_path(repo_root: Path) -> Path:
@@ -224,8 +205,8 @@ _ENV_MAP: dict[str, tuple[str, str, str]] = {
     "MILHOUSE_TURN_TIMEOUT_MS": ("agent", "turn_timeout_ms", "int"),
     "MILHOUSE_VERIFY_COMMAND": ("verify", "command", "argv"),
     "MILHOUSE_VERIFY_TIMEOUT_MS": ("verify", "timeout_ms", "int"),
-    "MILHOUSE_BRANCH_STRATEGY": ("git", "branch_strategy", "str"),
-    "MILHOUSE_BRANCH_PREFIX": ("git", "branch_prefix", "str"),
+    "MILHOUSE_TRACKER_LABEL": ("tracker", "label", "str"),
+    "MILHOUSE_TRACKER_PARENT": ("tracker", "parent", "str"),
     # HERDR_WORKSPACE_ID first: later entries win, and an explicit MILHOUSE_
     # setting should beat the one herdr exports into every pane it launches.
     "HERDR_WORKSPACE_ID": ("herdr", "workspace", "str"),

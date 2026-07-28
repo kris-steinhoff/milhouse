@@ -19,7 +19,6 @@ __all__ = [
     "MissingDependencyError",
     "ProcessError",
     "RunLockedError",
-    "SourceError",
     "TrackerError",
     "TurnTimeoutError",
     "UserAbortError",
@@ -48,17 +47,6 @@ class ConfigError(MilhouseError):
 
     exit_code = 2
     remedy = "Check .milhouse/config.toml against docs/configuration.md."
-
-
-class SourceError(MilhouseError):
-    """A task definition could not be resolved into a :class:`~milhouse.models.TaskDefinition`.
-
-    Exit code ``3``. Raised for a missing file, an unreadable file, a malformed
-    ``gh:`` spec, or a GitHub issue that ``gh`` cannot fetch.
-    """
-
-    exit_code = 3
-    remedy = "Pass a readable file path or a gh:owner/repo#123 spec."
 
 
 class TrackerError(MilhouseError):
@@ -108,9 +96,9 @@ class AgentError(MilhouseError):
 class MissingDependencyError(MilhouseError):
     """A required external tool is not on ``PATH``.
 
-    Exit code ``7``. milhouse hard-depends on ``bd`` and ``herdr``; ``gh`` is
-    needed only for ``gh:`` task sources, and the agent binary only for real
-    runs. ``docs/troubleshooting.md`` has install instructions.
+    Exit code ``7``. milhouse hard-depends on ``bd``, ``herdr``, and ``git``; the
+    agent binary is needed only for real runs. ``docs/troubleshooting.md`` has
+    install instructions.
     """
 
     exit_code = 7
@@ -153,16 +141,16 @@ class ProcessError(MilhouseError):
 
 
 class RunLockedError(MilhouseError):
-    """Another milhouse process is already working this task.
+    """Another milhouse process is already working this repository.
 
-    Exit code ``10``. Two runs over one task would drive the same herdr pane and
-    reconcile each other's in-flight claim, so the second one refuses to start
+    Exit code ``10``. Two runs would drive the same herdr pane and reconcile
+    each other's in-flight claim, so the second one refuses to start
     (:doc:`ADR 0015 <../../docs/decisions/0015-one-run-at-a-time>`). If the named
     process is genuinely gone, delete the lock file and re-run.
     """
 
     exit_code = 10
-    remedy = "Wait for the other run, or delete .milhouse/runs/<task>/lock.json."
+    remedy = "Wait for the other run, or delete .milhouse/runs/lock.json."
 
 
 class UserAbortError(MilhouseError):

@@ -11,30 +11,28 @@ Start with `milhouse doctor`. It checks every external dependency and the herdr 
 | `herdr`        | `herdr` is not on `PATH`.                            | Install from [herdr.dev](https://herdr.dev).                        |
 | `herdr server` | The server is not running, or protocol-incompatible. | Run `herdr` to start it; `herdr update` if the protocol mismatches. |
 | `git`          | Not on `PATH`, or milhouse is not inside a repo.     | Run milhouse from inside a git repository.                          |
-| `gh` (warn)    | Only needed for `gh:owner/repo#123` task sources.    | Install and `gh auth login`, or use a file source.                  |
 | agent (warn)   | The configured `[agent] kind` binary is missing.     | Install it, or point `[agent] kind` at one you have.                |
 
 `doctor` exits `7` if any required row fails, so it can gate a script.
 
 ## Run artifacts
 
-Everything milhouse records about a task lives here, and it is the primary post-mortem surface — there is no event stream from herdr ([ADR 0001](decisions/0001-shell-out-to-bd-and-herdr.md)):
+Everything milhouse records about a run lives here, and it is the primary post-mortem surface — there is no event stream from herdr ([ADR 0001](decisions/0001-shell-out-to-bd-and-herdr.md)):
 
 ```
 .milhouse/
   config.toml                  # committed — agent command, defaults
-  runs/<task_slug>/
-    state.json                 # workspace/pane id, epic id, branch, the in-flight claim
+  runs/
+    .gitignore                 # written by milhouse; ignores this whole directory
+    state.json                 # workspace/pane id, branch, the in-flight claim
     events.jsonl               # one iteration per line, append-only, every invocation
-    lock.json                  # pid and host of the run holding this task, while it runs
-    plan.json                  # what the planning agent proposed
-    iter-000.prompt            # the prompt the planning agent was sent
+    lock.json                  # pid and host of the run in this repository, while it runs
     <issue-id>/
       iter-007.prompt          # the exact prompt sent that iteration
       iter-007.term            # pane transcript captured after the turn
 ```
 
-Each issue gets a directory, so every attempt at one issue sits together and two agents working different issues cannot collide on a filename. The planning turn writes at the top level, because it decomposes a task rather than working an issue.
+Each issue gets a directory, so every attempt at one issue sits together and two agents working different issues cannot collide on a filename.
 
 `.milhouse/runs/` is gitignored. Beads and git remain the source of truth for the work itself; everything under `runs/` is bookkeeping and is safe to delete. Deleting it loses the iteration history, nothing else.
 
@@ -46,7 +44,7 @@ When a run misbehaves, read them in this order:
 
 ## The agent produced nothing, and the turn looked fine
 
-Symptom: `milhouse plan` reports that the agent did not write `plan.json`, or an iteration classifies as `stalled`, but nothing errored and the turn settled normally. The cause is almost always that the agent is sitting on a screen it cannot leave without a human. Open `iter-NNN.term` and look at the last few lines.
+Symptom: an iteration classifies as `stalled`, but nothing errored and the turn settled normally. The cause is almost always that the agent is sitting on a screen it cannot leave without a human. Open `iter-NNN.term` and look at the last few lines.
 
 The one that bites first is `--dangerously-skip-permissions`. It shows a one-time consent screen before the agent will accept any input:
 
@@ -60,7 +58,7 @@ An unattended agent never answers it. herdr reports the agent as started and `in
 
 Accepting it once, by hand, is the fix — the choice is remembered. Until then no `[agent] args` setting helps, because the screen comes up before the agent reads any of them.
 
-A scoped list needs no consent screen, and is enough for **planning**:
+A scoped list needs no consent screen, and is enough for an agent that only edits files:
 
 ```toml
 [agent]
@@ -70,7 +68,7 @@ args = [
 ]
 ```
 
-The planning agent writes one file and stops, so an edit permission covers it. **Iterations are a different matter**, and the same config blocks them on the first composed shell command:
+**Iterations are a different matter**, and that config blocks them on the first composed shell command:
 
 ```
 cat .milhouse/config.toml; echo "---"; ls -a ~/.venv; pip --version
@@ -78,15 +76,15 @@ cat .milhouse/config.toml; echo "---"; ls -a ~/.venv; pip --version
 
 That matches no prefix pattern, and an agent authoring its own commands writes things like it constantly. Widening the list until it stops is how you arrive at unscoped `Bash`, which is the unattended posture with extra steps — see [ADR 0009](decisions/0009-permission-posture.md), which is about this exact finding.
 
-This is the general shape of the problem: an agent flag that opens an interactive gate is unusable in a loop, and the transcript is the only place it shows. See the `blocked` path below for gates that milhouse _can_ detect. `milhouse plan` names that case rather than reporting only the missing `plan.json`.
+This is the general shape of the problem: an agent flag that opens an interactive gate is unusable in a loop, and the transcript is the only place it shows. See the `blocked` path below for gates that milhouse _can_ detect.
 
 ## The agent is blocked
 
 herdr reports `blocked` when the agent is waiting on a human, which is almost always a permission prompt. milhouse re-opens the issue, stops, and names the workspace to attach to:
 
 ```sh
-herdr workspace list          # find the milhouse:<slug> workspace
-herdr agent attach milhouse-<slug>
+herdr workspace list          # find the milhouse:<repo> workspace
+herdr agent attach milhouse-<repo>
 ```
 
 The agent is exited by then, so attaching shows you the pane rather than a live turn. If the agent was sitting on a dialog the exit keys do not dismiss, milhouse will have replaced the pane and the scrollback is gone with it — `iter-NNN.term` survives either way, because the transcript is captured before the agent is exited. Read it, decide what the agent needed, then run again: the issue is back in the ready queue.
@@ -104,9 +102,9 @@ bd show <issue-id>
 Then run the verification command yourself. Two things it usually means:
 
 - **The work really is not done.** The note is now in the next agent's prompt, so stepping again may be enough.
-- **The gate is wrong for the loop.** A command that fails for reasons unrelated to the issue rejects every issue in the epic. Point `[verify] command` at the fast suite rather than the full matrix, and make sure it passes on a clean checkout before pointing milhouse at it.
+- **The gate is wrong for the loop.** A command that fails for reasons unrelated to the issue rejects every issue in the queue. Point `[verify] command` at the fast suite rather than the full matrix, and make sure it passes on a clean checkout before pointing milhouse at it.
 
-The second one has a trap worth naming, because it turns an epic into a loop that cannot finish. **`pytest` exits `5` when it collects no tests**, and a non-zero exit is a failed gate:
+The second one has a trap worth naming, because it turns the queue into a loop that cannot finish. **`pytest` exits `5` when it collects no tests**, and a non-zero exit is a failed gate:
 
 ```console
 $ pytest -q; echo $?
@@ -120,7 +118,7 @@ So a repository whose first issue writes the code and whose second writes the te
 
 If milhouse is killed with `SIGKILL`, or the machine goes away, an issue is left `in_progress` and assigned. `bd` has no lease expiry, so `bd ready` will never return that issue again.
 
-The normal fix is to **step against the same task again**. It takes the run lock, re-opens the claim it recorded in `state.json`, and carries on ([ADR 0008](decisions/0008-crash-recovery-by-reconciliation.md)). Holding the lock first is what makes that safe: the claim being re-opened cannot belong to a step still working it ([ADR 0015](decisions/0015-one-run-at-a-time.md)).
+The normal fix is to **step again**. It takes the run lock, re-opens the claim it recorded in `state.json`, and carries on ([ADR 0008](decisions/0008-crash-recovery-by-reconciliation.md)). Holding the lock first is what makes that safe: the claim being re-opened cannot belong to a step still working it ([ADR 0015](decisions/0015-one-run-at-a-time.md)).
 
 To fix it by hand instead:
 
@@ -128,31 +126,31 @@ To fix it by hand instead:
 bd update <issue-id> --status open --assignee ""
 ```
 
-## milhouse says another run holds the task
+## milhouse says another run is working this repository
 
 ```console
-$ milhouse step docs/tasks/hello.md
-milhouse: another milhouse run holds hello (pid 48213 on carbon, since 2026-07-26T09:14:02+00:00)
+$ milhouse step
+milhouse: another milhouse run is working this repository (pid 48213 on carbon, since 2026-07-26T09:14:02+00:00)
 ```
 
-Exit code `10`. One process works a task at a time, because two would drive the same pane and re-open each other's in-flight claim ([ADR 0015](decisions/0015-one-run-at-a-time.md)).
+Exit code `10`. One process works a repository at a time, because two would drive the same pane and re-open each other's in-flight claim ([ADR 0015](decisions/0015-one-run-at-a-time.md)).
 
 A lock whose process is dead is taken over automatically. You only see this when the process is alive, or when it ran on another machine and its pid cannot be checked. If you are sure it is gone:
 
 ```sh
-rm -f .milhouse/runs/<task_slug>/lock.json
+rm -f .milhouse/runs/lock.json
 ```
 
-## The task was planned twice
+## milhouse claimed an issue that was not meant for an agent
 
-`task_id` is derived from the path (`file:docs/tasks/hello.md`), so renaming or moving a task definition orphans its epic and milhouse plans it again ([ADR 0002](decisions/0002-link-issues-via-bead-metadata.md)).
-
-Point the old epic at the new path and delete the duplicate:
+By default the ready queue is the whole repository, and milhouse cannot tell your own reminders from work an agent should pick up. Fence it, either per invocation or once in the config ([usage](usage.md#fencing-the-queue)):
 
 ```sh
-bd list --metadata-field milhouse_task=file:<old-path> --type epic --json
-bd update <epic-id> --set-metadata milhouse_task=file:<new-path>
+milhouse step --parent <epic-id>
+milhouse step --label agent
 ```
+
+Epics are excluded whatever the fence says.
 
 ## A step reported the working tree is dirty
 
@@ -172,12 +170,6 @@ echo '.beads/interactions.jsonl' >> .gitignore
 ```
 
 milhouse's own bookkeeping cannot cause this: it keeps `.milhouse/runs/` ignored itself.
-
-## The branch checkout failed
-
-milhouse refuses to touch a dirty working tree. Commit or stash your changes first. It will not stash for you: losing uncommitted work to a checkout you did not ask for is the worst failure available ([ADR 0007](decisions/0007-branch-per-task.md)).
-
-The same tracker files are worth ruling out here, because this check runs before the first agent starts and a dirty tree stops a step before it does anything at all.
 
 ## The pane did not return to a shell prompt
 

@@ -22,9 +22,8 @@ args = ["--permission-mode", "acceptEdits"]
 [verify]
 command = ["uv", "run", "pytest", "-m", "not herdr and not beads"]
 
-[git]
-branch_strategy = "task"
-branch_prefix = "milhouse/"
+[tracker]
+label = "agent"
 ```
 
 ## `[agent]`
@@ -59,25 +58,22 @@ Empty by default, so out of the box milhouse takes the agent at its word. There 
 
 No shell is involved, so this is argv rather than a command line. `MILHOUSE_VERIFY_COMMAND` is split with `shlex`, so quoting works the way it does in a shell.
 
-## `[git]`
-
-Where the commits land. See [ADR 0007](decisions/0007-branch-per-task.md).
-
-| Key               | Type   | Default       | Environment                | Meaning                                                                       |
-| ----------------- | ------ | ------------- | -------------------------- | ----------------------------------------------------------------------------- |
-| `branch_strategy` | enum   | `"task"`      | `MILHOUSE_BRANCH_STRATEGY` | `task` puts the run on one branch per task definition; `current` stays put.   |
-| `branch_prefix`   | string | `"milhouse/"` | `MILHOUSE_BRANCH_PREFIX`   | Prefix for branches created under the `task` strategy, e.g. `milhouse/hello`. |
-
-`--branch-strategy` and `--branch` override these.
+There is no `[git]` section either. `branch_strategy` and `branch_prefix` named a branch after the task definition, and there is no task definition ([ADR 0018](decisions/0018-no-task-milhouse-works-the-ready-queue.md)). The agent commits on whatever branch is checked out, until lanes decide otherwise ([ADR 0020](decisions/0020-a-lane-is-a-herdr-worktree.md)).
 
 ## `[tracker]`
 
-How milhouse marks its own issues in beads. See [ADR 0002](decisions/0002-link-issues-via-bead-metadata.md). Changing either key orphans issues created under the old value, so set them once, at the start.
+Which issues milhouse is allowed to work. See [ADR 0018](decisions/0018-no-task-milhouse-works-the-ready-queue.md).
 
-| Key            | Type   | Default           | Environment | Meaning                                                  |
-| -------------- | ------ | ----------------- | ----------- | -------------------------------------------------------- |
-| `label`        | string | `"milhouse"`      | —           | Label applied to every issue milhouse creates.           |
-| `metadata_key` | string | `"milhouse_task"` | —           | Bead metadata key holding the task id that owns an epic. |
+| Key      | Type   | Default | Environment               | Meaning                                                      |
+| -------- | ------ | ------- | ------------------------- | ------------------------------------------------------------ |
+| `label`  | string | unset   | `MILHOUSE_TRACKER_LABEL`  | Only work issues carrying this label. Unset considers all.   |
+| `parent` | string | unset   | `MILHOUSE_TRACKER_PARENT` | Only work issues under this epic. Unset considers every one. |
+
+`--label` and `--parent` override these.
+
+Unfenced by default, because a repository whose beads database is only agent work needs no fence. Set one where the ready queue also carries issues that were never meant for an agent — milhouse will otherwise claim them, since it has no way of telling.
+
+Both are passed straight to `bd ready`, which already excludes blocked, deferred, and in-progress issues. milhouse adds `--exclude-type epic` on top: an epic is a container for work, not a unit of it.
 
 ## `[herdr]`
 
@@ -105,8 +101,10 @@ A reused workspace is not an empty one, which is why `self_pane` exists. Its pan
 | `MILHOUSE_AGENT_START_TIMEOUT_MS` | `agent.start_timeout_ms` |
 | `MILHOUSE_AGENT_EXIT_TIMEOUT_MS`  | `agent.exit_timeout_ms`  |
 | `MILHOUSE_TURN_TIMEOUT_MS`        | `agent.turn_timeout_ms`  |
-| `MILHOUSE_BRANCH_STRATEGY`        | `git.branch_strategy`    |
-| `MILHOUSE_BRANCH_PREFIX`          | `git.branch_prefix`      |
+| `MILHOUSE_VERIFY_COMMAND`         | `verify.command`         |
+| `MILHOUSE_VERIFY_TIMEOUT_MS`      | `verify.timeout_ms`      |
+| `MILHOUSE_TRACKER_LABEL`          | `tracker.label`          |
+| `MILHOUSE_TRACKER_PARENT`         | `tracker.parent`         |
 | `MILHOUSE_WORKSPACE`              | `herdr.workspace`        |
 | `HERDR_WORKSPACE_ID`              | `herdr.workspace`        |
 | `HERDR_PANE_ID`                   | `herdr.self_pane`        |

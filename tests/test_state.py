@@ -15,7 +15,7 @@ from milhouse.state import LockHolder, RunStore, ensure_run_dir
 
 @pytest.fixture
 def store(tmp_path: Path) -> RunStore:
-    return RunStore(tmp_path / "runs" / "hello")
+    return RunStore(tmp_path / ".milhouse" / "runs")
 
 
 def iteration(number: int, *, issue_id: str = "bd-e.1", detail: str = "") -> Iteration:
@@ -27,12 +27,12 @@ def iteration(number: int, *, issue_id: str = "bd-e.1", detail: str = "") -> Ite
 
 
 def test_state_round_trips_through_disk(store: RunStore) -> None:
-    store.save(RunState(task_id="file:docs/tasks/hello.md", task_slug="hello", epic_id="bd-9"))
+    store.save(RunState(branch="main", claimed_issue="bd-9.1"))
 
     loaded = store.load()
 
     assert loaded is not None
-    assert loaded.epic_id == "bd-9"
+    assert loaded.claimed_issue == "bd-9.1"
     assert not store.state_path.with_suffix(".json.tmp").exists()
 
 
@@ -40,8 +40,8 @@ def test_loading_a_missing_state_returns_none(store: RunStore) -> None:
     assert store.load() is None
 
 
-def test_a_version_1_state_file_still_loads(store: RunStore) -> None:
-    """The history and attempt counts are gone, but the session facts are not."""
+def test_an_older_state_file_still_loads(store: RunStore) -> None:
+    """The history, the attempt counts, and the task are gone; the rest is not."""
     store.run_dir.mkdir(parents=True)
     store.state_path.write_text(
         json.dumps(
@@ -50,6 +50,7 @@ def test_a_version_1_state_file_still_loads(store: RunStore) -> None:
                 "task_id": "file:hello.md",
                 "task_slug": "hello",
                 "epic_id": "bd-9",
+                "branch": "milhouse/hello",
                 "attempts": {"bd-9.1": 2},
                 "iterations": [{"number": 1, "issue_id": "bd-9.1", "outcome": "stalled"}],
             }
@@ -60,7 +61,7 @@ def test_a_version_1_state_file_still_loads(store: RunStore) -> None:
     loaded = store.load()
 
     assert loaded is not None
-    assert loaded.epic_id == "bd-9"
+    assert loaded.branch == "milhouse/hello"
 
 
 # -- the event log -------------------------------------------------------------
@@ -165,32 +166,39 @@ def test_releasing_a_lock_this_process_never_took_is_a_no_op(store: RunStore) ->
 def test_the_runs_directory_ignores_itself(store: RunStore) -> None:
     """Without this, the lock file below is an uncommitted change in the repo.
 
-    A run directory lives inside the repository being worked on, and the branch
-    checkout that follows refuses to run over a dirty tree, so the very first
-    step in a fresh repository would fail on milhouse's own bookkeeping.
+    A run directory lives inside the repository being worked on, and milhouse
+    reads its own turns partly on whether the working tree is dirty, so its
+    bookkeeping would show up in the reading it takes.
     """
     store.lock.acquire()
 
-    marker = store.run_dir.parent / ".gitignore"
+    marker = store.run_dir / ".gitignore"
     assert marker.read_text(encoding="utf-8").splitlines()[-1] == "*"
+
+
+def test_the_marker_goes_inside_the_run_directory(store: RunStore) -> None:
+    """Its parent is `.milhouse/`, which also holds the committed config file."""
+    ensure_run_dir(store.run_dir)
+
+    assert (store.run_dir / ".gitignore").exists()
+    assert not (store.run_dir.parent / ".gitignore").exists()
 
 
 def test_the_marker_is_written_once_and_not_rewritten(store: RunStore) -> None:
     ensure_run_dir(store.run_dir)
-    marker = store.run_dir.parent / ".gitignore"
+    marker = store.run_dir / ".gitignore"
     marker.write_text("# edited by hand\n*\n", encoding="utf-8")
 
     ensure_run_dir(store.run_dir)
-    ensure_run_dir(store.run_dir.parent / "other-task")
 
     assert marker.read_text(encoding="utf-8") == "# edited by hand\n*\n"
 
 
 def test_every_writer_creates_the_directory_the_same_way(store: RunStore) -> None:
     """save, append, and the lock all go through the same helper."""
-    marker = store.run_dir.parent / ".gitignore"
+    marker = store.run_dir / ".gitignore"
 
-    store.save(RunState(task_id="file:hello.md", task_slug="hello"))
+    store.save(RunState())
     assert marker.exists()
 
     marker.unlink()

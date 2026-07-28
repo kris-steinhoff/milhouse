@@ -1,7 +1,7 @@
 """In-memory stand-ins for the tracker, herdr, git, and the agent.
 
 These fake at the collaborator boundary rather than at :mod:`milhouse.proc`,
-because what the session, step, and loop tests are about is decisions — what gets
+because what the session and step tests are about is decisions — what gets
 claimed, what happens after a turn, when a run stops — not the argv anyone
 builds. The argv is covered where it is written, in ``test_tracker.py`` and
 ``test_herdr.py``.
@@ -19,7 +19,7 @@ from pathlib import Path
 from milhouse.config import Config
 from milhouse.errors import MilhouseError
 from milhouse.herdr import Workspace
-from milhouse.models import Issue, TaskDefinition
+from milhouse.models import Issue
 from milhouse.runner import TurnResult
 from milhouse.session import Session
 
@@ -28,28 +28,14 @@ __all__ = ["FakeClient", "FakeRepo", "FakeRunner", "FakeTracker", "build"]
 
 @dataclass
 class FakeTracker:
-    """An in-memory tracker holding one epic and its children."""
+    """An in-memory tracker holding an epic and the issues under it."""
 
     epic: Issue | None = None
     issues: list[Issue] = field(default_factory=list)
     notes: list[tuple[str, str]] = field(default_factory=list)
     released: list[str] = field(default_factory=list)
 
-    def find_epic(self, task: TaskDefinition) -> Issue | None:
-        return self.epic
-
-    def create_epic(self, task: TaskDefinition) -> Issue:
-        self.epic = Issue(id="bd-e", title=task.title, status="open", issue_type="epic")
-        return self.epic
-
-    def create_children(self, epic_id: str, issues: list) -> list[Issue]:
-        self.issues = [
-            Issue(id=f"bd-e.{n}", title=planned.title, status="open", parent=epic_id)
-            for n, planned in enumerate(issues, start=1)
-        ]
-        return self.issues
-
-    def ready(self, epic_id: str, *, claim: bool) -> Issue | None:
+    def ready(self, *, claim: bool) -> Issue | None:
         for issue in self.issues:
             if issue.status == "open":
                 if claim:
@@ -58,12 +44,14 @@ class FakeTracker:
         return None
 
     def get(self, issue_id: str) -> Issue:
+        if self.epic is not None and self.epic.id == issue_id:
+            return self.epic
         for issue in self.issues:
             if issue.id == issue_id:
                 return issue
         raise MilhouseError(f"no such issue: {issue_id}")
 
-    def children(self, epic_id: str) -> list[Issue]:
+    def children(self, parent_id: str | None = None) -> list[Issue]:
         return list(self.issues)
 
     def release(self, issue_id: str, *, note: str | None = None) -> None:
@@ -203,7 +191,6 @@ class FakeRunner:
 
 def build(
     config: Config,
-    task: TaskDefinition,
     *,
     tracker: FakeTracker,
     script: list[str],
@@ -215,7 +202,6 @@ def build(
     runner = FakeRunner(tracker=tracker, repo=repo, script=script, workdir=config.repo_root)
     session = Session(
         config,
-        task,
         tracker=tracker,
         client=client or FakeClient(),  # ty: ignore[invalid-argument-type]
         repo=repo,  # ty: ignore[invalid-argument-type]

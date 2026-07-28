@@ -1,10 +1,9 @@
-"""milhouse — decompose a task into tracked issues, then drive a ralph loop over them.
+"""milhouse — take a tracker's ready queue and drive a ralph loop over it.
 
-milhouse wires three existing tools together and keeps the loop running
-unattended: `beads <https://github.com/steveyegge/beads>`_ for durable,
-dependency-aware issue tracking, `herdr <https://herdr.dev>`_ for the terminal
-panes the agents run in, and an interactive coding agent that does one unit of
-work per iteration.
+milhouse wires three existing tools together: `beads
+<https://github.com/steveyegge/beads>`_ for durable, dependency-aware issue
+tracking, `herdr <https://herdr.dev>`_ for the terminal panes the agents run in,
+and an interactive coding agent that does one unit of work per iteration.
 
 The defining property of a `ralph loop <https://ghuntley.com/ralph/>`_ is a fresh
 context window every iteration. milhouse gets that by starting a new agent in the

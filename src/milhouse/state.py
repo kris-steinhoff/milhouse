@@ -1,21 +1,18 @@
 """The run directory: session state, the event log, and the run lock.
 
-One task gets one directory under ``.milhouse/runs/<task_slug>/``, and
-:class:`RunStore` owns everything in it:
+One repository gets one directory, ``.milhouse/runs/``, and :class:`RunStore`
+owns everything in it:
 
 ==============================  ============================================
 ``state.json``                  Session facts. Small, rewritten, atomic.
 ``events.jsonl``                One :class:`~milhouse.models.Iteration` per
                                 line, append-only. The history and the
                                 post-mortem log.
-``lock.json``                   Who is running this task right now.
+``lock.json``                   Who is running in this repository right now.
 ``<issue-id>/``                 Every artifact of every attempt at one issue.
 ``<issue-id>/iter-NNN.prompt``  The exact prompt sent for iteration ``NNN``.
 ``<issue-id>/iter-NNN.term``    The pane transcript captured after it.
 ==============================  ============================================
-
-The planning turn writes ``iter-000.*`` at the top level instead, because it
-decomposes a task rather than working an issue.
 
 Splitting the history out of ``state.json`` is what makes the state file small
 enough to rewrite safely on every save, and it gives post-mortems a log to read
@@ -61,31 +58,30 @@ def ensure_run_dir(run_dir: Path) -> Path:
     """Create a run directory that git does not see.
 
     This has to happen before anything is written into ``.milhouse/runs/``,
-    because that directory lives inside the repository being worked on. The
-    first thing a session writes is the run lock, and an unignored lock file is
-    an uncommitted change — which is what
-    :meth:`~milhouse.session.Session._prepare_branch` refuses to check out a
-    branch over. The very first run in a fresh repository would otherwise
-    always fail, blaming the user for milhouse's own bookkeeping.
+    because that directory lives inside the repository being worked on. Run
+    bookkeeping that git can see is an uncommitted change, which shows up as a
+    dirty working tree in the reading milhouse takes of its own turns.
 
     The marker ignores itself, so nobody has to commit anything for it to work,
-    and a fresh clone gets one back on the next run.
+    and a fresh clone gets one back on the next run. It goes inside the run
+    directory rather than beside it, because the parent is ``.milhouse/``, which
+    also holds the committed ``config.toml``.
 
     Args:
-        run_dir: ``.milhouse/runs/<task_slug>``. Created along with its parents.
+        run_dir: ``.milhouse/runs``. Created along with its parents.
 
     Returns:
         ``run_dir``, for chaining.
     """
     run_dir.mkdir(parents=True, exist_ok=True)
-    marker = run_dir.parent / IGNORE_FILENAME
+    marker = run_dir / IGNORE_FILENAME
     if not marker.exists():
         marker.write_text(IGNORE_BODY, encoding="utf-8")
     return run_dir
 
 
 class LockHolder(BaseModel):
-    """The process a lock file says is running this task.
+    """The process a lock file says is running in this repository.
 
     Attributes:
         pid: Process id of the holder.
@@ -123,7 +119,7 @@ class LockHolder(BaseModel):
 
 
 class RunLock:
-    """An advisory lock over one task's run directory.
+    """An advisory lock over one repository's run directory.
 
     Advisory in the usual sense: it stops milhouse from tripping over itself, not
     an unrelated process from writing to the same files.
@@ -170,8 +166,7 @@ class RunLock:
                 existing = self.holder()
                 if existing is not None and existing.is_live:
                     raise RunLockedError(
-                        f"another milhouse run holds {self.path.parent.name} "
-                        f"({existing.describe()})"
+                        f"another milhouse run is working this repository ({existing.describe()})"
                     ) from None
                 stale = existing
                 self.path.unlink(missing_ok=True)
@@ -191,13 +186,13 @@ class RunLock:
 
 
 class RunStore:
-    """Reads and writes one task's run directory."""
+    """Reads and writes one repository's run directory."""
 
     def __init__(self, run_dir: Path) -> None:
         """Bind to a run directory, which need not exist yet.
 
         Args:
-            run_dir: ``.milhouse/runs/<task_slug>``.
+            run_dir: ``.milhouse/runs``.
         """
         self.run_dir = run_dir
         self.lock = RunLock(run_dir / LOCK_FILENAME)
@@ -215,7 +210,7 @@ class RunStore:
     # -- session state ----------------------------------------------------
 
     def load(self) -> RunState | None:
-        """Read ``state.json``, returning ``None`` when this task has no run yet.
+        """Read ``state.json``, returning ``None`` when there has been no run yet.
 
         Raises:
             ValidationError: The file exists but is not a run state.
@@ -253,7 +248,7 @@ class RunStore:
             stream.write(iteration.model_dump_json() + "\n")
 
     def history(self) -> list[Iteration]:
-        """Every iteration recorded for this task, oldest first.
+        """Every iteration recorded in this repository, oldest first.
 
         A line that will not parse is skipped with a warning rather than raising.
         This log is what a post-mortem reads, and half a history beats a

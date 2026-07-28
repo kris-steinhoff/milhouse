@@ -22,7 +22,8 @@ def test_defaults_apply_without_a_config_file(repo: Path) -> None:
     assert resolved.agent.kind == "claude"
     assert resolved.agent.args == []
     assert resolved.agent.turn_timeout_ms == 1_800_000
-    assert resolved.git.branch_strategy == "task"
+    assert resolved.tracker.label is None
+    assert resolved.tracker.parent is None
     assert resolved.herdr.read_source == "visible"
 
 
@@ -106,12 +107,12 @@ def test_malformed_toml_is_a_config_error(repo: Path) -> None:
 
 
 def test_an_invalid_enum_value_is_a_config_error(repo: Path) -> None:
-    write_config(repo, '[git]\nbranch_strategy = "whatever"\n')
+    write_config(repo, "[herdr]\nread_source = 'whatever'\n")
 
     with pytest.raises(ConfigError) as caught:
         config_module.load(repo)
 
-    assert "git.branch_strategy" in str(caught.value)
+    assert "herdr.read_source" in str(caught.value)
     assert caught.value.exit_code == 2
 
 
@@ -127,4 +128,14 @@ def test_a_non_integer_env_override_is_a_config_error(
 def test_run_dir_is_under_milhouse_runs(repo: Path) -> None:
     resolved = config_module.load(repo)
 
-    assert resolved.run_dir("hello") == repo / ".milhouse" / "runs" / "hello"
+    assert resolved.run_dir() == repo / ".milhouse" / "runs"
+
+
+def test_a_repository_can_fence_the_ready_queue(repo: Path) -> None:
+    """The whole ready queue is the default; a fence is what a repo opts into."""
+    write_config(repo, '[tracker]\nlabel = "agent"\nparent = "bd-e"\n')
+
+    resolved = config_module.load(repo)
+
+    assert resolved.tracker.label == "agent"
+    assert resolved.tracker.parent == "bd-e"

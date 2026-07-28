@@ -100,7 +100,7 @@ class AgentRunner:
         Args:
             client: The herdr client to drive.
             config: Resolved configuration, for the agent kind, args, and timeouts.
-            run_dir: ``.milhouse/runs/<slug>``, where prompts and transcripts go.
+            run_dir: ``.milhouse/runs``, where prompts and transcripts go.
             pane_id: The pane to run agents in. May change if a pane has to be
                 replaced; read :attr:`pane_id` back after each turn.
             agent_name: The herdr agent name, e.g. ``milhouse-hello``.
@@ -125,9 +125,8 @@ class AgentRunner:
             prompt: The rendered prompt to send.
             iteration: 1-based iteration number, used to name the artifacts.
             issue_id: The issue this turn works, which gets its own artifact
-                directory. ``None`` writes to the run directory itself, which is
-                what the planning turn does — it decomposes a task rather than
-                working an issue, so it has no issue to file under.
+                directory. ``None`` writes to the run directory itself, for a
+                turn that has no issue to file under.
 
         Returns:
             What happened, for :func:`milhouse.outcome.classify` to interpret.

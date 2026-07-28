@@ -21,19 +21,15 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import get_args
 
-from .config import RUNS_RELPATH, BranchStrategy
+from .config import RUNS_RELPATH
 from .gitrepo import find_repo_root
-from .models import RunState
 from .state import RunStore
 
 __all__ = [
     "AGENT_KINDS",
     "complete_agent",
-    "complete_branch_strategy",
     "complete_repo",
-    "complete_task",
     "complete_workspace",
 ]
 
@@ -53,36 +49,6 @@ herdr's enum is longer and grows; ``herdr agent start --help`` has the current
 list. Any kind herdr accepts works, whether or not it appears here.
 """
 
-FILE_PREFIX = "file:"
-"""Explicit prefix on a file task spec, which completion preserves if typed."""
-
-TASK_SUFFIXES = (".md", ".markdown")
-"""Extensions a task definition can have. Anything else is not offered."""
-
-_BRANCH_STRATEGY_HELP = {
-    "task": "one branch per task definition",
-    "current": "commit to the branch you are on",
-}
-
-
-def complete_task(incomplete: str) -> list[str]:
-    """Complete a task spec with markdown files and the directories holding them.
-
-    Directories come back with a trailing ``/`` so a second tab descends into
-    them. ``gh:`` specs are left alone: those issue numbers live on GitHub, and
-    fetching them would mean a network call on a keypress.
-
-    Args:
-        incomplete: What the user has typed so far.
-
-    Returns:
-        Matching paths, sorted, or nothing when there is nothing to offer.
-    """
-    if incomplete.startswith("gh:"):
-        return []
-    prefix = FILE_PREFIX if incomplete.startswith(FILE_PREFIX) else ""
-    return sorted(prefix + match for match in _paths(incomplete[len(prefix) :], _is_task_file))
-
 
 def complete_repo(incomplete: str) -> list[str]:
     """Complete a ``--repo`` value with directories only."""
@@ -94,50 +60,35 @@ def complete_agent(incomplete: str) -> list[str]:
     return [kind for kind in AGENT_KINDS if kind.startswith(incomplete)]
 
 
-def complete_branch_strategy(incomplete: str) -> list[tuple[str, str]]:
-    """Complete a ``--branch-strategy`` value with the two strategies."""
-    return _choices(get_args(BranchStrategy), _BRANCH_STRATEGY_HELP, incomplete)
-
-
 def complete_workspace(incomplete: str) -> list[tuple[str, str]]:
-    """Complete a ``--workspace`` value from the workspaces this repo's runs used.
+    """Complete a ``--workspace`` value with the workspace this repo's last run used.
 
-    Reusing a workspace is nearly always about rejoining one of these runs, and
-    their ids are recorded in ``.milhouse/runs/*/state.json``. Reading those
-    keeps completion local, and works whether or not the herdr server is up.
+    Reusing a workspace is nearly always about rejoining that run, and its id is
+    recorded in ``.milhouse/runs/state.json``. Reading it keeps completion
+    local, and works whether or not the herdr server is up.
 
     Args:
         incomplete: What the user has typed so far.
 
     Returns:
-        ``(workspace_id, task_id)`` pairs, most recently updated run first.
+        A ``(workspace_id, branch)`` pair, or nothing when there is no run to
+        rejoin.
     """
     try:
         repo_root = find_repo_root()
     except Exception:
         return []
-    found: dict[str, str] = {}
-    for state in _run_states(repo_root):
-        if state.workspace_id and state.workspace_id.startswith(incomplete):
-            found.setdefault(state.workspace_id, state.task_id)
-    return list(found.items())
-
-
-def _run_states(repo_root: Path) -> list[RunState]:
-    """Every readable run state under ``repo_root``, most recently updated first.
-
-    An unreadable or outdated ``state.json`` is skipped rather than reported:
-    completion is not the place to learn a state file went bad.
-    """
-    states = []
-    for path in sorted((repo_root / RUNS_RELPATH).glob("*/state.json")):
-        try:
-            state = RunStore(path.parent).load()
-        except Exception:
-            continue
-        if state is not None:
-            states.append(state)
-    return sorted(states, key=lambda state: state.updated_at, reverse=True)
+    try:
+        state = RunStore(repo_root / RUNS_RELPATH).load()
+    except Exception:
+        # An unreadable or outdated state.json is skipped rather than reported:
+        # completion is not the place to learn a state file went bad.
+        return []
+    if state is None or not state.workspace_id:
+        return []
+    if not state.workspace_id.startswith(incomplete):
+        return []
+    return [(state.workspace_id, state.branch or "")]
 
 
 def _paths(incomplete: str, keep: Callable[[Path], bool]) -> Iterator[str]:
@@ -171,18 +122,6 @@ def _paths(incomplete: str, keep: Callable[[Path], bool]) -> Iterator[str]:
             yield f"{head}{sep}{entry.name}"
 
 
-def _is_task_file(path: Path) -> bool:
-    """Whether ``path`` looks like a task definition."""
-    return path.suffix.lower() in TASK_SUFFIXES
-
-
 def _nothing(path: Path) -> bool:
     """Accept no files, for completions that offer directories only."""
     return False
-
-
-def _choices(
-    values: tuple[str, ...], help_text: dict[str, str], incomplete: str
-) -> list[tuple[str, str]]:
-    """Filter ``values`` by ``incomplete``, pairing each with its help text."""
-    return [(value, help_text.get(value, "")) for value in values if value.startswith(incomplete)]

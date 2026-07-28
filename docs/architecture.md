@@ -5,24 +5,17 @@
 One iteration is the unit milhouse is built from, and one `milhouse step` runs exactly one ([ADR 0014](decisions/0014-step-is-the-primitive.md)). Nothing repeats it: a loop needs a policy, and that policy is the open question ([ADR 0017](decisions/0017-no-loop-until-it-is-earned.md)).
 
 ```
-milhouse step <task_definition>
-  │
-  ├─ resolve source ────────► TaskDefinition (title, body, task_id)
-  │                            file:docs/feature-x.md  |  gh:owner/repo#123
+milhouse step
   │
   ├─ open the session ──────► take the run lock, re-open any claim a crashed
-  │                           run left behind, check out the branch, find or
-  │                           create the herdr workspace
-  │
-  ├─ already decomposed? ───► bd list --metadata-field milhouse_task=<id> -t epic --json
-  │     │
-  │     └─ no ─────────────► run PLANNING agent (one shot)
-  │                           it writes plan.json; milhouse creates the issues
+  │                           run left behind, note the branch, find or create
+  │                           the herdr workspace
   │
   └─ one step ─────────────► step():
-        bd ready --parent <epic> --claim --json --limit 1   → issue (empty ⇒ done)
+        bd ready --claim --limit 1 --exclude-type epic  → issue (empty ⇒ nothing ready)
+        bd show <issue.parent>   → the background the prompt carries
         render iterate prompt for that issue
-        herdr agent start    (FRESH agent in the task's pane)
+        herdr agent start    (FRESH agent in the pane)
         herdr agent prompt --wait --until idle --until blocked
         herdr agent read     (capture the transcript)
         exit the agent       (pane returns to a shell prompt)
@@ -30,6 +23,8 @@ milhouse step <task_definition>
         outcome.classify()   what the turn achieved, from beads + git
         policy.decide()      what happens to the issue as a result
 ```
+
+Nothing above puts work _into_ the tracker. There is no task definition and no planning agent: issues arrive in beads by whatever process the human wants, and milhouse works whatever `bd ready` offers ([ADR 0018](decisions/0018-no-task-milhouse-works-the-ready-queue.md)).
 
 The defining property of ralph is a **fresh context window every iteration**. milhouse gets that by starting a new agent in the pane each step and exiting it when the turn ends, rather than reusing one long-lived session. State lives in beads and git, never in an accumulating chat session.
 
@@ -67,32 +62,26 @@ Having it named and empty is what made removing the loop cost one file. Nothing 
 
 ```
 src/milhouse/
-  cli.py         typer app — step, plan, status, doctor. Parsing and output only.
+  cli.py         typer app — step, status, doctor. Parsing and output only.
   completion.py  what each parameter offers on tab. Filesystem and constants only.
   config.py      layered: defaults < .milhouse/config.toml < env < flags
-  models.py      TaskDefinition, Issue, Iteration, RunState (pydantic values)
+  models.py      Issue, Iteration, RunState (pydantic values)
   state.py       RunStore — state.json, events.jsonl, and the run lock
   proc.py        run() / run_json() — the single subprocess chokepoint
   errors.py      MilhouseError hierarchy, mapped to exit codes
   gitrepo.py     one working directory: read HEAD, ask what landed, branch it
   doctor.py      preflight checks, as data
-  sources/
-    base.py      Source protocol; resolve(spec) -> TaskDefinition
-    file.py      local markdown
-    github.py    gh issue view <n> --json title,body,number,url
   tracker/
-    base.py      Tracker protocol (create_epic, ready, release, note, ...)
+    base.py      Tracker protocol (ready, get, children, release, note)
     beads.py     bd wrapper
   herdr.py       narrow client over the herdr CLI — swappable transport
   runner.py      Runner protocol, and AgentRunner — start/prompt/read/exit
-  session.py     Session — lock, branch, workspace, epic, claim. No policy.
+  session.py     Session — lock, branch, workspace, claim. No policy.
   outcome.py     classify(issue_after, git, agent_state) -> Verdict
   policy.py      decide(iteration) -> Decision. No I/O.
   verify.py      run the repo's own gate over an issue the agent closed
-  step.py        step(session, epic) -> one Iteration, classified and settled
-  planner.py     one-shot decomposition: prompt, plan.json, validate, create
+  step.py        step(session) -> one Iteration, classified and settled
   prompts/
-    plan.md.j2      decomposition prompt
     iterate.md.j2   per-issue prompt
 ```
 
@@ -105,18 +94,15 @@ src/milhouse/
 - **`session.py` holds no policy.** It does not decide what to work on next or whether there is a next. That is what would let a loop reuse it unchanged.
 - **`cli.py` holds no behaviour, and no private attributes.** It resolves config, drives a `Session` through public methods, and formats the result.
 - **`completion.py` never raises and never calls a server.** Its callbacks run on a keypress, in a shell with nowhere to show a traceback, so they answer from the filesystem and from constants rather than from `bd`, `herdr`, or `gh`.
-- **`tracker/`, `sources/`, and `Runner` are protocols with one implementation each.** The protocol is not speculative generality: it is what `tests/doubles.py` and `tests/fakes.py` implement.
+- **`Tracker` and `Runner` are protocols with one implementation each.** The protocol is not speculative generality: it is what `tests/doubles.py` implements. `Tracker` is five methods — `ready`, `get`, `children`, `release`, `note` — and nothing on it creates an issue.
 
 ## Data flow
 
 ```
-spec string ──sources──► TaskDefinition ──planner──► epic id + child issues
-                              │                            │
-                              │                            ▼
-                              │                    bd ready --claim
+bd ready --claim ──────► Issue ──► bd show <parent> ──► background
                               │                            │
                               ▼                            ▼
-                        prompts/iterate.md.j2 ◄──────── Issue
+                        prompts/iterate.md.j2 ◄────────────┘
                               │
                               ▼
                      herdr.py ──► pane ──► agent ──► commits + bd close
@@ -129,18 +115,18 @@ spec string ──sources──► TaskDefinition ──planner──► epic id
                                                                    next status
 ```
 
-`TaskDefinition.task_id` is the join key between the user's file and the beads epic ([ADR 0002](decisions/0002-link-issues-via-bead-metadata.md)). Nothing else links them, and nothing else needs to.
+The dependency graph is the only structure milhouse reads, and `bd` owns it. Nothing joins an issue to anything outside the tracker.
 
 ## Where state lives
 
-| State                              | Home                                          | Authoritative? |
-| ---------------------------------- | --------------------------------------------- | -------------- |
-| The work: what to do, what is done | beads                                         | yes            |
-| The code                           | git, on a `milhouse/<slug>` branch            | yes            |
-| Which workspace, pane, and branch  | `.milhouse/runs/<slug>/state.json`            | bookkeeping    |
-| Iteration history                  | `.milhouse/runs/<slug>/events.jsonl`          | bookkeeping    |
-| Who is running this task           | `.milhouse/runs/<slug>/lock.json`             | bookkeeping    |
-| Exact prompt sent, pane transcript | `.milhouse/runs/<slug>/<issue-id>/iter-NNN.*` | bookkeeping    |
+| State                              | Home                                   | Authoritative? |
+| ---------------------------------- | -------------------------------------- | -------------- |
+| The work: what to do, what is done | beads                                  | yes            |
+| The code                           | git, on the checked-out branch         | yes            |
+| Which workspace, pane, and branch  | `.milhouse/runs/state.json`            | bookkeeping    |
+| Iteration history                  | `.milhouse/runs/events.jsonl`          | bookkeeping    |
+| Who is running in this repository  | `.milhouse/runs/lock.json`             | bookkeeping    |
+| Exact prompt sent, pane transcript | `.milhouse/runs/<issue-id>/iter-NNN.*` | bookkeeping    |
 
 The history is an append-only log rather than a list inside `state.json`, which keeps the state file small enough to rewrite atomically on every save and gives a post-mortem something to read ([ADR 0014](decisions/0014-step-is-the-primitive.md)).
 

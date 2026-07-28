@@ -16,9 +16,9 @@ from typing import Any
 
 from jinja2 import Environment, PackageLoader, StrictUndefined
 
-from ..models import Issue, TaskDefinition
+from ..models import Issue
 
-__all__ = ["render", "render_iterate", "render_plan"]
+__all__ = ["render", "render_iterate"]
 
 _env = Environment(
     loader=PackageLoader("milhouse", "prompts"),
@@ -48,24 +48,10 @@ def render(template: str, **context: Any) -> str:
     return _env.get_template(template).render(**context)
 
 
-def render_plan(task: TaskDefinition, *, plan_path: str, max_issues: int = 12) -> str:
-    """Render the one-shot decomposition prompt.
-
-    Args:
-        task: The task to decompose.
-        plan_path: Absolute path the agent must write its plan to.
-        max_issues: Soft ceiling on how many issues to propose.
-
-    Returns:
-        The rendered prompt.
-    """
-    return render("plan.md.j2", task=task, plan_path=plan_path, max_issues=max_issues)
-
-
 def render_iterate(
-    task: TaskDefinition,
     issue: Issue,
     *,
+    background: str = "",
     branch: str | None = None,
     attempt: int = 1,
     previous: list[dict[str, str]] | None = None,
@@ -73,8 +59,11 @@ def render_iterate(
     """Render the per-issue prompt for one iteration.
 
     Args:
-        task: The task definition the issue serves, included as background.
         issue: The issue to work.
+        background: The parent epic's description, which is where the wider
+            context the issue serves now lives
+            (:doc:`ADR 0018 <../../docs/decisions/0018-no-task-milhouse-works-the-ready-queue>`).
+            Empty when the issue has no parent, or the parent says nothing.
         branch: Branch the agent must commit to, or ``None`` to leave it alone.
         attempt: 1-based attempt number for this issue.
         previous: Earlier attempts, as ``{"outcome", "detail"}`` mappings. These
@@ -85,8 +74,8 @@ def render_iterate(
     """
     return render(
         "iterate.md.j2",
-        task=task,
         issue=issue,
+        background=background.strip(),
         branch=branch,
         attempt=attempt,
         previous=previous or [],

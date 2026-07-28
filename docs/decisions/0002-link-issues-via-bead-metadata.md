@@ -1,6 +1,6 @@
 # 0002 — Link issues to task definitions with bead metadata
 
-**Status:** accepted
+**Status:** retired by [ADR 0018](0018-no-task-milhouse-works-the-ready-queue.md). Kept as the record of why the machinery existed.
 
 ## Context
 

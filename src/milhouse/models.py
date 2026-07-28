@@ -1,9 +1,8 @@
 """The data milhouse passes between its modules.
 
-Four types carry everything: a :class:`TaskDefinition` is what the user asked
-for, an :class:`Issue` is one unit of work in beads, an :class:`Iteration` is one
-turn of the agent, and a :class:`RunState` is the durable bookkeeping that lets a
-run be inspected or resumed after a crash.
+Three types carry everything: an :class:`Issue` is one unit of work in beads, an
+:class:`Iteration` is one turn of the agent, and a :class:`RunState` is the
+durable bookkeeping that lets a run be inspected or resumed after a crash.
 
 Beads and git remain the source of truth for the work itself. Everything here is
 either derived from them or is bookkeeping. Persisting it is
@@ -12,7 +11,6 @@ either derived from them or is bookkeeping. Persisting it is
 
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -23,67 +21,16 @@ __all__ = [
     "Iteration",
     "Outcome",
     "RunState",
-    "SourceKind",
-    "TaskDefinition",
     "now",
-    "slugify",
 ]
-
-SourceKind = Literal["file", "github"]
 
 Outcome = Literal["success", "rejected", "blocked", "partial", "stalled", "timeout", "error"]
 """How one iteration ended. See ``docs/architecture.md`` for the decision table."""
-
-_SLUG_STRIP = re.compile(r"[^a-z0-9]+")
 
 
 def now() -> datetime:
     """Current UTC time, used for every timestamp milhouse records."""
     return datetime.now(UTC)
-
-
-def slugify(text: str) -> str:
-    """Reduce ``text`` to lowercase ``[a-z0-9-]``, for use in paths and labels.
-
-    Args:
-        text: Arbitrary text.
-
-    Returns:
-        A slug, or ``"task"`` when nothing survives normalisation.
-    """
-    slug = _SLUG_STRIP.sub("-", text.lower()).strip("-")
-    return slug or "task"
-
-
-class TaskDefinition(BaseModel):
-    """One thing the user wants done, resolved from a source spec.
-
-    The ``task_id`` is the stable link between a task definition and the beads
-    epic that decomposes it. It is stored in the epic's metadata, so re-running
-    milhouse against the same spec finds the existing decomposition instead of
-    planning again.
-    """
-
-    task_id: str
-    """Stable identity: ``file:<repo-relative-path>`` or ``gh:<owner>/<repo>#<n>``."""
-
-    title: str
-    """Short human title, used for the epic title and the workspace label."""
-
-    body: str
-    """Full text of the task definition, handed to the planning agent verbatim."""
-
-    kind: SourceKind
-    """Which resolver produced this definition."""
-
-    slug: str
-    """Filesystem- and label-safe short name, e.g. ``hello``."""
-
-    external_ref: str | None = None
-    """``bd --external-ref`` value, e.g. ``gh-123``. ``None`` for file sources."""
-
-    url: str | None = None
-    """Where a human can read the original, when the source has a URL."""
 
 
 class Issue(BaseModel):
@@ -122,7 +69,7 @@ class Iteration(BaseModel):
     """
 
     number: int
-    """1-based iteration counter, over the whole task rather than one invocation.
+    """1-based iteration counter, over the repository rather than one invocation.
 
     It names the run artifacts (``<issue-id>/iter-007.prompt``), so it has to
     keep counting across invocations even though the iteration budget does not.
@@ -182,32 +129,32 @@ class Iteration(BaseModel):
 
 
 class RunState(BaseModel):
-    """The session facts for one task, persisted as ``state.json``.
+    """The session facts for one repository, persisted as ``state.json``.
 
     This is not the source of truth for the work, and it is not the history
-    either. It records only what milhouse needs in order to pick a task back up:
-    which epic it is working through, which workspace and pane it is driving,
-    which branch, and whether a claim was left in flight. The history lives in
-    ``events.jsonl`` beside it (:mod:`milhouse.state`).
+    either. It records only what milhouse needs in order to pick the run back
+    up: which workspace and pane it is driving, which branch, and whether a
+    claim was left in flight. The history lives in ``events.jsonl`` beside it
+    (:mod:`milhouse.state`).
 
     Deleting the run directory loses the history, nothing else.
     """
 
-    version: int = 2
+    version: int = 3
     """Schema version of this file.
 
     Version 1 also carried ``iterations`` and ``attempts``. Both are gone: the
     history moved to ``events.jsonl``, and the attempt ladder went with the
-    unattended retry policy. A version 1 file still loads, minus its history.
+    unattended retry policy. Version 2 carried ``task_id``, ``task_slug``, and
+    ``epic_id``, which went with the task definition
+    (:doc:`ADR 0018 <../../docs/decisions/0018-no-task-milhouse-works-the-ready-queue>`).
+    Older files still load, minus the fields that no longer exist.
     """
 
-    task_id: str
-    task_slug: str
-    epic_id: str | None = None
     workspace_id: str | None = None
     pane_id: str | None = None
     branch: str | None = None
-    """Branch the work is committed to, when ``git.branch_strategy = "task"``."""
+    """Branch the work is committed to. The one that was checked out when it began."""
 
     owns_workspace: bool = False
     """Whether milhouse created the workspace (and may therefore close it)."""

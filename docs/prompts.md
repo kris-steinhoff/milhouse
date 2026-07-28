@@ -1,80 +1,14 @@
 # Prompts
 
-For a ralph loop the prompt _is_ the product. milhouse ships two, both inside the package rather than user-configurable, so a run is reproducible from a milhouse version. Every prompt change is a behaviour change, so it lands with a doc change and a commit message that says what the agent will now do differently.
+For a ralph loop the prompt _is_ the product. milhouse ships one, inside the package rather than user-configurable, so a run is reproducible from a milhouse version. Every prompt change is a behaviour change, so it lands with a doc change and a commit message that says what the agent will now do differently.
 
-Both are Jinja templates rendered with `StrictUndefined`: a typo in a variable name fails at render time rather than quietly sending an agent a prompt with a hole in it. Each opens with a comment block stating its contract and its variables.
+It is a Jinja template rendered with `StrictUndefined`: a typo in a variable name fails at render time rather than quietly sending an agent a prompt with a hole in it. It opens with a comment block stating its contract and its variables.
 
-The exact rendered prompt is saved to `.milhouse/runs/<task>/<issue-id>/iter-NNN.prompt` every iteration, so tuning by observation has something to observe.
+The exact rendered prompt is saved to `.milhouse/runs/<issue-id>/iter-NNN.prompt` every iteration, so tuning by observation has something to observe.
 
-## `plan.md.j2` — decomposition
+There used to be a second one, `plan.md.j2`, which decomposed a task definition into issues. It is gone, along with the planning agent and the task definition itself. Planning is the most opinionated thing milhouse did and its prompt was a guess: it dictated issue granularity, insisted documentation belonged inside each issue, and ruled on how `blocked_by` should be used, none of it arrived at by watching runs ([ADR 0018](decisions/0018-no-task-milhouse-works-the-ready-queue.md)). Getting issues into the tracker is now yours, with a prompt you own.
 
-Rendered once per task, for a one-shot planning agent.
-
-**Variables**
-
-| Variable     | Meaning                                        |
-| ------------ | ---------------------------------------------- |
-| `task`       | The `TaskDefinition` — title, body, url        |
-| `plan_path`  | Absolute path the agent must write its plan to |
-| `max_issues` | Soft ceiling on how many issues to propose     |
-
-**What it promises the agent:** a task definition in full, and a JSON format to write.
-
-**What it demands:**
-
-1. Do **not** run `bd`. Do not create, update, or close anything.
-2. Do not implement anything.
-3. Write exactly one file — `plan.json` — and stop.
-
-Rule 1 is the whole point. A planning agent with `bd` on its `PATH` will otherwise just create the issues, and there is nothing left for a human to approve. Making the handoff a file is what turns the approval guardrail from a request into a structural fact ([ADR 0006](decisions/0006-planning-agent-proposes-milhouse-creates.md)).
-
-**The decomposition guidance it gives:** one agent-turn of work per issue, each independently verifiable, `blocked_by` only for real ordering constraints, and documentation folded into each issue rather than saved up as a final one. That last point is what makes the [documentation requirement](../README.md) part of the per-issue contract rather than a wish.
-
-It also tells the agent to read the repository — the README, `CLAUDE.md` / `AGENTS.md`, and the code the task touches — before writing the plan. A plan written without looking at the code produces issues that do not fit it.
-
-### The plan format
-
-```json
-{
-  "issues": [
-    {
-      "key": "add-command",
-      "title": "Add the hello subcommand",
-      "type": "task",
-      "priority": 1,
-      "description": "Add `hello` to cli.py.",
-      "acceptance": "`milhouse hello` prints a greeting.",
-      "blocked_by": []
-    },
-    {
-      "key": "document",
-      "title": "Document the hello subcommand",
-      "blocked_by": ["add-command"]
-    }
-  ]
-}
-```
-
-| Field         | Required | Meaning                                                           |
-| ------------- | -------- | ----------------------------------------------------------------- |
-| `key`         | yes      | Plan-local handle, unique in the file. Only used by `blocked_by`. |
-| `title`       | yes      | One line, imperative.                                             |
-| `type`        | no       | `task` (default), `feature`, `bug`, or `chore`.                   |
-| `priority`    | no       | 0 (highest) to 4. Omitted means the tracker's default of 2.       |
-| `description` | no       | What to do and why, written for an agent with no context.         |
-| `acceptance`  | no       | How that agent knows it is finished.                              |
-| `blocked_by`  | no       | Keys of issues in the same plan that must be done first.          |
-
-milhouse validates all of it before anything reaches `bd`:
-
-1. A non-empty `issues` array of objects.
-2. Every issue has a non-empty `title` and a unique, non-empty `key`.
-3. Every `blocked_by` entry names another issue in the same plan.
-4. The `blocked_by` graph is acyclic.
-
-Rule 4 matters more than it looks: a cycle would leave `bd ready` permanently empty, and the loop would exit reporting the epic finished having done nothing.
-
-Any failure is a planning failure. milhouse says which rule broke, keeps `plan.json` for inspection, and exits. The file is plain JSON, so editing it by hand and re-running is a reasonable fix.
+The discipline that prompt enforced is now yours too, and nothing warns you when it slips. [Usage](usage.md#getting-work-into-the-tracker) has the shape that works.
 
 ## `iterate.md.j2` — one issue
 
@@ -82,17 +16,17 @@ Rendered once per iteration, for a **fresh agent with no memory of any previous 
 
 **Variables**
 
-| Variable     | Meaning                                      |
-| ------------ | -------------------------------------------- |
-| `task`       | The `TaskDefinition`, included as background |
-| `issue`      | The `Issue` being worked                     |
-| `acceptance` | Acceptance criteria pulled off the bead      |
-| `notes`      | Notes previous attempts left on the bead     |
-| `branch`     | Branch to commit to, or `None`               |
-| `attempt`    | 1-based attempt number for this issue        |
-| `previous`   | Earlier attempts, as `{outcome, detail}`     |
+| Variable     | Meaning                                  |
+| ------------ | ---------------------------------------- |
+| `issue`      | The `Issue` being worked                 |
+| `background` | The parent epic's description, or `""`   |
+| `acceptance` | Acceptance criteria pulled off the bead  |
+| `notes`      | Notes previous attempts left on the bead |
+| `branch`     | Branch to commit to, or `None`           |
+| `attempt`    | 1-based attempt number for this issue    |
+| `previous`   | Earlier attempts, as `{outcome, detail}` |
 
-**What it promises the agent:** exactly one issue, the acceptance criteria, the notes previous attempts left, the task definition as background, and the branch to commit to.
+**What it promises the agent:** exactly one issue, the acceptance criteria, the notes previous attempts left, the parent epic's description as background, and the branch to commit to.
 
 **What it demands** — the five conditions for "done":
 
@@ -105,6 +39,10 @@ Rendered once per iteration, for a **fresh agent with no memory of any previous 
 **And the failure path**, which carries as much weight as the success path: commit what works, `bd note` what was learned, and **leave the issue open**.
 
 That last instruction is doing real work. Without it, the incentive is to close the issue and look successful — `bd` says closed, so [ADR 0004](decisions/0004-outcome-from-beads-and-git.md) says success. milhouse can now check the answer with [`[verify] command`](configuration.md), which is the backstop ([ADR 0016](decisions/0016-milhouse-verifies.md)). The prompt still asks, because it is cheaper for an agent to find its own failure mid-turn than for milhouse to find it afterwards.
+
+### Background comes from the epic
+
+The background block used to be the task definition, read verbatim from a markdown file. It is now the description of the issue's parent, read from the tracker. That is a real trade: the epic description is usually shorter, and it is the only remaining place to say what a set of issues is collectively for. An issue with no parent gets no background block at all, which is a working prompt but a thinner one.
 
 ### What is deliberately absent
 
@@ -122,5 +60,5 @@ The notes on the bead are the only memory that survives between attempts, which 
 
 1. Edit the template. Update its header comment if the contract changed.
 2. Update this file. A prompt change with no doc change is an incomplete change.
-3. Update `tests/test_prompts.py`. Those tests assert on the _contract_ — that the plan prompt still forbids `bd`, that the iterate prompt still forbids closing an unfinished issue — not on the wording, so tuning prose does not break them but dropping a promise does.
+3. Update `tests/test_prompts.py`. Those tests assert on the _contract_ — that the prompt still forbids closing an unfinished issue, that it still scopes the agent to one issue — not on the wording, so tuning prose does not break them but dropping a promise does.
 4. Watch a real run. That is the actual test ([ADR 0013](decisions/0013-iteration-prompt-contract.md)).

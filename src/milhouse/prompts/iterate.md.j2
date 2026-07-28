@@ -14,11 +14,11 @@
   the issue tree, which would only invite the agent to start on it.
 
   Variables:
-    task      TaskDefinition — the background this issue serves
-    issue     Issue — id, title, description, plus notes/acceptance in .raw
-    branch    branch the work must be committed to, or None
-    attempt   1-based attempt number for this issue
-    previous  list of {outcome, detail} from earlier attempts at this issue
+    issue       Issue — id, title, description, plus notes/acceptance in .raw
+    background  the parent epic's description, or "" (ADR 0018)
+    branch      branch the work must be committed to, or None
+    attempt     1-based attempt number for this issue
+    previous    list of {outcome, detail} from earlier attempts at this issue
   =========================================================================== #}
 You are working **one issue** for the milhouse orchestrator. milhouse picked it,
 milhouse decides what happens next, and this session ends when the issue does.
@@ -58,15 +58,17 @@ memory you have of those attempts.
 > rather than repeating the last one.
 {% endif %}
 
-## Background: the task this issue serves
+{% if background %}
+## Background: the epic this issue belongs to
 
 This is context, not your assignment. Do not work on anything in it that is not
 in your issue.
 
 ```
-{{ task.body }}
+{{ background }}
 ```
 
+{% endif %}
 ## What "done" means
 
 {% if branch %}

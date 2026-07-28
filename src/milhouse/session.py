@@ -1,9 +1,8 @@
 """Everything a run needs that is not the loop.
 
 :class:`Session` owns the resources and the state: the run lock, the branch, the
-herdr workspace and pane, the agent runner, the epic, and the claim currently in
-flight. It is a context manager, so opening and tearing all of that down is one
-``with``.
+herdr workspace and pane, the agent runner, and the claim currently in flight. It
+is a context manager, so opening and tearing all of that down is one ``with``.
 
 It holds **no policy**. It does not decide what to work on next or when to
 retry. That separation is what will let a loop over many iterations reuse
@@ -25,8 +24,7 @@ from .config import Config
 from .errors import MilhouseError, UserAbortError
 from .gitrepo import GitRepo
 from .herdr import HerdrClient, Workspace
-from .models import Issue, Iteration, RunState, TaskDefinition
-from .planner import Planner
+from .models import Issue, Iteration, RunState
 from .policy import Decision
 from .runner import AgentRunner, Runner
 from .state import RunStore
@@ -41,12 +39,11 @@ Reporter = Callable[[str], None]
 
 
 class Session:
-    """One task's resources and state, for as long as milhouse is working it."""
+    """One repository's resources and state, for as long as milhouse is working it."""
 
     def __init__(
         self,
         config: Config,
-        task: TaskDefinition,
         *,
         tracker: Tracker,
         client: HerdrClient,
@@ -59,7 +56,6 @@ class Session:
 
         Args:
             config: Resolved configuration.
-            task: The task being worked.
             tracker: Where issues live.
             client: The herdr client.
             repo: The git repository being worked in.
@@ -71,13 +67,12 @@ class Session:
                 Nothing in the package passes one; the tests do.
         """
         self.config = config
-        self.task = task
         self.tracker = tracker
         self.client = client
         self.repo = repo
         self.report = report
         self.attach = attach
-        self.store = RunStore(config.run_dir(task.slug))
+        self.store = RunStore(config.run_dir())
         self.state = self._load()
         self.workspace: Workspace | None = None
         self._runner: Runner | None = runner
@@ -86,11 +81,10 @@ class Session:
     # -- lifecycle --------------------------------------------------------
 
     def __enter__(self) -> Session:
-        """Take the lock, reconcile, prepare the branch, and open the workspace.
+        """Take the lock, reconcile, note the branch, and open the workspace.
 
         Raises:
-            RunLockedError: Another milhouse process is working this task.
-            MilhouseError: The branch could not be prepared.
+            RunLockedError: Another milhouse process is working this repository.
         """
         self._catch_signals()
         stale = self.store.lock.acquire()
@@ -98,7 +92,7 @@ class Session:
             self.report(f"took over the run lock from a dead run ({stale.describe()})")
         try:
             self.reconcile()
-            self._prepare_branch()
+            self.state.branch = self.repo.current_branch()
             self.open_workspace()
             self.save()
         except BaseException:
@@ -157,22 +151,8 @@ class Session:
         self._signals.clear()
 
     def _load(self) -> RunState:
-        """Read this task's state, creating a fresh one on the first run.
-
-        Raises:
-            MilhouseError: The state file belongs to a different task, which
-                happens when two task definitions share a filename and therefore
-                a slug.
-        """
-        loaded = self.store.load()
-        if loaded is None:
-            return RunState(task_id=self.task.task_id, task_slug=self.task.slug)
-        if loaded.task_id != self.task.task_id:
-            raise MilhouseError(
-                f"{self.store.state_path} belongs to {loaded.task_id}, not {self.task.task_id}. "
-                "Two task definitions share a slug; rename one."
-            )
-        return loaded
+        """Read this repository's state, creating a fresh one on the first run."""
+        return self.store.load() or RunState()
 
     def save(self) -> None:
         """Persist the session state."""
@@ -197,25 +177,6 @@ class Session:
         self.release_claim("Re-opened by milhouse: the previous run did not finish.")
 
     # -- resources --------------------------------------------------------
-
-    def _prepare_branch(self) -> None:
-        """Put the run on its branch, or leave the repo where it is.
-
-        Raises:
-            MilhouseError: The working tree is dirty, so a checkout would risk
-                someone's uncommitted work.
-        """
-        if self.config.git.branch_strategy == "current":
-            self.state.branch = self.repo.current_branch()
-            return
-        branch = self.state.branch or f"{self.config.git.branch_prefix}{self.task.slug}"
-        if self.repo.current_branch() != branch and self.repo.is_dirty():
-            raise MilhouseError(
-                "the working tree has uncommitted changes; commit or stash them before "
-                f"milhouse checks out {branch}"
-            )
-        self.state.branch = self.repo.ensure_branch(branch)
-        self.report(f"working on branch {self.state.branch}")
 
     def open_workspace(self) -> None:
         """Reuse the configured or recorded workspace, or create one.
@@ -244,7 +205,7 @@ class Session:
         else:
             workspace = self.client.create_workspace(
                 self.config.repo_root,
-                f"milhouse:{self.task.slug}",
+                f"milhouse:{self.config.repo_root.name}",
                 focus=self.attach,
             )
             self.state.owns_workspace = True
@@ -259,7 +220,7 @@ class Session:
                 self.config,
                 run_dir=self.store.run_dir,
                 pane_id=workspace.pane_id,
-                agent_name=f"milhouse-{self.task.slug}",
+                agent_name=f"milhouse-{self.config.repo_root.name}",
             )
 
     @property
@@ -284,43 +245,41 @@ class Session:
 
     # -- the work ---------------------------------------------------------
 
-    def ensure_epic(self, *, confirm: Callable[[Any], bool] | None = None) -> Issue:
-        """Find the epic for this task, planning one if it does not exist yet.
-
-        Args:
-            confirm: Passed to the planner for decomposition approval. ``None``
-                creates without asking, which is what ``--yes`` does.
-
-        Returns:
-            The epic this task's issues hang under.
-        """
-        existing = self.tracker.find_epic(self.task)
-        if existing is not None:
-            self.state.epic_id = existing.id
-            self.save()
-            self.report(f"using existing epic {existing.id}: {existing.title}")
-            return existing
-
-        self.report("no decomposition found; running the planning agent")
-        planner = Planner(self.config, self.tracker, self.runner, run_dir=self.store.run_dir)
-        epic, children = planner.plan(self.task, confirm=confirm)
-        self.state.epic_id = epic.id
-        self.save()
-        self.report(f"created epic {epic.id} with {len(children)} issues")
-        return epic
-
-    def claim(self, epic: Issue) -> Issue | None:
-        """Claim the next ready issue under ``epic``, recording it as in flight.
+    def claim(self) -> Issue | None:
+        """Claim the next ready issue, recording it as in flight.
 
         Returns:
             The claimed issue, or ``None`` when nothing is ready.
         """
-        issue = self.tracker.ready(epic.id, claim=True)
+        issue = self.tracker.ready(claim=True)
         if issue is None:
             return None
         self.state.claimed_issue = issue.id
         self.save()
         return issue
+
+    def background(self, issue: Issue) -> str:
+        """The parent epic's description, which is this issue's wider context.
+
+        With no task definition there is no separate document saying what the
+        work is for, so the prompt takes the parent's description instead
+        (:doc:`ADR 0018 <../../docs/decisions/0018-no-task-milhouse-works-the-ready-queue>`).
+        An issue with no parent, or a parent bd will not hand back, simply gets
+        no background: it is context, and a turn without it is still a turn.
+
+        Args:
+            issue: The issue about to be worked.
+
+        Returns:
+            The parent's description, or the empty string.
+        """
+        if not issue.parent:
+            return ""
+        try:
+            return self.tracker.get(issue.parent).description
+        except MilhouseError as exc:
+            log.warning("could not read the parent of %s: %s", issue.id, exc)
+            return ""
 
     def settle(self, decision: Decision) -> None:
         """Apply a policy decision to the issue currently in flight.
@@ -358,9 +317,18 @@ class Session:
         """The number the next iteration gets."""
         return self.store.next_number()
 
-    def unfinished(self, epic: Issue) -> list[Issue]:
-        """Children of ``epic`` that are not closed."""
-        return [child for child in self.tracker.children(epic.id) if not child.is_closed]
+    def unfinished(self) -> list[Issue]:
+        """Issues in scope that are not closed.
+
+        Epics are left out, the same way the ready queue leaves them out: an
+        epic is a container for the work rather than a unit of it, so an epic
+        nobody has got round to closing is not unfinished work.
+        """
+        return [
+            issue
+            for issue in self.tracker.children()
+            if not issue.is_closed and issue.issue_type != "epic"
+        ]
 
     def relative(self, path: Path | None) -> str | None:
         """Render an artifact path relative to the repo root, for the event log."""

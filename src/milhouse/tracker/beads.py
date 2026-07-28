@@ -1,28 +1,29 @@
 """The ``bd`` implementation of :class:`~milhouse.tracker.base.Tracker`.
 
-Every method is one or two ``bd`` invocations through :mod:`milhouse.proc`. The
-only cleverness is in :meth:`BeadsTracker.create_children`, which has to create
-issues before it can wire dependencies between them.
+Every method is one or two ``bd`` invocations through :mod:`milhouse.proc`.
 
-Three of the loop's questions are answered by ``bd`` directly, with no state of
-milhouse's own (:doc:`ADR 0002 <../../docs/decisions/0002-link-issues-via-bead-metadata>`):
+The loop's two questions are answered by ``bd`` directly, with no state of
+milhouse's own:
 
-- decomposed already? ``bd list --metadata-field <key>=<task_id> --type epic``
-- what next? ``bd ready --parent <epic> --claim --limit 1``
+- what next? ``bd ready --claim --limit 1``, plus whatever ``[tracker]`` fences
+  the queue with
 - done? the same ``bd ready`` returns an empty list
+
+The fence is a label, a parent, or neither
+(:doc:`ADR 0018 <../../docs/decisions/0018-no-task-milhouse-works-the-ready-queue>`).
+``bd`` applies it, because ``bd ready`` already takes both and already excludes
+blocked, deferred, and in-progress issues.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 from .. import proc
 from ..config import TrackerConfig
 from ..errors import MilhouseError, TrackerError
-from ..models import Issue, TaskDefinition
-from .base import PlannedIssue
+from ..models import Issue
 
 __all__ = ["BeadsTracker"]
 
@@ -38,28 +39,12 @@ class BeadsTracker:
 
         Args:
             repo_root: Repository whose ``.beads`` database to use.
-            config: Label and metadata key settings. Defaults apply if omitted.
+            config: The ready-queue filter. Unfiltered if omitted.
         """
         self.repo_root = repo_root
         self.config = config or TrackerConfig()
 
     # -- queries ---------------------------------------------------------
-
-    def find_epic(self, task: TaskDefinition) -> Issue | None:
-        """Find the epic carrying ``task``'s id in its metadata."""
-        issues = self._issues(
-            [
-                "list",
-                "--metadata-field",
-                f"{self.config.metadata_key}={task.task_id}",
-                "--type",
-                "epic",
-                "--all",
-                "--limit",
-                "0",
-            ]
-        )
-        return issues[0] if issues else None
 
     def get(self, issue_id: str) -> Issue:
         """Read one issue back.
@@ -72,91 +57,35 @@ class BeadsTracker:
             raise TrackerError(f"no such issue: {issue_id}")
         return issues[0]
 
-    def children(self, epic_id: str) -> list[Issue]:
-        """Every issue under ``epic_id``, closed ones included."""
-        return self._issues(["list", "--parent", epic_id, "--all", "--limit", "0"])
+    def children(self, parent_id: str | None = None) -> list[Issue]:
+        """Every issue under ``parent_id``, or in the configured scope, closed included."""
+        argv = ["list", "--all", "--limit", "0"]
+        parent = parent_id or self.config.parent
+        if parent:
+            argv += ["--parent", parent]
+        if self.config.label:
+            argv += ["--label", self.config.label]
+        return self._issues(argv)
 
-    def ready(self, epic_id: str, *, claim: bool) -> Issue | None:
-        """Return the next ready issue under ``epic_id``, optionally claiming it.
+    def ready(self, *, claim: bool) -> Issue | None:
+        """Return the next ready issue in scope, optionally claiming it.
 
         ``bd ready`` already excludes in-progress, blocked, and deferred issues,
-        and ``--claim`` makes taking one atomic, so two loops over the same epic
-        cannot pick the same issue.
+        and ``--claim`` makes taking one atomic, so two dispatchers cannot pick
+        the same issue. Epics are excluded: an epic is a container for the work,
+        not a unit of it.
         """
-        argv = ["ready", "--parent", epic_id, "--limit", "1"]
+        argv = ["ready", "--limit", "1", "--exclude-type", "epic"]
+        if self.config.parent:
+            argv += ["--parent", self.config.parent]
+        if self.config.label:
+            argv += ["--label", self.config.label]
         if claim:
             argv.append("--claim")
         issues = self._issues(argv)
         return issues[0] if issues else None
 
     # -- mutations -------------------------------------------------------
-
-    def create_epic(self, task: TaskDefinition) -> Issue:
-        """Create the epic for ``task``, tagged so :meth:`find_epic` finds it.
-
-        The metadata and label are applied here, by milhouse, and never by the
-        planning agent — that is what keeps an agent from forging an epic the
-        loop would then pick up
-        (:doc:`ADR 0006 <../../docs/decisions/0006-planning-agent-proposes-milhouse-creates>`).
-        """
-        argv = [
-            "create",
-            task.title,
-            "--type",
-            "epic",
-            "--labels",
-            self.config.label,
-            "--metadata",
-            json.dumps({self.config.metadata_key: task.task_id}),
-            "--description",
-            _epic_description(task),
-        ]
-        if task.external_ref:
-            argv += ["--external-ref", task.external_ref]
-        return self._one(argv, what="epic")
-
-    def create_children(self, epic_id: str, issues: list[PlannedIssue]) -> list[Issue]:
-        """Create every planned issue under ``epic_id``, then wire dependencies.
-
-        Two passes rather than one: dependencies are expressed between plan keys,
-        and a bead id only exists after creation, so nothing can be wired until
-        everything exists.
-
-        Raises:
-            TrackerError: A ``bd`` call failed, or a ``blocked_by`` key names an
-                issue that is not in ``issues``.
-        """
-        created: list[Issue] = []
-        by_key: dict[str, str] = {}
-        for planned in issues:
-            argv = [
-                "create",
-                planned.title,
-                "--parent",
-                epic_id,
-                "--type",
-                planned.type,
-            ]
-            if planned.priority is not None:
-                argv += ["--priority", str(planned.priority)]
-            if planned.description:
-                argv += ["--description", planned.description]
-            if planned.acceptance:
-                argv += ["--acceptance", planned.acceptance]
-            issue = self._one(argv, what="issue")
-            # `bd create` echoes the new bead without the parent it was given,
-            # so fill it in from what we asked for rather than re-reading.
-            created.append(issue.model_copy(update={"parent": epic_id}))
-            by_key[planned.key] = issue.id
-
-        for planned in issues:
-            for blocker in planned.blocked_by:
-                if blocker not in by_key:
-                    raise TrackerError(
-                        f"plan issue {planned.key!r} is blocked by unknown key {blocker!r}"
-                    )
-                self._run(["dep", "add", by_key[planned.key], by_key[blocker]])
-        return created
 
     def release(self, issue_id: str, *, note: str | None = None) -> None:
         """Return a claimed issue to the open, unassigned pool."""
@@ -204,23 +133,11 @@ class BeadsTracker:
         """Run a ``bd`` command expected to return a list of issues."""
         return _parse_issues(self._json(args))
 
-    def _one(self, args: list[str], *, what: str) -> Issue:
-        """Run a ``bd`` command expected to create or return exactly one issue.
-
-        Raises:
-            TrackerError: ``bd`` returned nothing usable.
-        """
-        payload = self._json(args)
-        issues = _parse_issues(payload)
-        if not issues:
-            raise TrackerError(f"bd did not report a created {what}")
-        return issues[0]
-
 
 def _parse_issues(payload: Any) -> list[Issue]:
     """Normalise ``bd``'s JSON into :class:`~milhouse.models.Issue` values.
 
-    ``bd`` returns a bare object from ``create`` and a list from ``list``,
+    ``bd`` returns a bare object from some commands and a list from ``list``,
     ``ready``, and ``show``, so both shapes are accepted.
 
     Raises:
@@ -251,15 +168,3 @@ def _to_issue(raw: dict[str, Any]) -> Issue:
         labels=[str(label) for label in raw.get("labels") or []],
         raw=raw,
     )
-
-
-def _epic_description(task: TaskDefinition) -> str:
-    """Body for the epic: a pointer back to the task definition, not a copy of it.
-
-    The full text goes to the agent in the prompt each iteration; duplicating it
-    into the epic would just be a second copy to drift.
-    """
-    lines = [f"Decomposition of the milhouse task `{task.task_id}`."]
-    if task.url:
-        lines.append(f"\nSource: {task.url}")
-    return "\n".join(lines)

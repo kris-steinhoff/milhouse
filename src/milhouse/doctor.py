@@ -1,6 +1,6 @@
 """Preflight checks behind ``milhouse doctor``.
 
-milhouse orchestrates four external tools and fails in confusing ways when one
+milhouse orchestrates three external tools and fails in confusing ways when one
 of them is missing or the herdr server is not running. ``doctor`` turns those
 failures into one readable table before a run starts.
 
@@ -45,7 +45,7 @@ def run_checks(config: Config) -> list[Check]:
 
     Returns:
         Checks for ``bd``, the beads database, ``herdr``, the herdr server,
-        ``git``, ``gh``, the configured agent binary, and the config file.
+        ``git``, the configured agent binary, and the config file.
     """
     checks = [
         _tool("bd", ["bd", "version"]),
@@ -53,7 +53,6 @@ def run_checks(config: Config) -> list[Check]:
         _tool("herdr", ["herdr", "--version"]),
         _herdr_server(),
         _tool("git", ["git", "--version"]),
-        _tool("gh", ["gh", "--version"], required=False),
         _tool(config.agent.kind, [config.agent.kind, "--version"], required=False),
         _config_file(config),
     ]

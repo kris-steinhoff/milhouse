@@ -1,6 +1,6 @@
 # 0018 — There is no task; milhouse works the tracker's ready queue
 
-**Status:** accepted, not yet implemented. The docs describe today's behaviour until it lands.
+**Status:** accepted and implemented.
 
 ## Context
 

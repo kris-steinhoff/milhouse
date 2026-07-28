@@ -52,7 +52,6 @@ def all_present(monkeypatch: pytest.MonkeyPatch, fake_proc: FakeProc) -> FakePro
     fake_proc.expect("herdr --version", Reply(stdout="herdr 0.7.5\n"))
     fake_proc.expect("herdr status", Reply(stdout=HERDR_STATUS_OK))
     fake_proc.expect("git --version", Reply(stdout="git version 2.43.0\n"))
-    fake_proc.expect("gh --version", Reply(stdout="gh version 2.96.0\n"))
     fake_proc.expect("claude --version", Reply(stdout="2.1.220 (Claude Code)\n"))
     return fake_proc
 
@@ -94,12 +93,13 @@ def test_a_missing_required_tool_fails(
 def test_a_missing_optional_tool_is_not_required(
     config: Config, all_present: FakeProc, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(proc, "have", lambda tool: None if tool == "gh" else f"/usr/bin/{tool}")
+    """The agent binary is the only optional one: herdr may know a kind we do not."""
+    monkeypatch.setattr(proc, "have", lambda tool: None if tool == "claude" else f"/usr/bin/{tool}")
 
     checks = by_name(doctor.run_checks(config))
 
-    assert checks["gh"].ok is False
-    assert checks["gh"].required is False
+    assert checks["claude"].ok is False
+    assert checks["claude"].required is False
 
 
 def test_an_uninitialised_beads_database_is_reported(config: Config, all_present: FakeProc) -> None:
