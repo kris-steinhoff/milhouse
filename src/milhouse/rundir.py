@@ -1,23 +1,20 @@
-"""The run directory: session state, the event log, and the run lock.
+"""The run directory: turn artifacts and the run lock.
 
-One repository gets one directory, ``.milhouse/runs/``, and :class:`RunStore`
-owns everything in it:
+One repository gets one directory, ``.milhouse/runs/``, holding:
 
 ==============================  ============================================
-``state.json``                  Session facts. Small, rewritten, atomic.
-``events.jsonl``                One :class:`~milhouse.models.Iteration` per
-                                line, append-only. The history and the
-                                post-mortem log.
 ``lock.json``                   Who is running in this repository right now.
 ``<issue-id>/``                 Every artifact of every attempt at one issue.
 ``<issue-id>/iter-NNN.prompt``  The exact prompt sent for iteration ``NNN``.
 ``<issue-id>/iter-NNN.term``    The pane transcript captured after it.
 ==============================  ============================================
 
-Splitting the history out of ``state.json`` is what makes the state file small
-enough to rewrite safely on every save, and it gives post-mortems a log to read
-rather than a document to diff
-(:doc:`ADR 0014 <../../docs/decisions/0014-step-is-the-primitive>`).
+That is all. milhouse used to keep ``state.json`` and ``events.jsonl`` here too,
+and both moved to tools that already owned what was in them: the session facts to
+``bd`` and herdr, the iteration history to the beads audit log
+(:doc:`ADR 0021 <../../docs/decisions/0021-iteration-history-goes-in-the-beads-audit-log>`).
+What survives is captured text with no other home — herdr's scrollback is live
+and bounded, and gone once a pane is replaced.
 
 The lock exists because reconciliation is destructive. Re-opening a claim that a
 *live* run is working would have two milhouse processes driving one pane and
@@ -27,7 +24,6 @@ fighting over one issue
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import socket
@@ -36,14 +32,12 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ValidationError
 
 from .errors import RunLockedError
-from .models import Iteration, RunState, now
+from .models import now
 
-__all__ = ["LockHolder", "RunLock", "RunStore", "ensure_run_dir"]
+__all__ = ["LOCK_FILENAME", "LockHolder", "RunLock", "ensure_run_dir"]
 
 log = logging.getLogger(__name__)
 
-STATE_FILENAME = "state.json"
-EVENTS_FILENAME = "events.jsonl"
 LOCK_FILENAME = "lock.json"
 IGNORE_FILENAME = ".gitignore"
 
@@ -183,102 +177,3 @@ class RunLock:
             return
         self._held = False
         self.path.unlink(missing_ok=True)
-
-
-class RunStore:
-    """Reads and writes one repository's run directory."""
-
-    def __init__(self, run_dir: Path) -> None:
-        """Bind to a run directory, which need not exist yet.
-
-        Args:
-            run_dir: ``.milhouse/runs``.
-        """
-        self.run_dir = run_dir
-        self.lock = RunLock(run_dir / LOCK_FILENAME)
-
-    @property
-    def state_path(self) -> Path:
-        """Where the session facts live."""
-        return self.run_dir / STATE_FILENAME
-
-    @property
-    def events_path(self) -> Path:
-        """Where the append-only iteration log lives."""
-        return self.run_dir / EVENTS_FILENAME
-
-    # -- session state ----------------------------------------------------
-
-    def load(self) -> RunState | None:
-        """Read ``state.json``, returning ``None`` when there has been no run yet.
-
-        Raises:
-            ValidationError: The file exists but is not a run state.
-        """
-        if not self.state_path.exists():
-            return None
-        return RunState.model_validate_json(self.state_path.read_text(encoding="utf-8"))
-
-    def save(self, state: RunState) -> None:
-        """Write ``state`` atomically, creating the run directory if needed.
-
-        The write goes to a sibling temporary file and is then renamed, so a
-        crash mid-write cannot leave a truncated ``state.json`` behind.
-
-        Args:
-            state: The state to persist. Its ``updated_at`` is refreshed.
-        """
-        state.updated_at = now()
-        ensure_run_dir(self.run_dir)
-        payload = json.loads(state.model_dump_json())
-        tmp = self.state_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        tmp.replace(self.state_path)
-
-    # -- the event log ----------------------------------------------------
-
-    def append(self, iteration: Iteration) -> None:
-        """Append one iteration to the event log.
-
-        Args:
-            iteration: The iteration that just ended.
-        """
-        ensure_run_dir(self.run_dir)
-        with self.events_path.open("a", encoding="utf-8") as stream:
-            stream.write(iteration.model_dump_json() + "\n")
-
-    def history(self) -> list[Iteration]:
-        """Every iteration recorded in this repository, oldest first.
-
-        A line that will not parse is skipped with a warning rather than raising.
-        This log is what a post-mortem reads, and half a history beats a
-        traceback.
-        """
-        if not self.events_path.exists():
-            return []
-        iterations: list[Iteration] = []
-        for number, line in enumerate(
-            self.events_path.read_text(encoding="utf-8").splitlines(), start=1
-        ):
-            if not line.strip():
-                continue
-            try:
-                iterations.append(Iteration.model_validate_json(line))
-            except ValidationError as exc:
-                log.warning("skipping %s line %d: %s", self.events_path, number, exc)
-        return iterations
-
-    def history_for(self, issue_id: str) -> list[Iteration]:
-        """Every recorded iteration that worked ``issue_id``, oldest first."""
-        return [item for item in self.history() if item.issue_id == issue_id]
-
-    def next_number(self) -> int:
-        """The number the next iteration gets.
-
-        Counts the whole log rather than this invocation, because the number
-        names the artifact files and those have to stay unique across resumes.
-        """
-        if not self.events_path.exists():
-            return 1
-        with self.events_path.open(encoding="utf-8") as stream:
-            return sum(1 for line in stream if line.strip()) + 1

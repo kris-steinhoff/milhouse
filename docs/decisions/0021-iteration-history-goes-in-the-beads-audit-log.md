@@ -1,6 +1,6 @@
 # 0021 — Iteration history goes in the beads audit log
 
-**Status:** accepted, not yet implemented. The docs describe today's behaviour until it lands.
+**Status:** accepted and implemented.
 
 ## Context
 
@@ -23,6 +23,10 @@ The unified trail is the real gain, and it grows with [ADR 0020](0020-a-lane-is-
 **Entries must stay small.** `interactions.jsonl` already has many concurrent writers, because every agent's `bd close` inside its own lane appends from its own process. That is safe today because every line is a few hundred bytes and POSIX guarantees atomic appends only below `PIPE_BUF`. `verification_output` is a tail of test output and clears that easily, so putting it in an entry would introduce the first large lines into a file that has been safe precisely because everything in it was small, and under N lanes that means torn records.
 
 So the entry carries the verdict and `transcript_path`, and not the output. The output already has two homes: the `bd note` that carries the failure reason to the next agent, and the full transcript on disk.
+
+**A second kind, `claim`, turned out to be needed, and implementing this is what found it.** The argument above says the in-flight claim is `bd`'s, because an issue that is `in_progress` with no live lane carrying its id is an orphaned claim. That is true once there are lanes ([ADR 0020](0020-a-lane-is-a-herdr-worktree.md)) and false before them: with no lane registry to check, "every `in_progress` issue" is the only available reading, and it cannot tell a claim milhouse abandoned from one a person made by hand — so reconciling would re-open somebody's work out from under them.
+
+The trail answers it instead. A turn appends `claim` before it starts and `iteration` when it ends, so a `claim` with nothing after it is a run that died mid-turn, and nothing else in the file looks like one. It is three fields, it composes with lanes rather than competing with them, and it is what lets `state.json` go now rather than after [ADR 0020](0020-a-lane-is-a-herdr-worktree.md) lands.
 
 ## Consequences
 

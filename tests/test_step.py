@@ -44,7 +44,7 @@ def test_a_step_claims_works_and_records_one_issue(config: Config, decomposed: F
     assert result.iteration.outcome == "success"
     # The runner files this turn's artifacts under the issue it worked.
     assert runner.issue_ids == ["bd-e.1"]
-    assert [item.outcome for item in session.store.history()] == ["success"]
+    assert [item.outcome for item in session.audit.iterations()] == ["success"]
     assert decomposed.issues[0].is_closed
     assert decomposed.issues[1].status == "open"
 

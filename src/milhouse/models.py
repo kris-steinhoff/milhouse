@@ -1,12 +1,11 @@
 """The data milhouse passes between its modules.
 
-Three types carry everything: an :class:`Issue` is one unit of work in beads, an
-:class:`Iteration` is one turn of the agent, and a :class:`RunState` is the
-durable bookkeeping that lets a run be inspected or resumed after a crash.
+Two types carry everything: an :class:`Issue` is one unit of work in beads, and
+an :class:`Iteration` is one turn of the agent.
 
 Beads and git remain the source of truth for the work itself. Everything here is
-either derived from them or is bookkeeping. Persisting it is
-:mod:`milhouse.state`'s job, not this module's: these are values.
+derived from them. Persisting it is :mod:`milhouse.audit`'s job, not this
+module's: these are values.
 """
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ __all__ = [
     "Issue",
     "Iteration",
     "Outcome",
-    "RunState",
     "now",
 ]
 
@@ -64,8 +62,9 @@ class Iteration(BaseModel):
     """The record of one turn: one issue, one fresh agent, one classification.
 
     One iteration is: claim an issue, start a fresh agent, prompt it once, exit
-    it, verify, then classify what happened. Every field here is appended to
-    ``events.jsonl`` so a finished or crashed run can be explained after the fact.
+    it, verify, then classify what happened. Nearly every field here goes into
+    the beads audit log so a finished or crashed run can be explained after the
+    fact (:mod:`milhouse.audit`).
     """
 
     number: int
@@ -110,7 +109,10 @@ class Iteration(BaseModel):
     """Tail of the verification command's output, kept only when it failed.
 
     This is what the note on the re-opened issue carries, and therefore the only
-    way the next agent learns why the last one's work was turned down.
+    way the next agent learns why the last one's work was turned down. It is the
+    one field the audit entry leaves out: it is unbounded, and a long line in
+    ``interactions.jsonl`` is a line that can tear
+    (:doc:`ADR 0021 <../../docs/decisions/0021-iteration-history-goes-in-the-beads-audit-log>`).
     """
 
     started_at: datetime = Field(default_factory=now)
@@ -126,41 +128,3 @@ class Iteration(BaseModel):
     def made_commit(self) -> bool:
         """Whether anything was committed during this iteration."""
         return bool(self.commits)
-
-
-class RunState(BaseModel):
-    """The session facts for one repository, persisted as ``state.json``.
-
-    This is not the source of truth for the work, and it is not the history
-    either. It records only what milhouse needs in order to pick the run back
-    up: which workspace and pane it is driving, which branch, and whether a
-    claim was left in flight. The history lives in ``events.jsonl`` beside it
-    (:mod:`milhouse.state`).
-
-    Deleting the run directory loses the history, nothing else.
-    """
-
-    version: int = 3
-    """Schema version of this file.
-
-    Version 1 also carried ``iterations`` and ``attempts``. Both are gone: the
-    history moved to ``events.jsonl``, and the attempt ladder went with the
-    unattended retry policy. Version 2 carried ``task_id``, ``task_slug``, and
-    ``epic_id``, which went with the task definition
-    (:doc:`ADR 0018 <../../docs/decisions/0018-no-task-milhouse-works-the-ready-queue>`).
-    Older files still load, minus the fields that no longer exist.
-    """
-
-    workspace_id: str | None = None
-    pane_id: str | None = None
-    branch: str | None = None
-    """Branch the work is committed to. The one that was checked out when it began."""
-
-    owns_workspace: bool = False
-    """Whether milhouse created the workspace (and may therefore close it)."""
-
-    claimed_issue: str | None = None
-    """Issue claimed but not yet resolved. Reverted on teardown or resume."""
-
-    created_at: datetime = Field(default_factory=now)
-    updated_at: datetime = Field(default_factory=now)

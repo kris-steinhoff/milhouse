@@ -17,15 +17,13 @@ Start with `milhouse doctor`. It checks every external dependency and the herdr 
 
 ## Run artifacts
 
-Everything milhouse records about a run lives here, and it is the primary post-mortem surface — there is no event stream from herdr ([ADR 0001](decisions/0001-shell-out-to-bd-and-herdr.md)):
+The turn artifacts are the primary post-mortem surface, because there is no event stream from herdr ([ADR 0001](decisions/0001-shell-out-to-bd-and-herdr.md)) and its scrollback is gone once a pane is replaced:
 
 ```
 .milhouse/
   config.toml                  # committed — agent command, defaults
   runs/
     .gitignore                 # written by milhouse; ignores this whole directory
-    state.json                 # workspace/pane id, branch, the in-flight claim
-    events.jsonl               # one iteration per line, append-only, every invocation
     lock.json                  # pid and host of the run in this repository, while it runs
     <issue-id>/
       iter-007.prompt          # the exact prompt sent that iteration
@@ -34,11 +32,11 @@ Everything milhouse records about a run lives here, and it is the primary post-m
 
 Each issue gets a directory, so every attempt at one issue sits together and two agents working different issues cannot collide on a filename.
 
-`.milhouse/runs/` is gitignored. Beads and git remain the source of truth for the work itself; everything under `runs/` is bookkeeping and is safe to delete. Deleting it loses the iteration history, nothing else.
+`.milhouse/runs/` is gitignored. Beads and git remain the source of truth for the work itself, and the iteration history is in the beads audit log ([ADR 0021](decisions/0021-iteration-history-goes-in-the-beads-audit-log.md)). Everything under `runs/` is safe to delete: doing so loses the prompts and transcripts, nothing else.
 
 When a run misbehaves, read them in this order:
 
-1. `events.jsonl` — what milhouse thought happened, one line per iteration. `milhouse status` is the readable version.
+1. `milhouse status` — what milhouse thought happened, one line per iteration. The underlying entries are in `.beads/interactions.jsonl`, interleaved with bd's own.
 2. `iter-NNN.term` for the first bad iteration — what the agent actually did.
 3. `iter-NNN.prompt` — what it was actually asked. Prompts are rendered per iteration and differ between attempts.
 
@@ -118,7 +116,7 @@ So a repository whose first issue writes the code and whose second writes the te
 
 If milhouse is killed with `SIGKILL`, or the machine goes away, an issue is left `in_progress` and assigned. `bd` has no lease expiry, so `bd ready` will never return that issue again.
 
-The normal fix is to **step again**. It takes the run lock, re-opens the claim it recorded in `state.json`, and carries on ([ADR 0008](decisions/0008-crash-recovery-by-reconciliation.md)). Holding the lock first is what makes that safe: the claim being re-opened cannot belong to a step still working it ([ADR 0015](decisions/0015-one-run-at-a-time.md)).
+The normal fix is to **step again**. It takes the run lock, re-opens every claim the audit log shows milhouse made and never finished, and carries on ([ADR 0008](decisions/0008-crash-recovery-by-reconciliation.md)). Holding the lock first is what makes that safe: the claim being re-opened cannot belong to a step still working it ([ADR 0015](decisions/0015-one-run-at-a-time.md)).
 
 To fix it by hand instead:
 

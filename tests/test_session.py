@@ -1,4 +1,4 @@
-"""Tests for the session: the lock, the branch, the workspace, and the state.
+"""Tests for the session: the lock, the branch, the workspace, and the claim.
 
 Nothing here is about policy. A session claims and releases when it is told to,
 and knows how to pick the run back up after a crash.
@@ -13,7 +13,7 @@ import pytest
 
 from milhouse.config import Config
 from milhouse.errors import MilhouseError, RunLockedError, UserAbortError
-from milhouse.models import Issue, RunState
+from milhouse.models import Issue
 
 from .doubles import FakeClient, FakeRepo, FakeTracker, build
 
@@ -64,7 +64,7 @@ def test_the_lock_is_dropped_even_when_opening_fails(
     with pytest.raises(MilhouseError, match="herdr is not running"):
         session.__enter__()
 
-    assert not session.store.lock.path.exists()
+    assert not session.lock.path.exists()
 
 
 # -- reconciliation ------------------------------------------------------------
@@ -76,10 +76,10 @@ def test_a_stale_claim_is_reopened_when_the_session_opens(
     """SIGKILL leaves a claim behind; re-running is the recovery mechanism."""
     session, _ = build(config, tracker=decomposed, script=[])
     decomposed.issues[0].status = "in_progress"
-    session.store.save(RunState(claimed_issue="bd-e.1"))
+    session.audit.claimed("bd-e.1")
 
     with build(config, tracker=decomposed, script=[])[0] as resumed:
-        assert resumed.state.claimed_issue is None
+        assert resumed.claimed_issue is None
 
     assert decomposed.released == ["bd-e.1"]
 
@@ -91,7 +91,7 @@ def test_an_in_flight_claim_is_released_on_the_way_out(
 
     with session as opened:
         opened.claim()
-        assert opened.state.claimed_issue == "bd-e.1"
+        assert opened.claimed_issue == "bd-e.1"
 
     assert decomposed.released == ["bd-e.1"]
     assert decomposed.issues[0].status == "open"
@@ -106,7 +106,7 @@ def test_the_run_stays_on_the_branch_it_found(config: Config, decomposed: FakeTr
     session, _ = build(config, tracker=decomposed, script=[], repo=repo)
 
     with session as opened:
-        assert opened.state.branch == "some-worktree-branch"
+        assert opened.branch == "some-worktree-branch"
 
     assert repo.branch == "some-worktree-branch"
 
@@ -143,7 +143,7 @@ def test_an_interrupt_reverts_the_claim_and_drops_the_lock(
         os.kill(os.getpid(), signal.SIGTERM)
 
     assert decomposed.released == ["bd-e.1"]
-    assert not session.store.lock.path.exists()
+    assert not session.lock.path.exists()
 
 
 def test_the_previous_handlers_are_put_back(config: Config, decomposed: FakeTracker) -> None:
@@ -160,17 +160,32 @@ def test_the_previous_handlers_are_put_back(config: Config, decomposed: FakeTrac
 # -- the workspace -------------------------------------------------------------
 
 
-def test_the_workspace_and_pane_are_recorded(config: Config, decomposed: FakeTracker) -> None:
-    session, _ = build(config, tracker=decomposed, script=[])
+def test_a_workspace_is_created_and_labelled_after_the_repository(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    client = FakeClient()
+    session, _ = build(config, tracker=decomposed, script=[], client=client)
 
-    with session:
-        pass
+    with session as opened:
+        assert opened.workspace is not None
+        assert opened.workspace.workspace_id == "wG"
+        assert opened.branch == "main"
 
-    saved = session.store.load()
-    assert saved is not None
-    assert saved.workspace_id == "wG"
-    assert saved.pane_id == "wG:p1"
-    assert saved.branch == "main"
+    assert client.workspaces == {"wG": f"milhouse:{config.repo_root.name}"}
+
+
+def test_a_second_run_finds_the_first_one_s_workspace_by_label(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """Milhouse writes no workspace id down, so it asks the tool that owns them."""
+    client = FakeClient(workspaces={"wY": f"milhouse:{config.repo_root.name}"})
+    session, _ = build(config, tracker=decomposed, script=[], client=client)
+
+    with session as opened:
+        assert opened.workspace is not None
+        assert opened.workspace.workspace_id == "wY"
+
+    assert not client.focused
 
 
 def test_a_reused_workspace_does_not_take_the_callers_own_pane(
@@ -183,13 +198,10 @@ def test_a_reused_workspace_does_not_take_the_callers_own_pane(
     """
     config.herdr.workspace = "wG"
     config.herdr.self_pane = "wG:p1"
-    client = FakeClient(workspaces={"wG"})
+    client = FakeClient(workspaces={"wG": "somebody-elses-label"})
     session, _ = build(config, tracker=decomposed, script=[], client=client)
 
-    with session:
-        pass
-
-    assert client.avoided == "wG:p1"
-    saved = session.store.load()
-    assert saved is not None
-    assert saved.pane_id == "wG:p2"
+    with session as opened:
+        assert client.avoided == "wG:p1"
+        assert opened.workspace is not None
+        assert opened.workspace.pane_id == "wG:p2"

@@ -110,8 +110,8 @@ class HerdrClient:
     def workspace_exists(self, workspace_id: str) -> bool:
         """Whether ``workspace_id`` is still open.
 
-        Used when resuming a run: a workspace recorded in ``state.json`` may have
-        been closed by a human since
+        Used when a workspace is named by configuration or by the environment: it
+        may have been closed by a human since
         (:doc:`ADR 0008 <../../docs/decisions/0008-crash-recovery-by-reconciliation>`).
         """
         try:
@@ -119,6 +119,29 @@ class HerdrClient:
         except HerdrError:
             return False
         return True
+
+    def find_workspace(self, label: str) -> str | None:
+        """The id of the open workspace labelled ``label``, or ``None``.
+
+        This is how a second run rejoins the first one's workspace without
+        milhouse writing the id down anywhere. herdr owns the workspace, so
+        herdr is asked
+        (:doc:`ADR 0021 <../../docs/decisions/0021-iteration-history-goes-in-the-beads-audit-log>`).
+
+        Args:
+            label: The label to match exactly, e.g. ``milhouse:greet``.
+
+        Returns:
+            The first matching workspace id, or ``None`` when there is none.
+        """
+        try:
+            workspaces = self._call(["workspace", "list"]).get("workspaces", [])
+        except HerdrError:
+            return None
+        for workspace in workspaces:
+            if isinstance(workspace, dict) and workspace.get("label") == label:
+                return str(workspace["workspace_id"])
+        return None
 
     def close_workspace(self, workspace_id: str) -> None:
         """Close a workspace. milhouse only ever does this to one it created."""

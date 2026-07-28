@@ -65,8 +65,9 @@ src/milhouse/
   cli.py         typer app — step, status, doctor. Parsing and output only.
   completion.py  what each parameter offers on tab. Filesystem and constants only.
   config.py      layered: defaults < .milhouse/config.toml < env < flags
-  models.py      Issue, Iteration, RunState (pydantic values)
-  state.py       RunStore — state.json, events.jsonl, and the run lock
+  models.py      Issue, Iteration (pydantic values)
+  rundir.py      .milhouse/runs — turn artifacts and the run lock
+  audit.py       AuditLog — the iteration history, in bd's audit trail
   proc.py        run() / run_json() — the single subprocess chokepoint
   errors.py      MilhouseError hierarchy, mapped to exit codes
   gitrepo.py     one working directory: read HEAD, ask what landed, branch it
@@ -108,7 +109,7 @@ bd ready --claim ──────► Issue ──► bd show <parent> ──�
                      herdr.py ──► pane ──► agent ──► commits + bd close
                               │
                               ▼
-                    outcome.classify(...) ──► Iteration ──► events.jsonl
+                    outcome.classify(...) ──► Iteration ──► bd audit record
                               │                    │
                               │                    ▼
                               └──────────► policy.decide(...) ──► the issue's
@@ -123,16 +124,25 @@ The dependency graph is the only structure milhouse reads, and `bd` owns it. Not
 | ---------------------------------- | -------------------------------------- | -------------- |
 | The work: what to do, what is done | beads                                  | yes            |
 | The code                           | git, on the checked-out branch         | yes            |
-| Which workspace, pane, and branch  | `.milhouse/runs/state.json`            | bookkeeping    |
-| Iteration history                  | `.milhouse/runs/events.jsonl`          | bookkeeping    |
+| Which workspace and pane           | herdr, found by workspace label        | yes            |
+| Which branch                       | git, whatever is checked out           | yes            |
+| Iteration history                  | `.beads/interactions.jsonl`, via `bd`  | bookkeeping    |
 | Who is running in this repository  | `.milhouse/runs/lock.json`             | bookkeeping    |
 | Exact prompt sent, pane transcript | `.milhouse/runs/<issue-id>/iter-NNN.*` | bookkeeping    |
 
-The history is an append-only log rather than a list inside `state.json`, which keeps the state file small enough to rewrite atomically on every save and gives a post-mortem something to read ([ADR 0014](decisions/0014-step-is-the-primitive.md)).
+**milhouse stores no state of its own.** Every row above is somebody else's, except the lock and the turn artifacts — and the artifacts are captured text with no other home, because herdr's scrollback is live, bounded, and gone once a pane is replaced.
 
-Everything under `.milhouse/runs/` is gitignored and safe to delete. Doing so loses the history, nothing else. See [troubleshooting](troubleshooting.md) for the layout.
+Getting there was a rule applied one row at a time: for each thing milhouse was keeping, does something else already own it? `state.json` did not survive the question. The task fields went with the task, the epic went with the planner, the workspace is herdr's, the branch is git's, and the in-flight claim is `bd`'s ([ADR 0018](decisions/0018-no-task-milhouse-works-the-ready-queue.md), [ADR 0021](decisions/0021-iteration-history-goes-in-the-beads-audit-log.md)).
 
-milhouse keeps it ignored itself, by writing a self-ignoring `.milhouse/runs/.gitignore` the first time it creates the directory. Nothing has to be committed for that to work, and nobody has to remember to do it. The alternative was worse than untidy: the run lock is the first thing a session writes, an unignored lock file is an uncommitted change, and the branch checkout that comes next refuses to run over one — so the very first step in a fresh repository failed, blaming the user for milhouse's own bookkeeping.
+The history went to `bd audit record`, which appends one JSON object per line to a file bd already writes its own `field_change` entries into. One ordered trail beats two, and it matters more as concurrency arrives: "agent closed `milhouse-5m6`" and "milhouse classified that turn as `rejected`" sitting in one file is a post-mortem no per-run file gives you. The price is that milhouse parses a file it does not own, against a schema it does not control, because `bd audit` has `record` and `label` and no query.
+
+Entries stay small on purpose. That file has many concurrent writers — every agent's own `bd close` appends from its own process — and POSIX guarantees an atomic append only below `PIPE_BUF`. So the entry carries the verdict and a path to the transcript, never the verification output.
+
+Everything under `.milhouse/runs/` is gitignored and safe to delete. Doing so loses the prompts and transcripts, nothing else. See [troubleshooting](troubleshooting.md) for the layout.
+
+The history is no longer among them, and that is a cost as well as a gain: `rm -rf .milhouse/runs/` used to lose the history and nothing else, and now the history lives with the issue data.
+
+milhouse keeps the run directory ignored itself, by writing a self-ignoring `.milhouse/runs/.gitignore` the first time it creates the directory. Nothing has to be committed for that to work, and nobody has to remember to do it. The alternative was worse than untidy: the run lock is the first thing a session writes, an unignored lock file is an uncommitted change, and a turn is classified partly on whether the working tree is dirty — so milhouse's own bookkeeping showed up in the reading it took of the agent.
 
 ## Testing
 

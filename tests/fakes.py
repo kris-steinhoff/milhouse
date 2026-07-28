@@ -47,6 +47,13 @@ class FakeProc:
 
     replies: dict[tuple[str, ...], Reply | Responder | list[Reply]] = field(default_factory=dict)
     calls: list[tuple[str, ...]] = field(default_factory=list)
+    stdins: list[str | None] = field(default_factory=list)
+    """What each call was handed on stdin, positionally matching :attr:`calls`.
+
+    ``bd audit record --stdin`` puts the whole entry there, so this is the only
+    place a test can see what was written.
+    """
+
     strict: bool = True
     """Raise on an unmatched command instead of returning empty success."""
 
@@ -80,6 +87,7 @@ class FakeProc:
     ) -> proc.ProcResult:
         """Stand in for :func:`milhouse.proc._execute`."""
         self.calls.append(argv)
+        self.stdins.append(stdin)
         reply = self._match(argv)
         if reply is None:
             if self.strict:

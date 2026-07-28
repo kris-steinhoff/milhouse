@@ -29,13 +29,12 @@ The shell is detected from the process tree, and bash, zsh, fish, and PowerShell
 
 What completes:
 
-| Parameter     | Offers                                                             |
-| ------------- | ------------------------------------------------------------------ |
-| `--repo`      | Directories.                                                       |
-| `--agent`     | The common herdr agent kinds. Any kind herdr supports still works. |
-| `--workspace` | The workspace this repository's last run used, with its branch.    |
+| Parameter | Offers                                                             |
+| --------- | ------------------------------------------------------------------ |
+| `--repo`  | Directories.                                                       |
+| `--agent` | The common herdr agent kinds. Any kind herdr supports still works. |
 
-Nothing here contacts the herdr server or `bd` — `--workspace` reads `.milhouse/runs/state.json` — so completion stays instant and works with the server down.
+Nothing here contacts the herdr server or `bd`, so completion stays instant and works with the server down. That is why `--workspace` is not on the list: milhouse writes no workspace id down any more, and the only thing that knows one is herdr itself.
 
 ## Getting work into the tracker
 
@@ -113,7 +112,7 @@ milhouse step [options]
 
 Everything except `--dry-run` and `--attach` can also be set in [`.milhouse/config.toml`](configuration.md).
 
-Run from inside a herdr pane, `--workspace` defaults to the workspace that pane is in. milhouse works in a free pane of it, never the one you typed into, splitting a new pane if it has to ([configuration](configuration.md#herdr)).
+Run from inside a herdr pane, `--workspace` defaults to the workspace that pane is in. Otherwise milhouse looks for an open workspace labelled `milhouse:<repo>` — the one an earlier step left behind — and creates one if there is none. Either way it works in a free pane, never the one you typed into, splitting a new pane if it has to ([configuration](configuration.md#herdr)).
 
 The agent commits on whatever branch is checked out. milhouse no longer creates one: there is no task to name a branch after, and lanes are what decides this next ([ADR 0020](decisions/0020-a-lane-is-a-herdr-worktree.md)).
 
@@ -129,7 +128,7 @@ That stops at the first iteration that does not succeed, which is what a supervi
 
 Stepping again **is** the resume mechanism. Any claim a previous step left behind is re-opened first ([ADR 0008](decisions/0008-crash-recovery-by-reconciliation.md)). There is no separate `resume` command.
 
-Iteration numbers keep counting across invocations, because they name `<issue-id>/iter-NNN.prompt`, and the history in `events.jsonl` spans all of them.
+Iteration numbers keep counting across invocations, because they name `<issue-id>/iter-NNN.prompt`, and the history in the beads audit log spans all of them.
 
 ### One step at a time
 
@@ -168,7 +167,7 @@ Re-opening matters: a claimed issue is `in_progress`, and `bd ready` excludes th
 
 Git is read in the directory the turn ran in, not at the repository root, so a commit made anywhere else is not attributed to this issue ([ADR 0020](decisions/0020-a-lane-is-a-herdr-worktree.md)).
 
-`partial` distinguishes a commit that names the issue from one that does not, because `HEAD` moving on its own could be anyone — a hook, or you in another terminal. The shas either way are in `events.jsonl` ([ADR 0004](decisions/0004-outcome-from-beads-and-git.md)).
+`partial` distinguishes a commit that names the issue from one that does not, because `HEAD` moving on its own could be anyone — a hook, or you in another terminal. The shas either way are in the audit entry ([ADR 0004](decisions/0004-outcome-from-beads-and-git.md)).
 
 A turn that leaves the working tree dirty is reported too, whatever its outcome, because the next agent would inherit changes it did not make and cannot explain.
 
@@ -273,7 +272,13 @@ iterations (2)
     2  stalled   dogfood-6i2.2  dogfood-6i2.2 is still open and nothing was committed
 ```
 
-It also flags any claim or lock left behind by an unfinished run. The history spans every invocation in this repository, not just the last one, because it is an append-only log ([ADR 0014](decisions/0014-step-is-the-primitive.md)).
+It also flags any claim or lock left behind by an unfinished run. The history spans every invocation in this repository, not just the last one, because it is read back out of the beads audit log — one append-only trail that `bd`'s own entries share ([ADR 0021](decisions/0021-iteration-history-goes-in-the-beads-audit-log.md)).
+
+`bd audit` has no query, so `milhouse status` is the readable view of `.beads/interactions.jsonl`. Reading the file directly works too, and shows bd's entries interleaved with milhouse's:
+
+```sh
+jq -c 'select(.kind == "iteration") | {issue_id, extra}' .beads/interactions.jsonl
+```
 
 ## End-to-end check
 

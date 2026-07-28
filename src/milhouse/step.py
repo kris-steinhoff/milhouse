@@ -113,7 +113,7 @@ def _work(session: Session, issue: Issue) -> Iteration:
     prompt = prompts.render_iterate(
         issue,
         background=session.background(issue),
-        branch=session.state.branch,
+        branch=session.branch,
         attempt=attempt,
         previous=[{"outcome": item.outcome, "detail": item.detail} for item in previous],
     )
@@ -133,7 +133,6 @@ def _work(session: Session, issue: Issue) -> Iteration:
         error: str | None = str(exc)
     else:
         error = turn.error
-    session.state.pane_id = runner.pane_id
 
     head_after = repo.head()
     commits = repo.commits_between(head_before, head_after)

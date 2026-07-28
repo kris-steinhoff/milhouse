@@ -14,12 +14,15 @@ import pytest
 from typer.testing import CliRunner, Result
 
 from milhouse import cli, proc
-from milhouse.models import Iteration, RunState
-from milhouse.state import RunStore
+from milhouse.models import Iteration
 
+from .doubles import FakeAudit
 from .fakes import FakeProc, Reply
+from .test_herdr import wrapped
 
 runner = CliRunner()
+
+NO_WORKSPACES = wrapped("workspace:list", {"workspaces": []})
 
 EPIC = {
     "id": "bd-e",
@@ -39,6 +42,8 @@ def worked_repo(repo: Path, fake_proc: FakeProc, monkeypatch: pytest.MonkeyPatch
     """A repository milhouse can be pointed at, on `main`, with git discovery stubbed."""
     monkeypatch.setattr(cli, "find_repo_root", lambda path: repo)
     fake_proc.expect("git", Reply(stdout="main\n"))
+    fake_proc.expect("herdr workspace list", Reply(stdout=NO_WORKSPACES))
+    (repo / ".beads").mkdir()
     return repo
 
 
@@ -113,9 +118,7 @@ def test_status_names_an_unfiltered_scope(worked_repo: Path, fake_proc: FakeProc
 
 def test_status_shows_the_tree_and_the_history(worked_repo: Path, fake_proc: FakeProc) -> None:
     fake_proc.expect("bd", Reply(stdout=json.dumps(CHILDREN)))
-    store = RunStore(worked_repo / ".milhouse" / "runs")
-    store.save(RunState(branch="main"))
-    store.append(
+    FakeAudit(worked_repo).record(
         Iteration(number=1, issue_id="bd-e.1", outcome="success", detail="bd-e.1 closed in beads")
     )
 
@@ -127,23 +130,34 @@ def test_status_shows_the_tree_and_the_history(worked_repo: Path, fake_proc: Fak
     assert "success" in result.output
 
 
+def test_status_names_the_workspace_herdr_still_has_open(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    fake_proc.expect("bd", Reply(stdout="[]"))
+    fake_proc.expect(
+        "herdr workspace list",
+        Reply(
+            stdout=wrapped(
+                "workspace:list",
+                {"workspaces": [{"workspace_id": "wY", "label": f"milhouse:{worked_repo.name}"}]},
+            )
+        ),
+    )
+
+    result = invoke("status")
+
+    assert f"workspace wY (labelled milhouse:{worked_repo.name})" in result.output
+
+
 def test_status_flags_a_claim_left_by_an_unfinished_run(
     worked_repo: Path, fake_proc: FakeProc
 ) -> None:
     fake_proc.expect("bd", Reply(stdout="[]"))
-    RunStore(worked_repo / ".milhouse" / "runs").save(RunState(claimed_issue="bd-e.2"))
+    FakeAudit(worked_repo).claimed("bd-e.2")
 
     result = invoke("status")
 
     assert "bd-e.2 is claimed by an unfinished run" in result.output
-
-
-def test_a_configured_scope_is_reported(worked_repo: Path, fake_proc: FakeProc) -> None:
-    fake_proc.expect("bd", Reply(stdout="[]"))
-
-    result = invoke("status")
-
-    assert "every ready issue" in result.output
 
 
 def test_dry_run_shows_the_next_iteration_prompt(worked_repo: Path, fake_proc: FakeProc) -> None:

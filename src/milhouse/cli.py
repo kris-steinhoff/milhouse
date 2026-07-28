@@ -30,12 +30,13 @@ from typer.core import TyperGroup
 
 from . import completion, prompts
 from . import doctor as doctor_checks
+from .audit import AuditLog
 from .config import Config, load
 from .errors import MilhouseError
 from .gitrepo import GitRepo, find_repo_root
 from .herdr import HerdrClient
+from .rundir import LOCK_FILENAME, RunLock
 from .session import Session
-from .state import RunStore
 from .step import nothing_ready
 from .step import step as run_step
 from .tracker import BeadsTracker
@@ -161,11 +162,7 @@ def step(
     ] = None,
     workspace: Annotated[
         str | None,
-        typer.Option(
-            "--workspace",
-            help="Reuse this herdr workspace instead of creating one.",
-            autocompletion=completion.complete_workspace,
-        ),
+        typer.Option("--workspace", help="Reuse this herdr workspace instead of creating one."),
     ] = None,
     parent: Annotated[
         str | None,
@@ -251,33 +248,32 @@ def status(
 ) -> None:
     """Show what is in scope, what is claimed, and this repository's iteration history.
 
-    Reads beads and the run state; starts nothing and changes nothing.
+    Reads beads, herdr, and git; starts nothing and changes nothing.
     """
     config = _config(repo)
     tracker = BeadsTracker(config.repo_root, config.tracker)
+    audit = AuditLog(config.repo_root)
+    client = HerdrClient(cwd=config.repo_root)
+    label = f"milhouse:{config.repo_root.name}"
 
     typer.echo(f"repo    {config.repo_root}")
     typer.echo(f"scope   {_scope(config)}")
-
-    store = RunStore(config.run_dir())
-    state = store.load()
-    if state:
-        typer.echo(f"branch  {state.branch or '(none)'}")
-        if state.workspace_id:
-            typer.echo(f"herdr   workspace {state.workspace_id}, pane {state.pane_id}")
-        if state.claimed_issue:
-            typer.secho(
-                f"claim   {state.claimed_issue} is claimed by an unfinished run",
-                fg=typer.colors.YELLOW,
-            )
-    holder = store.lock.holder()
+    typer.echo(f"branch  {GitRepo(config.repo_root).current_branch() or '(detached)'}")
+    configured = config.herdr.workspace
+    workspace = configured or client.find_workspace(label)
+    if workspace:
+        source = "configured" if configured else f"labelled {label}"
+        typer.echo(f"herdr   workspace {workspace} ({source})")
+    for issue_id in audit.unsettled_claims():
+        typer.secho(f"claim   {issue_id} is claimed by an unfinished run", fg=typer.colors.YELLOW)
+    holder = RunLock(config.run_dir() / LOCK_FILENAME).holder()
     if holder is not None:
         typer.secho(f"lock    held by {holder.describe()}", fg=typer.colors.YELLOW)
 
     typer.echo("")
     _print_tree(tracker)
 
-    history = store.history()
+    history = audit.iterations()
     if history:
         typer.echo("")
         typer.echo(f"iterations ({len(history)})")

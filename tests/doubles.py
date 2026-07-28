@@ -13,9 +13,12 @@ one that does nothing.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
+from milhouse.audit import AuditLog
 from milhouse.config import Config
 from milhouse.errors import MilhouseError
 from milhouse.herdr import Workspace
@@ -23,7 +26,21 @@ from milhouse.models import Issue
 from milhouse.runner import TurnResult
 from milhouse.session import Session
 
-__all__ = ["FakeClient", "FakeRepo", "FakeRunner", "FakeTracker", "build"]
+__all__ = ["FakeAudit", "FakeClient", "FakeRepo", "FakeRunner", "FakeTracker", "build"]
+
+
+class FakeAudit(AuditLog):
+    """A real audit log that appends to the file instead of shelling out to bd.
+
+    Only the write is replaced. Everything a test then asserts on — the entry
+    shape, the parsing, the unsettled-claim rule — is the production code
+    reading back what production code wrote.
+    """
+
+    def _record(self, kind: str, issue_id: str, extra: dict[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"kind": kind, "issue_id": issue_id, "extra": extra}) + "\n")
 
 
 @dataclass
@@ -68,16 +85,24 @@ class FakeTracker:
 class FakeClient:
     """A herdr client that hands out one workspace and never fails."""
 
-    workspaces: set[str] = field(default_factory=set)
+    workspaces: dict[str, str] = field(default_factory=dict)
+    """Open workspaces, as ``{workspace_id: label}``."""
+
     focused: bool = False
     avoided: str | None = None
 
     def workspace_exists(self, workspace_id: str) -> bool:
         return workspace_id in self.workspaces
 
+    def find_workspace(self, label: str) -> str | None:
+        for workspace_id, existing in self.workspaces.items():
+            if existing == label:
+                return workspace_id
+        return None
+
     def create_workspace(self, cwd: Path, label: str, *, focus: bool = False) -> Workspace:
         self.focused = focus
-        self.workspaces.add("wG")
+        self.workspaces["wG"] = label
         return Workspace(workspace_id="wG", pane_id="wG:p1", label=label)
 
     def first_pane(self, workspace_id: str) -> str:
@@ -205,6 +230,7 @@ def build(
         tracker=tracker,
         client=client or FakeClient(),  # ty: ignore[invalid-argument-type]
         repo=repo,  # ty: ignore[invalid-argument-type]
+        audit=FakeAudit(config.repo_root),
         runner=runner,
     )
     return session, runner

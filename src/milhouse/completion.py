@@ -8,8 +8,10 @@ callback here follows:
   show a traceback. One that fails returns nothing and lets the shell fall back
   to its own completion.
 - **Never call a server.** Completions come from the filesystem and from
-  constants, so tab is instant and works with the herdr server down. The one
-  subprocess any of them runs is the ``git rev-parse`` that finds the repo root.
+  constants, so tab is instant and works with the herdr server down. That is
+  why ``--workspace`` has no callback: milhouse no longer writes a workspace id
+  down anywhere, and the only thing left that knows one is herdr itself
+  (:doc:`ADR 0021 <../../docs/decisions/0021-iteration-history-goes-in-the-beads-audit-log>`).
 - **Suggest, do not constrain.** ``--agent`` takes any kind herdr supports; the
   list here is the common ones, not a validation rule.
 
@@ -22,15 +24,10 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
-from .config import RUNS_RELPATH
-from .gitrepo import find_repo_root
-from .state import RunStore
-
 __all__ = [
     "AGENT_KINDS",
     "complete_agent",
     "complete_repo",
-    "complete_workspace",
 ]
 
 AGENT_KINDS = (
@@ -58,37 +55,6 @@ def complete_repo(incomplete: str) -> list[str]:
 def complete_agent(incomplete: str) -> list[str]:
     """Complete an ``--agent`` value with the common herdr agent kinds."""
     return [kind for kind in AGENT_KINDS if kind.startswith(incomplete)]
-
-
-def complete_workspace(incomplete: str) -> list[tuple[str, str]]:
-    """Complete a ``--workspace`` value with the workspace this repo's last run used.
-
-    Reusing a workspace is nearly always about rejoining that run, and its id is
-    recorded in ``.milhouse/runs/state.json``. Reading it keeps completion
-    local, and works whether or not the herdr server is up.
-
-    Args:
-        incomplete: What the user has typed so far.
-
-    Returns:
-        A ``(workspace_id, branch)`` pair, or nothing when there is no run to
-        rejoin.
-    """
-    try:
-        repo_root = find_repo_root()
-    except Exception:
-        return []
-    try:
-        state = RunStore(repo_root / RUNS_RELPATH).load()
-    except Exception:
-        # An unreadable or outdated state.json is skipped rather than reported:
-        # completion is not the place to learn a state file went bad.
-        return []
-    if state is None or not state.workspace_id:
-        return []
-    if not state.workspace_id.startswith(incomplete):
-        return []
-    return [(state.workspace_id, state.branch or "")]
 
 
 def _paths(incomplete: str, keep: Callable[[Path], bool]) -> Iterator[str]:

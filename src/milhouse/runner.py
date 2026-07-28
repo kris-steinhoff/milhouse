@@ -20,7 +20,7 @@ from typing import Protocol
 from .config import Config
 from .errors import AgentError, HerdrError, TurnTimeoutError
 from .herdr import AgentStatus, HerdrClient
-from .state import ensure_run_dir
+from .rundir import ensure_run_dir
 
 __all__ = ["AgentRunner", "Runner", "TurnResult"]
 
