@@ -161,6 +161,33 @@ def test_a_pane_that_will_not_release_is_replaced(runner: AgentRunner, fake_proc
     assert fake_proc.ran("herdr", "pane", "close", "wG:p1")
 
 
+def test_a_replacement_pane_opens_where_the_agent_was_working(
+    config: Config, run_dir: Path, fake_proc: FakeProc
+) -> None:
+    """The pane belongs to a lane, so its replacement has to open in the same one."""
+    lane = config.repo_root / ".lanes" / "bd-e.1"
+    runner = AgentRunner(
+        HerdrClient(),
+        config,
+        run_dir=run_dir,
+        pane_id="wG:p1",
+        agent_name="milhouse-hello",
+        workdir=lane,
+    )
+    fake_proc.expect("herdr pane get", Reply(stdout=PANE_WITH_AGENT))
+    fake_proc.expect("herdr pane send-keys", Reply(stdout=""))
+    fake_proc.expect(
+        "herdr pane split", Reply(stdout=wrapped("pane:split", {"pane": {"pane_id": "wG:p9"}}))
+    )
+    fake_proc.expect("herdr pane close", Reply(stdout=""))
+    runner.config.agent.exit_keys = ["ctrl+c"]
+
+    runner.exit_agent()
+
+    split = next(fake_proc.commands("herdr", "pane", "split"))
+    assert str(lane) in split
+
+
 def test_exiting_is_a_no_op_when_no_agent_is_running(
     runner: AgentRunner, fake_proc: FakeProc
 ) -> None:

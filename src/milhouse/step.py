@@ -118,10 +118,14 @@ def _work(session: Session, issue: Issue) -> Iteration:
         attempt=attempt,
         previous=[{"outcome": item.outcome, "detail": item.detail} for item in previous],
     )
-    head_before = session.repo.head()
+    runner = session.runner
+    # Read git where the turn will actually happen. That is the repository root
+    # today and a lane's worktree later, and anywhere else would credit this
+    # issue with somebody else's commits (ADR 0020).
+    repo = session.repo.at(runner.workdir)
+    head_before = repo.head()
     started = now()
 
-    runner = session.runner
     turn: TurnResult | None
     try:
         turn = runner.run_turn(prompt, iteration=number, issue_id=issue.id)
@@ -132,10 +136,10 @@ def _work(session: Session, issue: Issue) -> Iteration:
         error = turn.error
     session.state.pane_id = runner.pane_id
 
-    head_after = session.repo.head()
-    commits = session.repo.commits_between(head_before, head_after)
-    attributed = bool(session.repo.commits_between(head_before, head_after, grep=issue.id))
-    dirty_after = session.repo.is_dirty()
+    head_after = repo.head()
+    commits = repo.commits_between(head_before, head_after)
+    attributed = bool(repo.commits_between(head_before, head_after, grep=issue.id))
+    dirty_after = repo.is_dirty()
     try:
         issue_after = session.tracker.get(issue.id)
     except MilhouseError as exc:

@@ -148,6 +148,20 @@ def test_a_commit_that_names_no_issue_is_movement_rather_than_progress(
     assert "none naming it" in result.iteration.detail
 
 
+def test_git_is_read_where_the_turn_ran(
+    config: Config, task: TaskDefinition, decomposed: FakeTracker
+) -> None:
+    """Under lanes the runner works in a worktree, and that is what gets classified."""
+    repo = FakeRepo()
+    session, runner = build(config, task, tracker=decomposed, script=["commit"], repo=repo)
+    runner.workdir = config.repo_root / ".lanes" / "bd-e.1"
+
+    with session as opened:
+        step(opened, decomposed.epic)  # ty: ignore[invalid-argument-type]
+
+    assert runner.workdir in repo.scoped_to
+
+
 def test_a_dirty_tree_after_a_turn_is_recorded_and_reported(
     config: Config, task: TaskDefinition, decomposed: FakeTracker
 ) -> None:

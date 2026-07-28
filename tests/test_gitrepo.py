@@ -19,6 +19,29 @@ def repo() -> GitRepo:
     return GitRepo(REPO)
 
 
+def test_every_read_is_scoped_to_the_bound_directory(fake_proc: FakeProc) -> None:
+    """`git -C <path>`, so a worktree answers for itself and not for the root."""
+    fake_proc.expect("git", Reply(stdout="abc1234\n"))
+
+    GitRepo(Path("/repo/.lanes/bd-e.1")).head()
+
+    assert fake_proc.calls[0][:3] == ("git", "-C", "/repo/.lanes/bd-e.1")
+
+
+def test_at_rebinds_to_another_working_directory(fake_proc: FakeProc) -> None:
+    fake_proc.expect("git", Reply(stdout="?? scratch.py\n"))
+    lane = Path("/repo/.lanes/bd-e.1")
+
+    assert repo().at(lane).is_dirty()
+    assert fake_proc.calls[0][:3] == ("git", "-C", str(lane))
+
+
+def test_at_the_same_directory_hands_back_the_same_repo() -> None:
+    original = repo()
+
+    assert original.at(REPO) is original
+
+
 def test_commits_between_two_revisions_uses_a_range(fake_proc: FakeProc) -> None:
     fake_proc.expect("git", Reply(stdout="abc1234\ndef5678\n"))
 

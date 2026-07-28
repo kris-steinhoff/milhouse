@@ -115,6 +115,13 @@ class FakeRepo:
     dirty: bool = False
     commits: int = 0
     messages: list[str] = field(default_factory=list)
+    scoped_to: list[Path] = field(default_factory=list)
+    """Every path this repo was asked to scope itself to, in call order."""
+
+    def at(self, path: Path) -> FakeRepo:
+        """Record the scoping and keep answering, since there is one fake tree."""
+        self.scoped_to.append(path)
+        return self
 
     def head(self) -> str | None:
         return f"sha{self.commits}"
@@ -153,6 +160,7 @@ class FakeRunner:
     script: list[str] = field(default_factory=list)
     pane_id: str = "wG:p1"
     agent_name: str = "milhouse-hello"
+    workdir: Path = Path("/repo")
     turns: list[str] = field(default_factory=list)
     issue_ids: list[str | None] = field(default_factory=list)
 
@@ -204,7 +212,7 @@ def build(
 ) -> tuple[Session, FakeRunner]:
     """Wire a session with fakes and a scripted runner already installed."""
     repo = repo or FakeRepo()
-    runner = FakeRunner(tracker=tracker, repo=repo, script=script)
+    runner = FakeRunner(tracker=tracker, repo=repo, script=script, workdir=config.repo_root)
     session = Session(
         config,
         task,

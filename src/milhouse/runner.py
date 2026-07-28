@@ -65,6 +65,14 @@ class Runner(Protocol):
     agent_name: str
     """The herdr agent name, e.g. ``milhouse-hello``."""
 
+    workdir: Path
+    """The directory the agent works in, which is what a turn is classified against.
+
+    The repository root today. Under lanes it is the worktree
+    (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`), and
+    reading ``HEAD`` anywhere else would attribute one lane's commits to another.
+    """
+
     def run_turn(self, prompt: str, *, iteration: int, issue_id: str | None = None) -> TurnResult:
         """Run one whole turn and leave the pane ready for the next one."""
         ...
@@ -85,6 +93,7 @@ class AgentRunner:
         run_dir: Path,
         pane_id: str,
         agent_name: str,
+        workdir: Path | None = None,
     ) -> None:
         """Bind a runner to one pane.
 
@@ -95,12 +104,15 @@ class AgentRunner:
             pane_id: The pane to run agents in. May change if a pane has to be
                 replaced; read :attr:`pane_id` back after each turn.
             agent_name: The herdr agent name, e.g. ``milhouse-hello``.
+            workdir: The directory the pane sits in, and therefore the checkout
+                the turn is classified against. Defaults to the repository root.
         """
         self.client = client
         self.config = config
         self.run_dir = run_dir
         self.pane_id = pane_id
         self.agent_name = agent_name
+        self.workdir = workdir or config.repo_root
 
     def run_turn(self, prompt: str, *, iteration: int, issue_id: str | None = None) -> TurnResult:
         """Run one whole turn and always leave the pane at a shell prompt.
@@ -182,7 +194,7 @@ class AgentRunner:
         """
         old = self.pane_id
         try:
-            new_pane = self.client.split_pane(old, self.config.repo_root)
+            new_pane = self.client.split_pane(old, self.workdir)
             self.client.close_pane(old)
         except HerdrError as exc:
             raise AgentError(f"could not replace pane {old}: {exc}") from exc

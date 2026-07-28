@@ -4,6 +4,14 @@ Decision 4 classifies an iteration partly on whether ``HEAD`` moved, and the
 branching strategy (ADR 0007) needs one branch created per task. That is the
 whole surface: locate the repo, read ``HEAD``, and put the loop on a branch.
 
+A :class:`GitRepo` is bound to a **working directory**, not to the repository
+root. Every read is therefore scoped to the checkout the question is about: a
+worktree has its own ``HEAD``, its own branch, and its own status, so classifying
+a turn against the directory that turn ran in is the only reading that stays
+true once several agents work at once
+(:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`). Bound
+to the repository root it also happens to be what it always was.
+
 Everything here goes through :mod:`milhouse.proc`, so tests fake it the same way
 they fake ``bd`` and ``herdr``.
 """
@@ -39,19 +47,32 @@ def find_repo_root(start: Path | None = None) -> Path:
 
 
 class GitRepo:
-    """A git repository milhouse reads ``HEAD`` from and commits into."""
+    """One working directory milhouse reads ``HEAD`` from and commits into."""
 
-    def __init__(self, root: Path) -> None:
-        """Bind to the repository rooted at ``root``.
+    def __init__(self, path: Path) -> None:
+        """Bind to the checkout at ``path``.
 
         Args:
-            root: Absolute path of the repository root.
+            path: Absolute path of a directory inside the repository. The
+                repository root for a plain run, a lane's worktree otherwise.
         """
-        self.root = root
+        self.path = path
+
+    def at(self, path: Path) -> GitRepo:
+        """Another :class:`GitRepo` bound to ``path``.
+
+        Args:
+            path: The working directory to read instead of this one.
+
+        Returns:
+            A repo scoped to ``path``, or ``self`` when it is already the one
+            asked for.
+        """
+        return self if path == self.path else GitRepo(path)
 
     def _git(self, *args: str, check: bool = True) -> proc.ProcResult:
-        """Run a git command in this repository."""
-        return proc.run(["git", "-C", str(self.root), *args], check=check)
+        """Run a git command in this working directory."""
+        return proc.run(["git", "-C", str(self.path), *args], check=check)
 
     def head(self) -> str | None:
         """Current commit sha, or ``None`` in a repository with no commits yet.
