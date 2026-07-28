@@ -1,10 +1,13 @@
 """The ``milhouse`` command line.
 
-Three commands: ``step`` works one issue, ``status`` reports on the repository,
-and ``doctor`` checks the tools milhouse depends on. Every command and flag
-carries help text, so ``milhouse --help`` is a usable reference on its own.
+Five commands: ``step`` works one issue and waits, ``dispatch`` and ``reap`` are
+that same turn split in two so several can be in flight at once, ``status``
+reports on the repository, and ``doctor`` checks the tools milhouse depends on.
+Every command and flag carries help text, so ``milhouse --help`` is a usable
+reference on its own.
 
-There is no command that repeats a step. Driving it by hand is the point for now
+None of them repeats a turn. ``dispatch`` starts a bounded number once and
+stops, so driving milhouse is still a person typing the next command
 (:doc:`ADR 0017 <../../docs/decisions/0017-no-loop-until-it-is-earned>`). There is
 no command that creates issues either: getting work into the tracker belongs to
 whoever owns the tracker
@@ -39,7 +42,9 @@ from .lanes import Lanes
 from .models import Issue
 from .rundir import LOCK_FILENAME, RunLock
 from .session import Session
+from .step import dispatch as run_dispatch
 from .step import nothing_ready
+from .step import reap as run_reap
 from .step import step as run_step
 from .tracker import BeadsTracker
 
@@ -234,6 +239,126 @@ def step(
         fg=typer.colors.GREEN if finished else typer.colors.YELLOW,
     )
     if not finished:
+        raise typer.Exit(code=9)
+
+
+@app.command()
+def dispatch(
+    count: Annotated[
+        int,
+        typer.Option("--count", "-n", min=1, help="How many ready issues to start at most."),
+    ] = 1,
+    agent: Annotated[
+        str | None,
+        typer.Option(
+            "--agent",
+            help="Agent kind to run, e.g. claude, codex, gemini.",
+            autocompletion=completion.complete_agent,
+        ),
+    ] = None,
+    workspace: Annotated[
+        str | None,
+        typer.Option("--workspace", help="Reuse this herdr workspace instead of creating one."),
+    ] = None,
+    parent: Annotated[
+        str | None,
+        typer.Option("--parent", help="Only work issues under this epic."),
+    ] = None,
+    label: Annotated[
+        str | None,
+        typer.Option("--label", help="Only work issues carrying this label."),
+    ] = None,
+    attach: Annotated[
+        bool,
+        typer.Option("--attach", help="Focus each lane instead of leaving it hidden."),
+    ] = False,
+    repo: Annotated[
+        Path | None,
+        typer.Option(
+            "--repo",
+            help="Repository to work in. Defaults to the current one.",
+            autocompletion=completion.complete_repo,
+        ),
+    ] = None,
+) -> None:
+    """Start agents on up to N ready issues and return without waiting.
+
+    Each issue gets a lane of its own, so the turns run at the same time. Use
+    `milhouse reap` to collect them when they settle.
+
+    This is not a loop: it starts a bounded number of turns once, and stops.
+
+    Exits 0 when at least one turn was started, and 9 when nothing was ready.
+    """
+    config = _config(
+        repo,
+        {
+            "agent": {"kind": agent},
+            "herdr": {"workspace": workspace},
+            "tracker": {"parent": parent, "label": label},
+        },
+    )
+    with _session(config, attach=attach) as session:
+        started = run_dispatch(session, limit=count)
+        if not started:
+            reason, completed = nothing_ready(session)
+            typer.echo("")
+            typer.secho(reason, fg=typer.colors.GREEN if completed else typer.colors.YELLOW)
+            raise typer.Exit(code=0 if completed else 9)
+
+    typer.echo("")
+    typer.secho(f"{len(started)} turn(s) in flight:", fg=typer.colors.GREEN)
+    for pending in started:
+        typer.echo(f"  {pending.issue.id}  {pending.lane.branch}  {pending.lane.path}")
+    typer.echo("\nrun `milhouse reap` when they settle.")
+
+
+@app.command()
+def reap(
+    repo: Annotated[
+        Path | None,
+        typer.Option(
+            "--repo",
+            help="Repository to work in. Defaults to the current one.",
+            autocompletion=completion.complete_repo,
+        ),
+    ] = None,
+) -> None:
+    """Collect every dispatched turn whose agent has settled, and classify it.
+
+    Turns still working are left alone; reap again later. Reaping is safe to run
+    at any time and does nothing when there is nothing to collect.
+
+    Exits 0 when everything collected succeeded and nothing is left running, and
+    9 otherwise.
+    """
+    config = _config(repo)
+    with _session(config) as session:
+        results = run_reap(session)
+        outstanding = len(session.audit.dispatches())
+
+    typer.echo("")
+    if not results:
+        typer.secho(
+            f"nothing settled; {outstanding} turn(s) still running"
+            if outstanding
+            else "nothing to reap",
+            fg=typer.colors.YELLOW if outstanding else typer.colors.GREEN,
+        )
+        if outstanding:
+            raise typer.Exit(code=9)
+        return
+
+    for result in results:
+        colour = _OUTCOME_COLOURS.get(result.iteration.outcome, typer.colors.WHITE)
+        typer.secho(
+            f"{result.iteration.issue_id}: {result.iteration.outcome} — {result.iteration.detail}",
+            fg=colour,
+        )
+    if outstanding:
+        typer.echo(f"\n{outstanding} turn(s) still running.")
+    finished = all(result.iteration.outcome == "success" for result in results)
+    if not finished or outstanding:
         raise typer.Exit(code=9)
 
 

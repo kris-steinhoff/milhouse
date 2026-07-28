@@ -150,14 +150,14 @@ Stepping again **is** the resume mechanism. Any claim a previous step left behin
 
 Iteration numbers keep counting across invocations, because they name `<issue-id>/iter-NNN.prompt`, and the history in the beads audit log spans all of them.
 
-### One step at a time
+### One turn per lane
 
-A step holds a lock on the repository's run directory. A second `milhouse step` in the same repository refuses to start and names the process holding it, because both would drive the same pane and re-open each other's in-flight claim ([ADR 0015](decisions/0015-one-run-at-a-time.md)):
+A turn holds a lock on its own lane. A second `milhouse step` in the same repository is fine — it claims a different issue and works a different lane. What the lock stops is two processes driving the same lane, which would mean two agents in one pane and each re-opening the other's claim ([ADR 0015](decisions/0015-one-run-at-a-time.md)):
 
 ```console
 $ milhouse step
-milhouse: another milhouse run is working this repository (pid 48213 on carbon, since 2026-07-26T09:14:02+00:00)
-  Wait for the other run, or delete .milhouse/runs/lock.json.
+milhouse: another milhouse run is working bd-e.2 (pid 48213 on carbon, since 2026-07-26T09:14:02+00:00)
+  Wait for the other run, or delete .milhouse/runs/<issue-id>/lock.json.
 ```
 
 A lock left behind by a dead process is taken over automatically, with a line saying so.
@@ -273,6 +273,58 @@ the next step would work dogfood-6i2.2 and send:
 
 It is the cheapest way to see the effect of a prompt, fence, or config change.
 
+## `milhouse dispatch` and `milhouse reap`
+
+`step` is one turn with the waiting included. `dispatch` and `reap` are that same turn cut in half, so several can be in flight at once ([ADR 0020](decisions/0020-a-lane-is-a-herdr-worktree.md)):
+
+```
+milhouse dispatch [-n COUNT] [--agent KIND] [--workspace ID] [--parent ID] [--label NAME] [--attach] [--repo PATH]
+milhouse reap [--repo PATH]
+```
+
+`dispatch` claims up to `--count` ready issues, sets each one up in its own lane, starts its agent, and returns without waiting for any of them. `reap` finds the turns that have settled since and finishes them: transcript, classification, verification, and whatever the policy says becomes of the issue.
+
+```console
+$ milhouse dispatch -n 3
+iteration 7: dogfood-6i2.2 Make the src-layout greet package importable
+  lane wL5 on milhouse/dogfood-6i2.2 (/home/you/.herdr/worktrees/greet/milhouse-dogfood-6i2-2)
+  → dispatched to wL5
+iteration 8: dogfood-6i2.3 Add tests/test_greet.py covering hello and goodbye
+  lane wL6 on milhouse/dogfood-6i2.3 (/home/you/.herdr/worktrees/greet/milhouse-dogfood-6i2-3)
+  → dispatched to wL6
+
+2 turn(s) in flight:
+  dogfood-6i2.2  milhouse/dogfood-6i2.2  /home/you/.herdr/worktrees/greet/milhouse-dogfood-6i2-2
+  dogfood-6i2.3  milhouse/dogfood-6i2.3  /home/you/.herdr/worktrees/greet/milhouse-dogfood-6i2-3
+
+run `milhouse reap` when they settle.
+```
+
+Reaping is safe to run at any time. A turn still working is left alone and picked up next time:
+
+```console
+$ milhouse reap
+dogfood-6i2.3 is still working
+reaping iteration 7: dogfood-6i2.2
+  → success: dogfood-6i2.2 closed in beads
+
+dogfood-6i2.2: success — dogfood-6i2.2 closed in beads
+
+1 turn(s) still running.
+```
+
+`dispatch` exits `0` when it started at least one turn, and `9` when nothing was ready but work is outstanding. `reap` exits `0` when everything it collected succeeded and nothing is left running, and `9` otherwise — so `until milhouse reap; do sleep 60; done` is a wait.
+
+**This is still not a loop.** `dispatch` starts a bounded number of turns once and stops; nothing here decides whether there should be more ([ADR 0017](decisions/0017-no-loop-until-it-is-earned.md)). What it removes is the requirement that the turns be serial.
+
+Three things follow from that:
+
+- **The lock is per lane, not per repository.** Two dispatchers in the same repository are safe, because `bd ready --claim` is atomic and neither can take the other's issue ([ADR 0015](decisions/0015-one-run-at-a-time.md)).
+- **A dispatched turn outlives the process that started it.** Closing the terminal does not re-open the claim: an agent is working it, and reaping is what settles it. What the reap needs is written to the audit log at dispatch.
+- **A turn milhouse can no longer find a lane for is re-opened** the next time anything runs, because an issue that is `in_progress` with no live lane has nobody working it.
+
+A turn that outlives `[agent] turn_timeout_ms` is collected anyway and classified `timeout`, exactly as `step` would. Nothing is waiting on it, so the deadline is measured from the time recorded when it started.
+
 ## `milhouse status`
 
 What is in scope, what lanes are open, what is claimed, and this repository's iteration history. Reads beads, herdr, and git; starts nothing and changes nothing.
@@ -330,7 +382,23 @@ Watch for:
 
 Then trigger a permission prompt deliberately and confirm herdr reports `blocked`, and that milhouse stops with the workspace to attach to rather than sitting there.
 
-Finally, run `milhouse step` twice at once in two terminals and confirm the second refuses with exit code `10`.
+Then check the concurrent path, which is the one with the most ways to be subtly wrong:
+
+```sh
+milhouse dispatch -n 2     # two lanes, two agents, back immediately
+milhouse status            # both lanes listed, both claims in flight
+milhouse reap              # nothing settled yet — exits 9
+milhouse reap              # again once they finish
+```
+
+Watch for:
+
+1. Two workspaces appear, labelled with the two issue ids, in separate worktrees.
+2. `milhouse dispatch` returns while both agents are still working.
+3. Killing the dispatching terminal does **not** re-open either claim.
+4. `milhouse reap` classifies each turn once, and reaping again finds nothing.
+
+Finally, run `milhouse step` twice at once in two terminals against the **same** issue and confirm the second refuses with exit code `10`. Against different issues both should run.
 
 ## Exit codes
 
@@ -347,7 +415,7 @@ Stable, and safe to branch on in a script.
 | `7`   | `MissingDependencyError` | A required tool is not on `PATH`. Also `doctor`'s failure code.       |
 | `8`   | `ProcessError`           | A subprocess failed in a way no caller translated.                    |
 | `9`   | (no exception)           | A step did not finish its issue. The run directory is left to resume. |
-| `10`  | `RunLockedError`         | Another milhouse process is already working this repository.          |
+| `10`  | `RunLockedError`         | Another milhouse process is already working this lane.                |
 | `130` | `UserAbortError`         | Interrupted, or a confirmation was declined.                          |
 
 `3` is retired. It was `SourceError`, raised when a task definition could not be resolved, and there are no task definitions ([ADR 0018](decisions/0018-no-task-milhouse-works-the-ready-queue.md)). The codes do not renumber, because scripts branch on them.

@@ -1,6 +1,6 @@
 # 0020 — A lane is a herdr worktree, and herdr is the lane registry
 
-**Status:** accepted and implemented, except for the joins it leaves open.
+**Status:** accepted and implemented, except for the joins and the landing it leaves open.
 
 ## Context
 
@@ -49,6 +49,10 @@ The decision held. Two things said about herdr above did not, and both made the 
 **A worktree gets a workspace of its own, not a tab set inside the repository's.** The context describes "one workspace per repository, one lane per worktree", which is not herdr's containment: `herdr worktree create --workspace <ws>` reads `--workspace` as _which repository to branch from_ and opens the new checkout in a **new** workspace, labelled with `--label`. So the repository's workspace is the source, no agent ever runs in it, and a lane is a workspace of its own. `herdr worktree list` returns `path`, `branch`, and `open_workspace_id` but carries the repository's name as its `label`, so the registry is that list joined to `herdr workspace list` — the issue id is on the workspace. A stacked issue is still a tab, labelled with its own id, inside its predecessor's lane workspace.
 
 **Lanes did not need ignoring.** herdr checks linked worktrees out under `~/.herdr/worktrees/<repo>/<branch>`, outside the repository, so the untracked-files problem never arises. milhouse still writes a `.git/info/exclude` entry for any lane that lands inside the repo, because the failure it prevents is silent and the guard is three lines.
+
+A third thing the split needed and this ADR did not name: **a dispatched turn has to survive the process that started it.** `dispatch` returns while the agent is working, so `reap` — possibly in another process, possibly much later — has to know which lane, which iteration number, and where `HEAD` was before it began. That goes in the audit log as a `dispatch` entry, next to the `claim` it belongs to ([ADR 0021](0021-iteration-history-goes-in-the-beads-audit-log.md)). It is also what makes teardown safe: a claim that has been dispatched is no longer the dispatcher's to re-open.
+
+And **reconciliation gets the test this ADR promised**. "An issue that is `in_progress` with no live lane carrying its id is an orphaned claim" is now decidable, so a claim whose lane is live is left for `reap` and one whose lane is gone is re-opened.
 
 ## Consequences
 

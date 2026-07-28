@@ -1,8 +1,12 @@
 """Everything a run needs that is not the loop.
 
-:class:`Session` owns the resources: the run lock, the branch, the herdr
-workspace and pane, the agent runner, and the claim currently in flight. It is a
-context manager, so opening and tearing all of that down is one ``with``.
+:class:`Session` owns the resources: the lane locks, the branch, the herdr source
+workspace, the agent runners, and whatever claims are in flight. It is a context
+manager, so opening and tearing all of that down is one ``with``.
+
+The lock is **per lane**, not per repository. Several turns running at once is
+the point of lanes, so the thing being protected is one lane, not the run
+(:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
 
 It **stores nothing**. Every fact it needs comes back from whatever owns it —
 ``bd`` for the issues, herdr for the workspace, git for the branch, and the
@@ -31,7 +35,7 @@ from .config import Config
 from .errors import MilhouseError, UserAbortError
 from .gitrepo import GitRepo
 from .herdr import HerdrClient, Workspace
-from .lanes import Lanes
+from .lanes import Lane, Lanes
 from .models import Issue, Iteration
 from .policy import Decision
 from .rundir import LOCK_FILENAME, RunLock
@@ -85,10 +89,13 @@ class Session:
         self.report = report
         self.attach = attach
         self.lanes = Lanes(client, config)
-        self.lock = RunLock(config.run_dir() / LOCK_FILENAME)
         self.branch: str | None = None
-        self.claimed_issue: str | None = None
         self.workspace: Workspace | None = None
+        self.in_flight: list[str] = []
+        """Issues this process claimed and has neither settled nor handed off."""
+
+        self._locks: dict[str, RunLock] = {}
+        self._opened: dict[str, Lane] = {}
         self._runner: Runner | None = runner
         self._active: Runner | None = None
         self._signals: dict[int, Any] = {}
@@ -96,21 +103,14 @@ class Session:
     # -- lifecycle --------------------------------------------------------
 
     def __enter__(self) -> Session:
-        """Take the lock, reconcile, note the branch, and open the workspace.
-
-        Raises:
-            RunLockedError: Another milhouse process is working this repository.
-        """
+        """Reconcile, note the branch, and open the source workspace."""
         self._catch_signals()
-        stale = self.lock.acquire()
-        if stale is not None:
-            self.report(f"took over the run lock from a dead run ({stale.describe()})")
         try:
             self.reconcile()
             self.branch = self.repo.current_branch()
             self.open_workspace()
         except BaseException:
-            self.lock.release()
+            self._release_locks()
             self._restore_signals()
             raise
         return self
@@ -121,22 +121,65 @@ class Session:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> bool:
-        """Release any in-flight claim, exit the agent, and drop the lock.
+        """Release any claim still in flight, exit the agent, and drop the locks.
+
+        A claim that was **handed off** — dispatched to an agent that is still
+        running — is deliberately left alone. It belongs to the lane now, and
+        ``milhouse reap`` is what settles it.
 
         The workspace is deliberately left open, whether or not the work failed,
         so the panes can be inspected
         (:doc:`ADR 0005 <../../docs/decisions/0005-milhouse-owns-the-loop>`).
         """
         try:
-            if self.claimed_issue:
-                self.release_claim("Re-opened by milhouse: the run did not finish this issue.")
+            for issue_id in list(self.in_flight):
+                self.release_claim(
+                    issue_id, "Re-opened by milhouse: the run did not finish this issue."
+                )
             self.exit_agent()
         finally:
-            self.lock.release()
+            self._release_locks()
             self._restore_signals()
         if self.workspace is not None:
             self.report(f"the herdr workspace {self.workspace.workspace_id} is left open")
         return False
+
+    # -- the per-lane lock ------------------------------------------------
+
+    def lock_for(self, issue_id: str) -> RunLock:
+        """Take the lock on one issue's lane, and hold it for this session.
+
+        The lock is per lane rather than per repository, because concurrent lanes
+        are the point
+        (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
+        Two dispatchers cannot collide over *which* issue to take — ``bd ready
+        --claim`` is atomic — so all this stops is two processes working the
+        same lane, which is the case that would drive one pane from two places.
+
+        Args:
+            issue_id: The issue whose lane is being worked.
+
+        Returns:
+            The held lock.
+
+        Raises:
+            RunLockedError: A live process already holds this lane.
+        """
+        held = self._locks.get(issue_id)
+        if held is not None:
+            return held
+        lock = RunLock(self.config.run_dir() / issue_id / LOCK_FILENAME)
+        stale = lock.acquire()
+        if stale is not None:
+            self.report(f"took over the lock on {issue_id} from a dead run ({stale.describe()})")
+        self._locks[issue_id] = lock
+        return lock
+
+    def _release_locks(self) -> None:
+        """Drop every lane lock this session took."""
+        for lock in self._locks.values():
+            lock.release()
+        self._locks.clear()
 
     def _catch_signals(self) -> None:
         """Turn SIGINT and SIGTERM into an exception, so teardown gets to run.
@@ -165,27 +208,31 @@ class Session:
         self._signals.clear()
 
     def reconcile(self) -> None:
-        """Re-open whatever a previous run claimed and never finished.
+        """Re-open whatever a previous run claimed and abandoned.
 
         A run killed with ``SIGKILL`` leaves an issue ``in_progress`` forever,
         because ``bd`` has no lease expiry, and ``bd ready`` excludes those, so
         it would never be offered again. Re-running is the recovery mechanism
         (:doc:`ADR 0008 <../../docs/decisions/0008-crash-recovery-by-reconciliation>`).
 
-        The audit log is what says which claims were milhouse's: a turn writes a
-        ``claim`` entry before it starts and an ``iteration`` entry when it ends,
-        so a claim with nothing after it is a run that died mid-turn. Reading it
-        rather than "every in-progress issue" is what keeps this from re-opening
-        an issue a person claimed by hand.
+        Two questions decide it, and both are answered by tools that own their
+        answer. The audit log says which claims were milhouse's — a turn writes
+        a ``claim`` entry before it starts and an ``iteration`` entry when it
+        ends — which keeps this from re-opening an issue a person claimed by
+        hand. herdr's lane registry then says which of those are still live: an
+        issue whose lane is gone has nobody working it, and one whose lane is
+        open is either running or waiting to be reaped
+        (:doc:`ADR 0021 <../../docs/decisions/0021-iteration-history-goes-in-the-beads-audit-log>`).
 
-        Holding the run lock first is what makes it safe: the claim being
-        re-opened cannot belong to a run that is still working it
-        (:doc:`ADR 0015 <../../docs/decisions/0015-one-run-at-a-time>`).
+        Taking each lane's lock first is what makes it safe: the claim being
+        re-opened cannot belong to a dispatcher that is still setting it up.
         """
         for issue_id in self.audit.unsettled_claims():
+            if self.lanes.locate(issue_id) is not None:
+                continue
+            self.lock_for(issue_id)
             self.report(f"reconciling: re-opening {issue_id}, claimed by a run that did not finish")
-            self.claimed_issue = issue_id
-            self.release_claim("Re-opened by milhouse: the previous run did not finish.")
+            self.release_claim(issue_id, "Re-opened by milhouse: the previous run did not finish.")
 
     # -- resources --------------------------------------------------------
 
@@ -251,6 +298,7 @@ class Session:
             base=self.branch or "HEAD",
             focus=self.attach,
         )
+        self._opened[issue.id] = lane
         self.report(f"  lane {lane.workspace_id} on {lane.branch} ({lane.path})")
         self._active = AgentRunner(
             self.client,
@@ -261,6 +309,49 @@ class Session:
             workdir=lane.path,
         )
         return self._active
+
+    def reaper_for(self, lane: Lane) -> Runner:
+        """A runner bound to the pane a dispatched agent is already in.
+
+        Not :meth:`runner_for`, which picks a *free* pane and would therefore
+        skip the one holding the running agent — and send the exit keys
+        somewhere else.
+
+        Args:
+            lane: The lane the turn was dispatched to.
+
+        Returns:
+            A runner over that lane's live agent.
+        """
+        if self._runner is not None:
+            return self._runner
+        agent_name = lane.agent_name
+        self._active = AgentRunner(
+            self.client,
+            self.config,
+            run_dir=self.config.run_dir(),
+            pane_id=self.client.agent_pane(agent_name) or lane.pane_id,
+            agent_name=agent_name,
+            workdir=lane.path,
+        )
+        return self._active
+
+    def lane_of(self, runner: Runner, issue: Issue) -> Lane:
+        """The lane ``runner`` is working ``issue`` in.
+
+        Normally the one :meth:`runner_for` just opened. A runner the tests
+        inject has no lane, so one is described from where it says it works.
+        """
+        opened = self._opened.get(issue.id)
+        if opened is not None:
+            return opened
+        return Lane(
+            issue_id=issue.id,
+            path=runner.workdir,
+            branch=self.repo.at(runner.workdir).current_branch() or "",
+            workspace_id="",
+            pane_id=runner.pane_id,
+        )
 
     def exit_agent(self) -> None:
         """Best-effort return of the last lane's pane to a shell prompt."""
@@ -275,11 +366,11 @@ class Session:
     # -- the work ---------------------------------------------------------
 
     def claim(self) -> Issue | None:
-        """Claim the next ready issue, and say so in the audit log.
+        """Claim the next ready issue, take its lane's lock, and record the claim.
 
-        The entry is what a later run reads to tell a claim milhouse abandoned
-        from one a person made by hand, so it is written before the turn starts
-        rather than after it.
+        The audit entry is what a later run reads to tell a claim milhouse
+        abandoned from one a person made by hand, so it is written before the
+        turn starts rather than after it.
 
         Returns:
             The claimed issue, or ``None`` when nothing is ready.
@@ -287,9 +378,20 @@ class Session:
         issue = self.tracker.ready(claim=True)
         if issue is None:
             return None
-        self.claimed_issue = issue.id
+        self.lock_for(issue.id)
+        self.in_flight.append(issue.id)
         self.audit.claimed(issue.id)
         return self._full(issue)
+
+    def hand_off(self, issue_id: str) -> None:
+        """Stop treating ``issue_id`` as this process's to release.
+
+        A dispatched turn outlives the process that started it. Teardown must
+        not re-open its claim, because an agent is working it and
+        ``milhouse reap`` is what settles it.
+        """
+        if issue_id in self.in_flight:
+            self.in_flight.remove(issue_id)
 
     def _full(self, issue: Issue) -> Issue:
         """Re-read a claimed issue, since ``bd ready`` does not carry relations.
@@ -328,27 +430,25 @@ class Session:
             log.warning("could not read the parent of %s: %s", issue.id, exc)
             return ""
 
-    def settle(self, decision: Decision) -> None:
-        """Apply a policy decision to the issue currently in flight.
+    def settle(self, issue_id: str, decision: Decision) -> None:
+        """Apply a policy decision to one issue's turn.
 
         Args:
+            issue_id: The issue the turn worked.
             decision: What :func:`milhouse.policy.decide` returned.
         """
         if decision.issue == "release":
-            self.release_claim(decision.note)
+            self.release_claim(issue_id, decision.note)
         else:
-            self.claimed_issue = None
+            self.hand_off(issue_id)
 
-    def release_claim(self, note: str | None = None) -> None:
-        """Return the in-flight issue to the open pool, tolerating a bd hiccup."""
-        issue_id = self.claimed_issue
-        if issue_id is None:
-            return
+    def release_claim(self, issue_id: str, note: str | None = None) -> None:
+        """Return an issue to the open pool, tolerating a bd hiccup."""
         try:
             self.tracker.release(issue_id, note=note)
         except MilhouseError as exc:
             log.warning("could not re-open %s: %s", issue_id, exc)
-        self.claimed_issue = None
+        self.hand_off(issue_id)
 
     def record(self, iteration: Iteration) -> None:
         """Record an iteration in the beads audit log."""

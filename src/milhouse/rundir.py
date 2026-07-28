@@ -160,7 +160,8 @@ class RunLock:
                 existing = self.holder()
                 if existing is not None and existing.is_live:
                     raise RunLockedError(
-                        f"another milhouse run is working this repository ({existing.describe()})"
+                        f"another milhouse run is working {self.path.parent.name} "
+                        f"({existing.describe()})"
                     ) from None
                 stale = existing
                 self.path.unlink(missing_ok=True)

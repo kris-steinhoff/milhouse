@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from milhouse.config import Config
 from milhouse.errors import MilhouseError
+from milhouse.herdr import Worktree
 from milhouse.models import Issue
 from milhouse.policy import Decision
 from milhouse.runner import TurnResult
-from milhouse.step import nothing_ready, step
+from milhouse.step import dispatch, nothing_ready, reap, step
 
-from .doubles import FakeRepo, FakeRunner, FakeTracker, build
+from .doubles import FakeClient, FakeRepo, FakeRunner, FakeTracker, build
 from .fakes import FakeProc, Reply
 
 
@@ -355,3 +358,182 @@ def test_an_epic_nobody_closed_is_not_unfinished_work(
         _, completed = nothing_ready(opened)
 
     assert completed
+
+
+# -- dispatch and reap ---------------------------------------------------------
+
+
+def with_lane(client: FakeClient, issue_id: str) -> FakeClient:
+    """Stand a lane up under `issue_id`, the way a real dispatch would have.
+
+    The tests inject a runner, so `Session.runner_for` never opens one itself.
+    """
+    workspace_id = f"wL{len(client.workspaces)}"
+    client.workspaces[workspace_id] = issue_id
+    client.checkouts.append(
+        Worktree(
+            path=Path("/worktrees") / issue_id,
+            branch=f"milhouse/{issue_id}",
+            workspace_id=workspace_id,
+        )
+    )
+    return client
+
+
+def test_dispatch_starts_a_turn_and_does_not_wait(config: Config, decomposed: FakeTracker) -> None:
+    session, runner = build(config, tracker=decomposed, script=["close"])
+    runner.working = True
+
+    with session as opened:
+        started = dispatch(opened)
+
+        assert [pending.issue.id for pending in started] == ["bd-e.1"]
+        assert runner.turns  # the prompt was submitted
+        # Nothing has been classified: no iteration is recorded yet.
+        assert opened.audit.iterations() == []
+        # The claim belongs to the lane now, not to this process.
+        assert opened.in_flight == []
+
+    assert decomposed.released == []
+
+
+def test_dispatch_takes_up_to_the_count_asked_for(config: Config, decomposed: FakeTracker) -> None:
+    session, runner = build(config, tracker=decomposed, script=["stall", "stall"])
+    runner.working = True
+
+    with session as opened:
+        started = dispatch(opened, limit=5)
+
+    # Only two issues exist, so the queue runs dry before the limit does.
+    assert [pending.issue.id for pending in started] == ["bd-e.1", "bd-e.2"]
+
+
+def test_dispatch_reports_nothing_when_the_queue_is_empty(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    for issue in decomposed.issues:
+        issue.status = "closed"
+    session, _ = build(config, tracker=decomposed, script=[])
+
+    with session as opened:
+        assert dispatch(opened) == []
+
+
+def test_a_turn_that_will_not_start_is_settled_rather_than_left_claimed(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """An agent that never ran will never be reaped, so it cannot be handed off."""
+    session, _ = build(config, tracker=decomposed, script=["error"])
+
+    with session as opened:
+        assert dispatch(opened) == []
+
+    assert [item.outcome for item in session.audit.iterations()] == ["error"]
+    assert decomposed.released == ["bd-e.1"]
+
+
+def test_a_dispatched_turn_survives_the_session_that_started_it(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """Teardown must not re-open a claim an agent is still working."""
+    session, runner = build(config, tracker=decomposed, script=["stall"])
+    runner.working = True
+
+    with session as opened:
+        dispatch(opened)
+
+    assert decomposed.released == []
+    assert decomposed.issues[0].status == "in_progress"
+
+
+def test_reap_finishes_a_settled_turn(config: Config, decomposed: FakeTracker) -> None:
+    client = with_lane(FakeClient(), "bd-e.1")
+    session, runner = build(config, tracker=decomposed, script=["close"], client=client)
+    runner.working = True
+    with session as opened:
+        dispatch(opened)
+
+    runner.working = False
+    with session as opened:
+        results = reap(opened)
+
+    assert [result.iteration.outcome for result in results] == ["success"]
+    assert decomposed.issues[0].is_closed
+    # A settled turn is settled once: reaping again finds nothing.
+    assert session.audit.dispatches() == {}
+
+
+def test_reap_leaves_a_turn_that_is_still_working(config: Config, decomposed: FakeTracker) -> None:
+    client = with_lane(FakeClient(), "bd-e.1")
+    session, runner = build(config, tracker=decomposed, script=["close"], client=client)
+    runner.working = True
+
+    with session as opened:
+        dispatch(opened)
+        assert reap(opened) == []
+
+    assert list(session.audit.dispatches()) == ["bd-e.1"]
+
+
+def test_a_reaped_turn_that_did_not_finish_reopens_its_issue(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    client = with_lane(FakeClient(), "bd-e.1")
+    session, runner = build(config, tracker=decomposed, script=["stall"], client=client)
+    runner.working = True
+    with session as opened:
+        dispatch(opened)
+
+    runner.working = False
+    with session as opened:
+        results = reap(opened)
+
+    assert [result.iteration.outcome for result in results] == ["stalled"]
+    assert decomposed.released == ["bd-e.1"]
+
+
+def test_a_turn_past_the_timeout_is_reaped_anyway(config: Config, decomposed: FakeTracker) -> None:
+    """Nobody is waiting on a dispatched turn, so the deadline is the record."""
+    client = with_lane(FakeClient(), "bd-e.1")
+    session, runner = build(config, tracker=decomposed, script=["stall"], client=client)
+    runner.working = True
+    config.agent.turn_timeout_ms = 0
+
+    with session as opened:
+        dispatch(opened)
+        results = reap(opened)
+
+    assert [result.iteration.outcome for result in results] == ["timeout"]
+
+
+# -- reconciling around a dispatched turn --------------------------------------
+
+
+def test_reconcile_leaves_a_dispatched_turn_alone(config: Config, decomposed: FakeTracker) -> None:
+    """An in-progress issue with a live lane has somebody working it."""
+    client = with_lane(FakeClient(), "bd-e.1")
+    session, runner = build(config, tracker=decomposed, script=["stall"], client=client)
+    runner.working = True
+    with session as opened:
+        dispatch(opened)
+
+    later, _ = build(config, tracker=decomposed, script=[], client=client)
+    with later:
+        pass
+
+    assert decomposed.released == []
+
+
+def test_reconcile_reopens_a_claim_whose_lane_is_gone(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    session, runner = build(config, tracker=decomposed, script=["stall"])
+    runner.working = True
+    with session as opened:
+        dispatch(opened)
+
+    later, _ = build(config, tracker=decomposed, script=[])
+    with later:
+        pass
+
+    assert decomposed.released == ["bd-e.1"]

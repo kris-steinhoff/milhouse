@@ -141,16 +141,18 @@ class ProcessError(MilhouseError):
 
 
 class RunLockedError(MilhouseError):
-    """Another milhouse process is already working this repository.
+    """Another milhouse process is already working this lane.
 
-    Exit code ``10``. Two runs would drive the same herdr pane and reconcile
-    each other's in-flight claim, so the second one refuses to start
-    (:doc:`ADR 0015 <../../docs/decisions/0015-one-run-at-a-time>`). If the named
-    process is genuinely gone, delete the lock file and re-run.
+    Exit code ``10``. Two runs in one lane would drive the same herdr pane and
+    reconcile each other's in-flight claim, so the second one refuses to start
+    (:doc:`ADR 0015 <../../docs/decisions/0015-one-run-at-a-time>`). Other lanes
+    are unaffected: concurrency is the point of them
+    (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`). If
+    the named process is genuinely gone, delete the lock file and re-run.
     """
 
     exit_code = 10
-    remedy = "Wait for the other run, or delete .milhouse/runs/lock.json."
+    remedy = "Wait for the other run, or delete .milhouse/runs/<issue-id>/lock.json."
 
 
 class UserAbortError(MilhouseError):

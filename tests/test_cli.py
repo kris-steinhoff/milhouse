@@ -24,6 +24,10 @@ runner = CliRunner()
 
 NO_WORKSPACES = wrapped("workspace:list", {"workspaces": []})
 NO_LANES = wrapped("worktree:list", {"worktrees": []})
+WORKSPACE_CREATED = wrapped(
+    "workspace:create",
+    {"workspace": {"workspace_id": "wG"}, "root_pane": {"pane_id": "wG:p1"}},
+)
 
 EPIC = {
     "id": "bd-e",
@@ -45,6 +49,7 @@ def worked_repo(repo: Path, fake_proc: FakeProc, monkeypatch: pytest.MonkeyPatch
     fake_proc.expect("git", Reply(stdout="main\n"))
     fake_proc.expect("herdr workspace list", Reply(stdout=NO_WORKSPACES))
     fake_proc.expect("herdr worktree list", Reply(stdout=NO_LANES))
+    fake_proc.expect("herdr workspace create", Reply(stdout=WORKSPACE_CREATED))
     (repo / ".beads").mkdir()
     return repo
 
@@ -57,7 +62,7 @@ def test_help_lists_every_command() -> None:
     result = invoke("--help")
 
     assert result.exit_code == 0
-    for command in ("doctor", "step", "status"):
+    for command in ("doctor", "step", "dispatch", "reap", "status"):
         assert command in result.output
 
 
@@ -75,6 +80,11 @@ def test_there_is_no_plan_command() -> None:
             "step",
             ["--agent", "--workspace", "--parent", "--label", "--dry-run", "--attach", "--repo"],
         ),
+        (
+            "dispatch",
+            ["--count", "--agent", "--workspace", "--parent", "--label", "--attach", "--repo"],
+        ),
+        ("reap", ["--repo"]),
         ("status", ["--repo"]),
         ("doctor", ["--repo"]),
     ],
@@ -89,7 +99,7 @@ def test_every_flag_is_documented(command: str, flags: list[str]) -> None:
         assert flag in output, f"{command} is missing help for {flag}"
 
 
-@pytest.mark.parametrize("command", [None, "step", "status", "doctor"])
+@pytest.mark.parametrize("command", [None, "step", "dispatch", "reap", "status", "doctor"])
 def test_short_help_flag_matches_long_one(command: str | None) -> None:
     """``-h`` is the same help as ``--help``, on the app and every subcommand."""
     args = [command] if command else []
@@ -259,6 +269,45 @@ def test_the_scope_flags_fence_the_ready_query(worked_repo: Path, fake_proc: Fak
     assert "bd-e" in ready
     assert "--label" in ready
     assert "agent" in ready
+
+
+def test_reap_says_so_when_there_is_nothing_to_collect(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    fake_proc.expect("bd", Reply(stdout="[]"))
+
+    result = invoke("reap")
+
+    assert result.exit_code == 0
+    assert "nothing to reap" in result.output
+    assert not fake_proc.ran("herdr", "agent")
+
+
+def test_reap_exits_nine_while_a_turn_is_still_running(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    fake_proc.expect("bd", Reply(stdout="[]"))
+    audit = FakeAudit(worked_repo)
+    audit.claimed("bd-e.2")
+    audit.dispatched("bd-e.2", {"number": 1, "head_before": "abc"})
+
+    result = invoke("reap")
+
+    assert result.exit_code == 9
+    assert "still running" in result.output
+
+
+def test_dispatch_exits_nine_when_the_queue_is_stuck(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    fake_proc.expect(
+        "bd", lambda argv: Reply(stdout=json.dumps([] if "ready" in argv else CHILDREN))
+    )
+
+    result = invoke("dispatch")
+
+    assert result.exit_code == 9
+    assert "unfinished" in result.output
 
 
 def test_a_bad_config_value_exits_two(

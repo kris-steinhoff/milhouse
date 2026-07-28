@@ -39,7 +39,7 @@ def test_the_lock_is_taken_and_released(run: Run) -> None:
 
 
 def test_a_live_holder_refuses_a_second_run(run: Run) -> None:
-    """Two runs in one repository would reconcile each other's in-flight claim."""
+    """Two runs in one lane would reconcile each other's in-flight claim."""
     run.lock.acquire()
 
     with pytest.raises(RunLockedError, match=f"pid {os.getpid()}"):

@@ -253,3 +253,16 @@ def test_a_lane_path_is_left_to_herdr(lanes: Lanes, config: Config) -> None:
 
     assert not lane.path.is_relative_to(config.repo_root)
     assert isinstance(lane.path, Path)
+
+
+def test_locating_a_lane_does_not_choose_a_pane(lanes: Lanes, client: FakeClient) -> None:
+    """Choosing one can create one, which is wrong for a read-only lookup."""
+    lane = open_lane(lanes, issue("bd-e.1"))
+    client.avoided = "not asked"
+
+    located = lanes.locate("bd-e.1")
+
+    assert located is not None
+    assert located[0].path == lane.path
+    assert located[0].pane_id == ""
+    assert client.avoided == "not asked"

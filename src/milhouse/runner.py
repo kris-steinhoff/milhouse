@@ -68,13 +68,42 @@ class Runner(Protocol):
     workdir: Path
     """The directory the agent works in, which is what a turn is classified against.
 
-    The repository root today. Under lanes it is the worktree
-    (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`), and
+    A lane's worktree
+    (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`), so
     reading ``HEAD`` anywhere else would attribute one lane's commits to another.
     """
 
     def run_turn(self, prompt: str, *, iteration: int, issue_id: str | None = None) -> TurnResult:
-        """Run one whole turn and leave the pane ready for the next one."""
+        """Run one whole turn and leave the pane ready for the next one.
+
+        Blocks until the agent settles. ``milhouse step`` uses this; anything
+        that starts several turns at once uses the three below instead.
+        """
+        ...
+
+    def start_turn(self, prompt: str, *, iteration: int, issue_id: str | None = None) -> TurnResult:
+        """Start an agent, submit the prompt, and return without waiting.
+
+        The returned result carries the prompt path and any failure to start.
+        Its ``agent_state`` is whatever herdr reports right now, which is not
+        the state the turn will end in.
+        """
+        ...
+
+    def settled(self) -> AgentStatus | None:
+        """The state the turn ended in, or ``None`` while the agent is working.
+
+        An agent herdr no longer knows about counts as settled: whatever
+        happened to it, it is not still working.
+        """
+        ...
+
+    def finish_turn(self, iteration: int, *, issue_id: str | None = None) -> TurnResult:
+        """Capture the transcript of a settled turn and exit the agent.
+
+        The mirror of :meth:`start_turn`, and the half of :meth:`run_turn` that
+        happens after the wait.
+        """
         ...
 
     def exit_agent(self) -> None:
@@ -131,6 +160,93 @@ class AgentRunner:
         Returns:
             What happened, for :func:`milhouse.outcome.classify` to interpret.
         """
+        result = self._begin(prompt, iteration, issue_id=issue_id)
+        if result.error:
+            return result
+
+        try:
+            result.agent_state = self.client.prompt(
+                self.agent_name,
+                prompt,
+                timeout_ms=self.config.agent.turn_timeout_ms,
+                wait=True,
+            )
+        except TurnTimeoutError:
+            result.timed_out = True
+            result.agent_state = self.client.agent_status(self.agent_name)
+        except HerdrError as exc:
+            result.error = f"could not prompt the agent: {exc}"
+
+        result.transcript_path = self._collect(iteration, issue_id=issue_id)
+        return result
+
+    def start_turn(self, prompt: str, *, iteration: int, issue_id: str | None = None) -> TurnResult:
+        """Start an agent, submit the prompt, and return without waiting.
+
+        The submission is the only difference from :meth:`run_turn`: herdr is
+        not asked to block, so several turns can be in flight at once and a
+        later :func:`milhouse.step.reap` collects them
+        (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
+
+        Args:
+            prompt: The rendered prompt to send.
+            iteration: 1-based iteration number, used to name the artifacts.
+            issue_id: The issue this turn works.
+
+        Returns:
+            The prompt path, and any failure to start or submit.
+        """
+        result = self._begin(prompt, iteration, issue_id=issue_id)
+        if result.error:
+            return result
+        try:
+            result.agent_state = self.client.prompt(
+                self.agent_name,
+                prompt,
+                timeout_ms=self.config.agent.turn_timeout_ms,
+                wait=False,
+            )
+        except HerdrError as exc:
+            result.error = f"could not prompt the agent: {exc}"
+        return result
+
+    def settled(self) -> AgentStatus | None:
+        """The state this turn ended in, or ``None`` while the agent is working.
+
+        ``unknown`` counts as settled. An agent herdr has lost track of is not
+        going to finish, and leaving the claim in flight forever is worse than
+        classifying a turn nobody can explain.
+        """
+        status = self.client.agent_status(self.agent_name)
+        return None if status == "working" else status
+
+    def finish_turn(self, iteration: int, *, issue_id: str | None = None) -> TurnResult:
+        """Capture a settled turn's transcript and exit the agent.
+
+        The transcript is captured *before* the agent is exited, so a
+        post-mortem still has it even when the exit falls back to replacing the
+        pane and losing its scrollback.
+
+        Args:
+            iteration: The iteration number, used to name the transcript.
+            issue_id: The issue this turn worked.
+
+        Returns:
+            The state herdr left the agent in, and the transcript path.
+        """
+        state = self.client.agent_status(self.agent_name)
+        return TurnResult(
+            agent_state=state, transcript_path=self._collect(iteration, issue_id=issue_id)
+        )
+
+    def _collect(self, iteration: int, *, issue_id: str | None) -> Path | None:
+        """Save the transcript and put the pane back at a shell prompt."""
+        transcript = self._capture(iteration, issue_id=issue_id)
+        self.exit_agent()
+        return transcript
+
+    def _begin(self, prompt: str, iteration: int, *, issue_id: str | None) -> TurnResult:
+        """Save the prompt and start a fresh agent in the pane."""
         prompt_path = self._write(f"iter-{iteration:03d}.prompt", prompt, issue_id=issue_id)
         result = TurnResult(agent_state="unknown", prompt_path=prompt_path)
         try:
@@ -144,22 +260,6 @@ class AgentRunner:
             )
         except HerdrError as exc:
             result.error = f"could not start the agent: {exc}"
-            return result
-
-        try:
-            result.agent_state = self.client.prompt(
-                self.agent_name,
-                prompt,
-                timeout_ms=self.config.agent.turn_timeout_ms,
-            )
-        except TurnTimeoutError:
-            result.timed_out = True
-            result.agent_state = self.client.agent_status(self.agent_name)
-        except HerdrError as exc:
-            result.error = f"could not prompt the agent: {exc}"
-
-        result.transcript_path = self._capture(iteration, issue_id=issue_id)
-        self.exit_agent()
         return result
 
     def exit_agent(self) -> None:

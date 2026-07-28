@@ -540,35 +540,46 @@ class HerdrClient:
         *,
         timeout_ms: int,
         until: tuple[AgentStatus, ...] = SETTLED,
+        wait: bool = True,
     ) -> AgentStatus:
-        """Submit a prompt and block until the turn settles.
+        """Submit a prompt, optionally blocking until the turn settles.
 
-        This is the whole turn-completion mechanism: one blocking subprocess per
-        iteration, which is exactly what a sequential loop wants
+        Waiting is the turn-completion mechanism for ``milhouse step``: one
+        blocking subprocess per iteration, which is exactly what a sequential
+        step wants
         (:doc:`ADR 0003 <../../docs/decisions/0003-agents-run-in-herdr-panes>`).
+
+        Not waiting is what lets several turns be in flight at once: the caller
+        submits, returns, and asks :meth:`agent_status` later
+        (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
 
         Args:
             name: The agent to prompt.
             text: The rendered prompt.
             timeout_ms: How long the turn may take before milhouse gives up.
+                Ignored when ``wait`` is false, since nothing is being waited on.
             until: States that count as settled. Defaults to :data:`SETTLED`,
                 which includes ``done`` — the state claude actually reaches when
                 a turn ends, as opposed to ``idle``.
+            wait: Block until the agent reaches one of ``until``.
 
         Returns:
-            The state the agent settled in.
+            The state the agent settled in, or the state it was in at
+            submission when ``wait`` is false.
 
         Raises:
             TurnTimeoutError: The turn did not settle in time.
             HerdrError: The prompt could not be submitted at all.
         """
-        argv = ["agent", "prompt", name, text, "--wait", "--timeout", str(timeout_ms)]
-        for status in until:
-            argv += ["--until", status]
+        argv = ["agent", "prompt", name, text]
+        if wait:
+            argv += ["--wait", "--timeout", str(timeout_ms)]
+            for status in until:
+                argv += ["--until", status]
         try:
-            result = self._call(argv, timeout=timeout_ms / 1000 + 30)
+            result = self._call(argv, timeout=(timeout_ms / 1000 + 30) if wait else TIMEOUT)
         except HerdrError as exc:
-            if _is_timeout(exc):
+            if wait and _is_timeout(exc):
                 raise TurnTimeoutError(
                     f"agent {name} did not finish its turn within {timeout_ms}ms"
                 ) from exc
@@ -583,6 +594,21 @@ class HerdrClient:
         except HerdrError:
             return "unknown"
         return _as_status(result.get("agent", {}).get("agent_status"))
+
+    def agent_pane(self, name: str) -> str | None:
+        """The pane an agent occupies, or ``None`` when herdr has lost track of it.
+
+        Reaping a dispatched turn has to send the exit keys to the pane the
+        agent is *in*, which is not necessarily the pane a fresh lookup would
+        pick — that one skips panes with an agent in them, which is exactly this
+        one (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
+        """
+        try:
+            result = self._call(["agent", "get", name])
+        except HerdrError:
+            return None
+        pane = result.get("agent", {}).get("pane_id")
+        return str(pane) if pane else None
 
     def read_agent(self, name: str, *, source: str = "visible", lines: int = 400) -> str:
         """Capture an agent pane's terminal contents as plain text."""

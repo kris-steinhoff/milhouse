@@ -28,6 +28,8 @@ So the entry carries the verdict and `transcript_path`, and not the output. The 
 
 The trail answers it instead. A turn appends `claim` before it starts and `iteration` when it ends, so a `claim` with nothing after it is a run that died mid-turn, and nothing else in the file looks like one. It is three fields, it composes with lanes rather than competing with them, and it is what lets `state.json` go now rather than after [ADR 0020](0020-a-lane-is-a-herdr-worktree.md) lands.
 
+**A third kind, `dispatch`, arrived with the split into dispatch and reap.** A dispatched turn outlives the process that started it, and reaping it needs the lane, the iteration number, and where `HEAD` was before the agent ran. That is the same argument as the `claim` entry and lands in the same place. It is bounded — a path, a branch, a sha, an integer, a timestamp — so the size rule above still holds, and it supersedes nothing: `claim`, `dispatch`, and `iteration` read in order as what happened to one issue.
+
 ## Consequences
 
 - **`state.json` and `events.jsonl` both go,** and `RunStore` goes with them. `.milhouse/` stops being a state store.

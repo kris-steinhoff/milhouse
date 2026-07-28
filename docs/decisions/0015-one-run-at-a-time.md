@@ -1,6 +1,6 @@
 # 0015 — One run per task at a time, enforced by a lock
 
-**Status:** accepted
+**Status:** amended by [ADR 0020](0020-a-lane-is-a-herdr-worktree.md). The lock survives; its scope is now one lane rather than the repository, because concurrent lanes are the point. The argument below is unchanged: reconciliation is destructive, and the lock is what stops it running over live work.
 
 ## Context
 

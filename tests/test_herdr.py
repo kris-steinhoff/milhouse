@@ -443,3 +443,19 @@ def test_the_lane_registry_against_the_live_server(tmp_path: Path) -> None:
             client.close_workspace(lane.workspace_id)
             shutil.rmtree(lane.path, ignore_errors=True)
         client.close_workspace(source.workspace_id)
+
+
+def test_the_agents_own_pane_is_reported(fake_proc: FakeProc) -> None:
+    """Reaping sends the exit keys here, not to whatever pane happens to be free."""
+    fake_proc.expect(
+        "herdr agent get",
+        Reply(stdout=wrapped("agent:get", {"agent": {"pane_id": "wL1:p3"}})),
+    )
+
+    assert HerdrClient().agent_pane("milhouse-bd-e.1") == "wL1:p3"
+
+
+def test_an_agent_herdr_has_lost_has_no_pane(fake_proc: FakeProc) -> None:
+    fake_proc.expect("herdr agent get", Reply(stdout=error("agent:get", "agent_not_found", "gone")))
+
+    assert HerdrClient().agent_pane("milhouse-bd-e.1") is None

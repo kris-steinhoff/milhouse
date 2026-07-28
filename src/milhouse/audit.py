@@ -7,16 +7,20 @@ there on every issue mutation, so putting milhouse's iterations in the same file
 gives one ordered trail rather than two
 (:doc:`ADR 0021 <../../docs/decisions/0021-iteration-history-goes-in-the-beads-audit-log>`).
 
-Two entry kinds are written here:
+Three entry kinds are written here:
 
 ===============  =========================================================
 ``claim``        milhouse took an issue and is about to work it.
+``dispatch``     An agent is running on it, and this is what reaping the
+                 turn will need: the lane, the iteration number, and where
+                 ``HEAD`` was before it started.
 ``iteration``    The turn is over, and this is what it achieved.
 ===============  =========================================================
 
 A ``claim`` with no ``iteration`` after it is an unfinished turn, which is how a
 run killed with ``SIGKILL`` is recovered from
-(:doc:`ADR 0008 <../../docs/decisions/0008-crash-recovery-by-reconciliation>`).
+(:doc:`ADR 0008 <../../docs/decisions/0008-crash-recovery-by-reconciliation>`)
+and how ``milhouse reap`` finds the turns ``milhouse dispatch`` left running.
 
 **Entries stay small.** ``interactions.jsonl`` has many concurrent writers —
 every agent's own ``bd close`` appends from its own process — and POSIX
@@ -40,12 +44,15 @@ from . import proc
 from .errors import MilhouseError
 from .models import Iteration
 
-__all__ = ["CLAIM", "ITERATION", "MAX_COMMITS", "AuditLog"]
+__all__ = ["CLAIM", "DISPATCH", "ITERATION", "MAX_COMMITS", "AuditLog"]
 
 log = logging.getLogger(__name__)
 
 CLAIM = "claim"
 """Entry kind for an issue milhouse has taken and not yet settled."""
+
+DISPATCH = "dispatch"
+"""Entry kind for a turn that has been started and not yet reaped."""
 
 ITERATION = "iteration"
 """Entry kind for a finished turn."""
@@ -109,6 +116,36 @@ class AuditLog:
     def claimed(self, issue_id: str) -> None:
         """Record that milhouse has taken ``issue_id`` and is about to work it."""
         self._record(CLAIM, issue_id, {})
+
+    def dispatched(self, issue_id: str, extra: dict[str, Any]) -> None:
+        """Record that an agent is now running on ``issue_id``.
+
+        Args:
+            issue_id: The issue being worked.
+            extra: What reaping the turn will need — the lane, the iteration
+                number, and where ``HEAD`` was before the agent started.
+        """
+        self._record(DISPATCH, issue_id, extra)
+
+    def dispatches(self) -> dict[str, dict[str, Any]]:
+        """The latest dispatch for every issue that has not been settled since.
+
+        A dispatch is superseded by an ``iteration`` for the same issue, which
+        is what makes reaping a turn twice impossible.
+
+        Returns:
+            ``{issue_id: extra}``, oldest dispatch first.
+        """
+        running: dict[str, dict[str, Any]] = {}
+        for entry in self._entries():
+            issue_id = str(entry.get("issue_id") or "")
+            if not issue_id:
+                continue
+            if entry.get("kind") == DISPATCH and isinstance(entry.get("extra"), dict):
+                running[issue_id] = entry["extra"]
+            elif entry.get("kind") == ITERATION:
+                running.pop(issue_id, None)
+        return running
 
     def record(self, iteration: Iteration) -> None:
         """Record a finished turn.

@@ -24,8 +24,8 @@ The turn artifacts are the primary post-mortem surface, because there is no even
   config.toml                  # committed — agent command, defaults
   runs/
     .gitignore                 # written by milhouse; ignores this whole directory
-    lock.json                  # pid and host of the run in this repository, while it runs
     <issue-id>/
+      lock.json                # pid and host of whoever is working this lane
       iter-007.prompt          # the exact prompt sent that iteration
       iter-007.term            # pane transcript captured after the turn
 ```
@@ -124,19 +124,19 @@ To fix it by hand instead:
 bd update <issue-id> --status open --assignee ""
 ```
 
-## milhouse says another run is working this repository
+## milhouse says another run is working this lane
 
 ```console
 $ milhouse step
-milhouse: another milhouse run is working this repository (pid 48213 on carbon, since 2026-07-26T09:14:02+00:00)
+milhouse: another milhouse run is working bd-e.2 (pid 48213 on carbon, since 2026-07-26T09:14:02+00:00)
 ```
 
-Exit code `10`. One process works a repository at a time, because two would drive the same pane and re-open each other's in-flight claim ([ADR 0015](decisions/0015-one-run-at-a-time.md)).
+Exit code `10`. One process works a lane at a time, because two would drive the same pane and re-open each other's in-flight claim ([ADR 0015](decisions/0015-one-run-at-a-time.md)). Another lane is unaffected.
 
 A lock whose process is dead is taken over automatically. You only see this when the process is alive, or when it ran on another machine and its pid cannot be checked. If you are sure it is gone:
 
 ```sh
-rm -f .milhouse/runs/lock.json
+rm -f .milhouse/runs/<issue-id>/lock.json
 ```
 
 ## milhouse claimed an issue that was not meant for an agent

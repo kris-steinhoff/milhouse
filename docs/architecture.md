@@ -7,9 +7,8 @@ One iteration is the unit milhouse is built from, and one `milhouse step` runs e
 ```
 milhouse step
   │
-  ├─ open the session ──────► take the run lock, re-open any claim a crashed
-  │                           run left behind, note the branch, find or create
-  │                           the herdr workspace
+  ├─ open the session ──────► re-open any claim a crashed run left behind, note
+  │                           the branch, find or create the source workspace
   │
   └─ one step ─────────────► step():
         bd ready --claim --limit 1 --exclude-type epic  → issue (empty ⇒ nothing ready)
@@ -26,6 +25,23 @@ milhouse step
 ```
 
 Nothing above puts work _into_ the tracker. There is no task definition and no planning agent: issues arrive in beads by whatever process the human wants, and milhouse works whatever `bd ready` offers ([ADR 0018](decisions/0018-no-task-milhouse-works-the-ready-queue.md)).
+
+### The seam in the middle
+
+`herdr agent prompt --wait` is the fifth line, and blocking there is what stops two turns running at once. So the turn also exists cut in half ([ADR 0020](decisions/0020-a-lane-is-a-herdr-worktree.md)):
+
+```
+milhouse dispatch -n 3        milhouse reap
+  claim, lane, prompt           for each dispatched turn:
+  ...without --wait               settled? no  → leave it
+  record the dispatch             settled? yes → transcript, verify,
+  hand the claim off                             classify, decide
+  return
+```
+
+Everything above the prompt and everything below it is shared: `step` is `dispatch`-one plus the wait plus `reap`-that-one, which is why splitting it left `outcome.py` and `policy.py` untouched. The two halves are joined by a `dispatch` entry in the audit log, so the process that reaps a turn need not be the one that started it.
+
+This is not a loop. `dispatch` starts a bounded number of turns once and returns; nothing decides whether there should be more ([ADR 0017](decisions/0017-no-loop-until-it-is-earned.md)). What went away is the requirement that turns be serial, and with it the repo-wide run lock — the lock is per lane now, and `bd ready --claim` is what makes two dispatchers safe ([ADR 0015](decisions/0015-one-run-at-a-time.md)).
 
 ## Lanes
 
@@ -82,7 +98,7 @@ Having it named and empty is what made removing the loop cost one file. Nothing 
 
 ```
 src/milhouse/
-  cli.py         typer app — step, status, doctor. Parsing and output only.
+  cli.py         typer app — step, dispatch, reap, status, doctor. Parsing only.
   completion.py  what each parameter offers on tab. Filesystem and constants only.
   config.py      layered: defaults < .milhouse/config.toml < env < flags
   models.py      Issue, Iteration (pydantic values)
@@ -102,7 +118,7 @@ src/milhouse/
   outcome.py     classify(issue_after, git, agent_state) -> Verdict
   policy.py      decide(iteration) -> Decision. No I/O.
   verify.py      run the repo's own gate over an issue the agent closed
-  step.py        step(session) -> one Iteration, classified and settled
+  step.py        step / dispatch / reap — one turn, whole or in halves
   prompts/
     iterate.md.j2   per-issue prompt
 ```
@@ -147,8 +163,8 @@ The dependency graph is the only structure milhouse reads, and `bd` owns it. Not
 | The code                           | git, on each lane's branch             | yes            |
 | Which lane an issue is worked in   | herdr, found by workspace label        | yes            |
 | Which branch a lane is on          | herdr's worktree list, and git         | yes            |
-| Iteration history                  | `.beads/interactions.jsonl`, via `bd`  | bookkeeping    |
-| Who is running in this repository  | `.milhouse/runs/lock.json`             | bookkeeping    |
+| Iteration and dispatch history     | `.beads/interactions.jsonl`, via `bd`  | bookkeeping    |
+| Who is working a lane              | `.milhouse/runs/<issue-id>/lock.json`  | bookkeeping    |
 | Exact prompt sent, pane transcript | `.milhouse/runs/<issue-id>/iter-NNN.*` | bookkeeping    |
 
 **milhouse stores no state of its own.** Every row above is somebody else's, except the lock and the turn artifacts — and the artifacts are captured text with no other home, because herdr's scrollback is live, bounded, and gone once a pane is replaced.

@@ -57,6 +57,8 @@ def test_workspace_has_no_callback() -> None:
     ("command", "params"),
     [
         ("step", ["agent", "repo"]),
+        ("dispatch", ["agent", "repo"]),
+        ("reap", ["repo"]),
         ("status", ["repo"]),
         ("doctor", ["repo"]),
     ],

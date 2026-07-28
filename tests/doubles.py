@@ -21,7 +21,7 @@ from typing import Any
 from milhouse.audit import AuditLog
 from milhouse.config import Config
 from milhouse.errors import MilhouseError
-from milhouse.herdr import Workspace, Worktree
+from milhouse.herdr import AgentStatus, Workspace, Worktree
 from milhouse.models import Issue
 from milhouse.runner import TurnResult
 from milhouse.session import Session
@@ -264,8 +264,39 @@ class FakeRunner:
     workdir: Path = Path("/repo")
     turns: list[str] = field(default_factory=list)
     issue_ids: list[str | None] = field(default_factory=list)
+    working: bool = False
+    """Whether :meth:`settled` reports the turn as still running."""
+
+    _pending: TurnResult | None = None
 
     def run_turn(self, prompt: str, *, iteration: int, issue_id: str | None = None) -> TurnResult:
+        """The whole turn at once, which is what `milhouse step` asks for."""
+        return self._act(prompt, issue_id=issue_id)
+
+    def start_turn(self, prompt: str, *, iteration: int, issue_id: str | None = None) -> TurnResult:
+        """Play the scripted turn now and hold the result until it is reaped.
+
+        A dispatched turn's effects happen while nobody is watching, so playing
+        the script here rather than in :meth:`finish_turn` is the honest fake.
+        """
+        self._pending = self._act(prompt, issue_id=issue_id)
+        return TurnResult(agent_state="working", error=self._pending.error)
+
+    def settled(self) -> AgentStatus | None:
+        if self.working:
+            return None
+        return self._pending.agent_state if self._pending else "done"
+
+    def finish_turn(self, iteration: int, *, issue_id: str | None = None) -> TurnResult:
+        result = self._pending or TurnResult(agent_state="done")
+        self._pending = None
+        return result
+
+    def exit_agent(self) -> None:
+        return None
+
+    def _act(self, prompt: str, *, issue_id: str | None) -> TurnResult:
+        """Run the next scripted action against the fake tracker and repo."""
         self.turns.append(prompt)
         self.issue_ids.append(issue_id)
         action = self.script.pop(0) if self.script else "stall"
@@ -289,9 +320,6 @@ class FakeRunner:
         if action == "error":
             return TurnResult(agent_state="unknown", error="herdr fell over")
         return TurnResult(agent_state="done")
-
-    def exit_agent(self) -> None:
-        return None
 
     def _commit(self, message: str | None = None) -> None:
         """Move HEAD, recording a message naming the claimed issue by default."""

@@ -40,15 +40,19 @@ def decomposed() -> FakeTracker:
 # -- the lock ------------------------------------------------------------------
 
 
-def test_a_second_session_in_one_repository_is_refused(
+def test_a_second_session_may_open_but_not_take_the_same_lane(
     config: Config, decomposed: FakeTracker
 ) -> None:
-    """Both would drive the same pane and reconcile each other's claim."""
+    """Concurrent lanes are the point, so the lock is per lane, not per run."""
     first, _ = build(config, tracker=decomposed, script=[])
     second, _ = build(config, tracker=decomposed, script=[])
 
-    with first, pytest.raises(RunLockedError):
-        second.__enter__()
+    with first as opened, second as also_opened:
+        opened.lock_for("bd-e.1")
+
+        also_opened.lock_for("bd-e.2")
+        with pytest.raises(RunLockedError):
+            also_opened.lock_for("bd-e.1")
 
 
 def test_the_lock_is_dropped_even_when_opening_fails(
@@ -64,7 +68,7 @@ def test_the_lock_is_dropped_even_when_opening_fails(
     with pytest.raises(MilhouseError, match="herdr is not running"):
         session.__enter__()
 
-    assert not session.lock.path.exists()
+    assert not (config.run_dir() / "bd-e.1" / "lock.json").exists()
 
 
 # -- reconciliation ------------------------------------------------------------
@@ -79,7 +83,7 @@ def test_a_stale_claim_is_reopened_when_the_session_opens(
     session.audit.claimed("bd-e.1")
 
     with build(config, tracker=decomposed, script=[])[0] as resumed:
-        assert resumed.claimed_issue is None
+        assert resumed.in_flight == []
 
     assert decomposed.released == ["bd-e.1"]
 
@@ -91,7 +95,7 @@ def test_an_in_flight_claim_is_released_on_the_way_out(
 
     with session as opened:
         opened.claim()
-        assert opened.claimed_issue == "bd-e.1"
+        assert opened.in_flight == ["bd-e.1"]
 
     assert decomposed.released == ["bd-e.1"]
     assert decomposed.issues[0].status == "open"
@@ -143,7 +147,7 @@ def test_an_interrupt_reverts_the_claim_and_drops_the_lock(
         os.kill(os.getpid(), signal.SIGTERM)
 
     assert decomposed.released == ["bd-e.1"]
-    assert not session.lock.path.exists()
+    assert not (config.run_dir() / "bd-e.1" / "lock.json").exists()
 
 
 def test_the_previous_handlers_are_put_back(config: Config, decomposed: FakeTracker) -> None:

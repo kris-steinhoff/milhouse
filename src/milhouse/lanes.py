@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .config import Config
@@ -118,18 +118,23 @@ class Lanes:
             if worktree.path != self.config.repo_root
         ]
 
-    def find(self, issue_id: str) -> Lane | None:
-        """The lane carrying ``issue_id``, or ``None``.
+    def locate(self, issue_id: str) -> tuple[Lane, str | None] | None:
+        """The lane carrying ``issue_id`` and the tab it is in, without a pane.
 
         Two places carry an id: a lane's own workspace label, and the label of a
         tab added to somebody else's lane for a stacked issue. Both are looked
         at, because an issue does not know which kind it got.
 
+        Choosing a pane is deliberately not part of this. Doing so can *create*
+        one, which is wrong for anyone who only wants to know whether the lane
+        exists — reconciling, or reaping a turn whose agent already has a pane.
+
         Args:
             issue_id: The issue to look for.
 
         Returns:
-            The lane, with a pane to work in, or ``None`` when there is none.
+            The lane and its tab id (``None`` for a lane of its own), or ``None``
+            when no lane carries the issue.
         """
         labels = self.client.workspace_labels()
         open_worktrees = [
@@ -139,12 +144,27 @@ class Lanes:
         ]
         for worktree in open_worktrees:
             if labels.get(worktree.workspace_id) == issue_id:
-                return self._lane(issue_id, worktree)
+                return self._lane(issue_id, worktree), None
         for worktree in open_worktrees:
             for tab in self.client.tabs(worktree.workspace_id):
                 if tab.get("label") == issue_id:
-                    return self._lane(issue_id, worktree, tab_id=str(tab["tab_id"]))
+                    return self._lane(issue_id, worktree), str(tab["tab_id"])
         return None
+
+    def find(self, issue_id: str) -> Lane | None:
+        """The lane carrying ``issue_id``, with a pane ready for an agent.
+
+        Args:
+            issue_id: The issue to look for.
+
+        Returns:
+            The lane, or ``None`` when there is none.
+        """
+        located = self.locate(issue_id)
+        if located is None:
+            return None
+        lane, tab_id = located
+        return replace(lane, pane_id=self._pane_in(lane, tab_id=tab_id))
 
     def dormant(self, branch: str) -> Worktree | None:
         """A worktree on ``branch`` that no workspace currently holds open.
@@ -238,19 +258,22 @@ class Lanes:
 
     # -- plumbing ---------------------------------------------------------
 
-    def _lane(self, issue_id: str, worktree: Worktree, *, tab_id: str | None = None) -> Lane:
-        """Build a :class:`Lane` from a registry entry, choosing a pane to work in."""
+    def _lane(self, issue_id: str, worktree: Worktree) -> Lane:
+        """Build a :class:`Lane` from a registry entry, with no pane chosen."""
         return Lane(
             issue_id=issue_id,
             path=worktree.path,
             branch=worktree.branch,
             workspace_id=worktree.workspace_id,
-            pane_id=self.client.pane_to_work_in(
-                worktree.workspace_id,
-                worktree.path,
-                avoid=self.config.herdr.self_pane,
-                tab_id=tab_id,
-            ),
+        )
+
+    def _pane_in(self, lane: Lane, *, tab_id: str | None) -> str:
+        """Choose a pane in ``lane`` to start an agent in, splitting one if needed."""
+        return self.client.pane_to_work_in(
+            lane.workspace_id,
+            lane.path,
+            avoid=self.config.herdr.self_pane,
+            tab_id=tab_id,
         )
 
     def _keep_git_out_of_it(self, path: Path) -> None:
