@@ -72,6 +72,7 @@ LOG_RELPATH = Path(".beads/interactions.jsonl")
 
 _RECORDED = (
     "number",
+    "attempt",
     "outcome",
     "detail",
     "agent_state",

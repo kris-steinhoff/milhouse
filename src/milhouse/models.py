@@ -99,6 +99,20 @@ class Iteration(BaseModel):
     issue_id: str
     issue_title: str = ""
     outcome: Outcome
+
+    attempt: int = 1
+    """1-based attempt number for this issue, counted from the audit history.
+
+    Distinct from :attr:`number`, which counts every turn in the repository.
+    Two issues worked once each are iterations 1 and 2, both attempt 1.
+
+    It is on the iteration so a policy can cap attempts without going and
+    looking. :func:`milhouse.policy.decide` and
+    :func:`milhouse.policy.unattended` are pure, so anything they weigh has to
+    arrive on the value they are given
+    (:doc:`ADR 0022 <../../docs/decisions/0022-the-loop-is-earned>`).
+    """
+
     agent_state: str | None = None
     """Terminal herdr agent status observed for the turn, e.g. ``idle``."""
 

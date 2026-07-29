@@ -68,6 +68,9 @@ class Dispatched:
         issue: The issue being worked.
         lane: Where its agent is running.
         number: The iteration number, which names the turn's artifacts.
+        attempt: Which attempt at this issue this turn is. Carried rather than
+            recomputed at reap time, because by then this turn's own iteration
+            entry may already be in the history being counted.
         head_before: The lane's ``HEAD`` before the agent started.
         prompt_path: Where the rendered prompt was saved, repo-relative.
         started_at: When the agent was prompted, which is what the turn timeout
@@ -77,6 +80,7 @@ class Dispatched:
     issue: Issue
     lane: Lane
     number: int
+    attempt: int
     head_before: str | None
     prompt_path: str | None
     started_at: datetime
@@ -85,6 +89,7 @@ class Dispatched:
         """The audit entry a later :func:`reap` rebuilds this from."""
         return {
             "number": self.number,
+            "attempt": self.attempt,
             "head_before": self.head_before,
             "prompt_path": self.prompt_path,
             "started_at": self.started_at.isoformat(),
@@ -262,6 +267,7 @@ def _prepare(session: Session, issue: Issue) -> tuple[Runner, str, Dispatched]:
             issue=issue,
             lane=lane,
             number=number,
+            attempt=attempt,
             head_before=head_before,
             prompt_path=None,
             started_at=now(),
@@ -306,6 +312,7 @@ def _finish(
 
     iteration = Iteration(
         number=pending.number,
+        attempt=pending.attempt,
         issue_id=issue.id,
         issue_title=issue.title,
         outcome=verdict.outcome,
@@ -349,6 +356,10 @@ def _rebuild(session: Session, issue_id: str, entry: dict[str, Any]) -> Dispatch
         issue=issue,
         lane=lane,
         number=int(entry.get("number") or session.next_number()),
+        # An entry written before attempts were recorded has no key, and the
+        # history is the next best answer: this turn has not been recorded yet,
+        # so what is there is what came before it.
+        attempt=int(entry.get("attempt") or len(session.history_for(issue_id)) + 1),
         head_before=entry.get("head_before"),
         prompt_path=entry.get("prompt_path"),
         started_at=_when(entry.get("started_at")),

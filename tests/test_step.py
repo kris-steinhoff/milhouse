@@ -309,6 +309,27 @@ def test_a_second_attempt_is_told_what_the_first_one_did(
     assert "stalled" in runner.turns[0]
 
 
+def test_the_attempt_is_recorded_and_counted_per_issue(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """`number` counts turns in the repository; `attempt` counts tries at one issue."""
+    session, _ = build(config, tracker=decomposed, script=["stall"])
+    with session as opened:
+        first = step(opened)
+
+    # A different issue, so this is iteration 2 and attempt 1.
+    decomposed.issues[0].status = "closed"
+    session, _ = build(config, tracker=decomposed, script=["stall"])
+    with session as opened:
+        other = step(opened)
+
+    assert first is not None and other is not None
+    assert (first.iteration.number, first.iteration.attempt) == (1, 1)
+    assert (other.iteration.number, other.iteration.attempt) == (2, 1)
+    # And it survives the round trip through the audit log.
+    assert [item.attempt for item in session.audit.iterations()] == [1, 1]
+
+
 # -- reporting an empty queue --------------------------------------------------
 
 
@@ -461,6 +482,28 @@ def test_reap_finishes_a_settled_turn(config: Config, decomposed: FakeTracker) -
     assert decomposed.issues[0].is_closed
     # A settled turn is settled once: reaping again finds nothing.
     assert session.audit.dispatches() == {}
+
+
+def test_a_reaped_turn_keeps_the_attempt_it_was_dispatched_as(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """Reap may be another process, and by then the history no longer says."""
+    decomposed.issues = decomposed.issues[:1]
+    client = with_lane(FakeClient(), "bd-e.1")
+    session, _ = build(config, tracker=decomposed, script=["stall"], client=client)
+    with session as opened:
+        step(opened)
+
+    session, runner = build(config, tracker=decomposed, script=["stall"], client=client)
+    runner.working = True
+    with session as opened:
+        dispatch(opened)
+
+    runner.working = False
+    with session as opened:
+        results = reap(opened)
+
+    assert [result.iteration.attempt for result in results] == [2]
 
 
 def test_reap_leaves_a_turn_that_is_still_working(config: Config, decomposed: FakeTracker) -> None:
