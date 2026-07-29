@@ -103,6 +103,9 @@ class FakeClient:
     workspaces: dict[str, str] = field(default_factory=dict)
     """Open workspaces, as ``{workspace_id: label}``."""
 
+    workspace_repos: dict[str, Path] = field(default_factory=dict)
+    """Which repository each workspace is a checkout of, where herdr knows one."""
+
     checkouts: list[Worktree] = field(default_factory=list)
     """The worktree registry, primary checkout included."""
 
@@ -117,6 +120,9 @@ class FakeClient:
 
     def workspace_exists(self, workspace_id: str) -> bool:
         return workspace_id in self.workspaces
+
+    def workspace_repo(self, workspace_id: str) -> Path | None:
+        return self.workspace_repos.get(workspace_id)
 
     def workspace_labels(self) -> dict[str, str]:
         return dict(self.workspaces)

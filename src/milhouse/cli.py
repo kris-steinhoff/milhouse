@@ -46,7 +46,7 @@ from .run import run as run_loop
 from .rundir import LOCK_FILENAME, RunLock
 from .scope import Scope
 from .scope import resolve as resolve_target
-from .session import Session
+from .session import Session, usable_workspace
 from .step import dispatch as run_dispatch
 from .step import nothing_ready
 from .step import reap as run_reap
@@ -489,7 +489,9 @@ def status(
     typer.echo(f"repo    {config.repo_root}")
     typer.echo(f"scope   {_scope(config)}")
     typer.echo(f"branch  {GitRepo(config.repo_root).current_branch() or '(detached)'}")
-    configured = config.herdr.workspace
+    configured, refusal = usable_workspace(client, config.herdr.workspace, config.repo_root)
+    if refusal:
+        typer.secho(f"herdr   {refusal}", fg=typer.colors.YELLOW)
     workspace = configured or client.find_workspace(label)
     if workspace:
         source = "configured" if configured else f"labelled {label}"

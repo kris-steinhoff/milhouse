@@ -167,6 +167,30 @@ class HerdrClient:
                 return str(workspace["workspace_id"])
         return None
 
+    def workspace_repo(self, workspace_id: str) -> Path | None:
+        """The repository ``workspace_id`` is a checkout of, if herdr knows one.
+
+        herdr resolves the repository for a new worktree from its **source
+        workspace**, so a workspace belonging to another repository silently
+        branches the wrong one. This is what makes that checkable.
+
+        Returns:
+            The repository root, or ``None`` for a workspace with no worktree
+            (herdr allows one) or a herdr that will not answer.
+        """
+        try:
+            result = self._call(["workspace", "get", workspace_id])
+        except HerdrError:
+            return None
+        # Not _dig: every step here is legitimately absent for a workspace that
+        # is not a checkout, and that is an answer rather than a broken schema.
+        node: Any = result
+        for key in ("workspace", "worktree", "repo_root"):
+            if not isinstance(node, dict):
+                return None
+            node = node.get(key)
+        return Path(str(node)) if node else None
+
     def close_workspace(self, workspace_id: str) -> None:
         """Close a workspace. milhouse only ever does this to one it created."""
         self._call(["workspace", "close", workspace_id])

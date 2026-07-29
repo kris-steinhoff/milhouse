@@ -42,12 +42,51 @@ from .rundir import LOCK_FILENAME, RunLock
 from .runner import AgentRunner, Runner
 from .tracker.base import Tracker
 
-__all__ = ["Reporter", "Session"]
+__all__ = ["Reporter", "Session", "usable_workspace"]
 
 log = logging.getLogger(__name__)
 
 Reporter = Callable[[str], None]
 """Where progress lines go. The CLI passes ``typer.echo``."""
+
+
+def usable_workspace(
+    client: HerdrClient, workspace_id: str | None, repo_root: Path
+) -> tuple[str | None, str | None]:
+    """Whether a named workspace can be this repository's source workspace.
+
+    herdr resolves which repository a lane comes from by looking at its source
+    workspace, so one belonging to somewhere else silently branches, works, and
+    commits to the wrong repository. That is reachable by accident: herdr
+    exports ``HERDR_WORKSPACE_ID`` into every pane it launches and milhouse
+    reads it, which is right when stepping the repository you are sitting in and
+    wrong the moment ``--repo`` points elsewhere.
+
+    A workspace herdr reports no repository for is accepted. herdr allows a
+    workspace with no worktree, and refusing one on a fact that was never
+    knowable would break the ordinary case to guard the odd one.
+
+    Module-level rather than a method so ``milhouse status`` reaches the same
+    verdict a run would. A status that names a workspace the run would ignore is
+    worse than no status line at all.
+
+    Args:
+        client: The herdr client.
+        workspace_id: The configured or ambient workspace, or ``None``.
+        repo_root: The repository milhouse was pointed at.
+
+    Returns:
+        The workspace to use, or ``None``; and a line explaining a refusal, or
+        ``None`` when there was nothing to refuse.
+    """
+    if not workspace_id or not client.workspace_exists(workspace_id):
+        return None, None
+    root = client.workspace_repo(workspace_id)
+    if root is None or root == repo_root:
+        return workspace_id, None
+    return None, (
+        f"ignoring herdr workspace {workspace_id}: it is a checkout of {root}, not {repo_root}"
+    )
 
 
 class Session:
@@ -266,12 +305,24 @@ class Session:
         (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
 
         milhouse writes no workspace id down. It asks the tool that owns them:
-        the configured id if there is one, otherwise the open workspace carrying
-        this repository's label, otherwise a fresh one.
+        the configured id if there is one **and it is a checkout of this
+        repository**, otherwise the open workspace carrying this repository's
+        label, otherwise a fresh one.
+
+        The repository check is not defensive tidiness. herdr resolves which
+        repository a lane comes from by looking at its source workspace, so a
+        source workspace belonging to somewhere else silently branches, works,
+        and commits to the wrong repository. That is reachable by accident:
+        herdr exports ``HERDR_WORKSPACE_ID`` into every pane it launches and
+        milhouse reads it, which is right when stepping the repository you are
+        sitting in and wrong the moment ``--repo`` points elsewhere.
+
+        A mismatch is reported and ignored rather than refused. There is a
+        correct workspace to fall back to, and an unattended run that carries on
+        in the right repository beats one that stops.
         """
-        configured = self.config.herdr.workspace
-        existing = configured if configured and self.client.workspace_exists(configured) else None
-        existing = existing or self.client.find_workspace(self.workspace_label)
+        configured = self._usable(self.config.herdr.workspace)
+        existing = configured or self.client.find_workspace(self.workspace_label)
         if existing:
             self.workspace = Workspace(
                 workspace_id=existing, pane_id="", label=self.workspace_label
@@ -285,6 +336,13 @@ class Session:
         self.report(
             f"created herdr workspace {self.workspace.workspace_id} ({self.workspace.label})"
         )
+
+    def _usable(self, workspace_id: str | None) -> str | None:
+        """``workspace_id`` if :func:`usable_workspace` accepts it, reporting if not."""
+        usable, refusal = usable_workspace(self.client, workspace_id, self.config.repo_root)
+        if refusal:
+            self.report(refusal)
+        return usable
 
     def runner_for(self, issue: Issue) -> Runner:
         """Open ``issue``'s lane and return a runner bound to it.

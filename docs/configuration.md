@@ -117,6 +117,8 @@ Workspace and transcript settings. See [ADR 0001](decisions/0001-shell-out-to-bd
 
 `HERDR_WORKSPACE_ID` is exported by herdr into every pane it launches, so milhouse running inside a pane reuses that workspace by default. `MILHOUSE_WORKSPACE` takes precedence over it, and `--workspace` over both.
 
+**A workspace for a different repository is ignored, with a line saying so.** herdr resolves which repository a lane comes from by looking at its source workspace, so the wrong one silently branches, works, and commits somewhere nobody asked it to. That is reachable by accident, and it is exactly what the combination above sets up: the ambient `HERDR_WORKSPACE_ID` is right when you are stepping the repository you are sitting in, and wrong the moment `--repo` points elsewhere. milhouse falls back to its own labelled workspace rather than refusing, because there is a correct one to fall back to and an unattended run that carries on in the right repository beats one that stops. `milhouse status` reports the same verdict a run would.
+
 A reused workspace is not an empty one, which is why `self_pane` exists. Its panes belong to somebody — very often to the terminal `milhouse step` was just typed into, since that pane is the reason `HERDR_WORKSPACE_ID` is set at all. milhouse therefore picks a pane rather than taking the first one: it skips `self_pane`, skips any pane already running an agent, and splits a new pane when nothing is free. `HERDR_PANE_ID` is set by herdr for you, so this is not a key you should need to write down.
 
 `read_source` defaults to `visible` rather than `recent` because `recent` returns only output since the previous read, which is empty when nothing has been read before — a surprising transcript to find in a post-mortem.

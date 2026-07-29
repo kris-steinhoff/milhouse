@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import signal
+from pathlib import Path
 
 import pytest
 
@@ -278,6 +279,55 @@ def test_a_second_run_finds_the_first_one_s_workspace_by_label(
         assert opened.workspace.workspace_id == "wY"
 
     assert not client.focused
+
+
+def test_a_configured_workspace_for_another_repo_is_not_used(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """Herdr reads the repository off the source workspace, so this branches the wrong one."""
+    client = FakeClient(
+        workspaces={"wE": "some-other-project"},
+        workspace_repos={"wE": Path("/elsewhere/other")},
+    )
+    config.herdr.workspace = "wE"
+    lines: list[str] = []
+    session, _ = build(config, tracker=decomposed, script=[], client=client)
+    session.report = lines.append
+
+    with session as opened:
+        assert opened.workspace is not None
+        assert opened.workspace.workspace_id != "wE"
+
+    assert any("ignoring herdr workspace wE" in line for line in lines)
+    assert any("/elsewhere/other" in line for line in lines)
+
+
+def test_a_configured_workspace_for_this_repo_is_used(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    client = FakeClient(
+        workspaces={"wE": "whatever"},
+        workspace_repos={"wE": config.repo_root},
+    )
+    config.herdr.workspace = "wE"
+    session, _ = build(config, tracker=decomposed, script=[], client=client)
+
+    with session as opened:
+        assert opened.workspace is not None
+        assert opened.workspace.workspace_id == "wE"
+
+
+def test_a_workspace_herdr_reports_no_repository_for_is_still_used(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """Herdr allows a workspace with no worktree; refusing one would break the usual case."""
+    client = FakeClient(workspaces={"wE": "whatever"})
+    config.herdr.workspace = "wE"
+    session, _ = build(config, tracker=decomposed, script=[], client=client)
+
+    with session as opened:
+        assert opened.workspace is not None
+        assert opened.workspace.workspace_id == "wE"
 
 
 def test_a_turn_runs_in_the_issue_s_own_lane(config: Config, decomposed: FakeTracker) -> None:
