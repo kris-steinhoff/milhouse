@@ -1,6 +1,6 @@
 # 0017 — No loop until one is earned
 
-**Status:** accepted
+**Status:** superseded by [ADR 0022](0022-the-loop-is-earned.md), which is the loop this ADR was waiting for. The condition below is the one it had to meet, and the failure mode it names is still the one to watch for.
 
 ## Context
 

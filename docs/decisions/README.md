@@ -25,6 +25,12 @@ One file per settled decision. Each states the context, the decision, and what i
 | [0019](0019-beads-is-the-coordination-layer.md)               | Beads is the coordination layer, not GitHub Issues               |
 | [0020](0020-a-lane-is-a-herdr-worktree.md)                    | A lane is a herdr worktree, and herdr is the lane registry       |
 | [0021](0021-iteration-history-goes-in-the-beads-audit-log.md) | Iteration history goes in the beads audit log                    |
+| [0022](0022-the-loop-is-earned.md)                            | The loop is earned, as `milhouse run <target>`                   |
+| [0023](0023-a-run-has-one-lane.md)                            | A run has one lane, keyed by its target                          |
+
+## Superseded
+
+- **[ADR 0017](0017-no-loop-until-it-is-earned.md), no loop until one is earned.** Its condition was met, and [ADR 0022](0022-the-loop-is-earned.md) is the loop it was waiting for. It is kept because it is the reason the loop's policy was written from watched iterations rather than guessed, and because the failure mode it named is still the one to watch for.
 
 ## Retired
 
@@ -36,19 +42,20 @@ Settled, then made moot by [ADR 0018](0018-no-task-milhouse-works-the-ready-queu
 
 ## Deferred
 
-Settled, then de-scoped by [ADR 0014](0014-step-is-the-primitive.md) and [ADR 0017](0017-no-loop-until-it-is-earned.md). They describe the loop that lands over the step primitive, not what milhouse does today. They are kept because they are the design, not because they are the behaviour.
+De-scoped by [ADR 0014](0014-step-is-the-primitive.md) and [ADR 0017](0017-no-loop-until-it-is-earned.md), then partly reinstated by [ADR 0022](0022-the-loop-is-earned.md) now that there is a loop again. What each one is worth today:
 
-- **[ADR 0005](0005-milhouse-owns-the-loop.md), the loop and its guardrails.** There is no loop, so there is no attempt cap, blocked-agent policy, or retry ladder either. What survives is the division of labour: milhouse picks the work and bounds the turn, the agent does one issue.
-- **[ADR 0009](0009-permission-posture.md), the unattended posture.** Supervised is no longer merely the default, it is the only mode. The `[agent] args` escape hatch still exists and still means what it said.
-- **[ADR 0012](0012-no-cost-controls-in-v1.md), cost controls.** Still no cost tracking, and the reason is unchanged. It matters less now: one step is one turn, and a person decides whether there is another.
+- **[ADR 0005](0005-milhouse-owns-the-loop.md), the loop and its guardrails.** Back in force for `milhouse run`, with the numbers observed rather than guessed: an attempt cap that defers, a blocked-agent policy that halts, and an iteration ceiling. [ADR 0022](0022-the-loop-is-earned.md) supplies the table. The division of labour it describes never went away.
+- **[ADR 0009](0009-permission-posture.md), the unattended posture.** `run` is the first thing that makes unattended meaningful, and nothing about the posture changed to meet it. Supervised is still what you get, `[agent] args` is still the only escape hatch, and the consent screen is still accepted by hand.
+- **[ADR 0012](0012-no-cost-controls-in-v1.md), cost controls.** Still no cost tracking, and the reason is unchanged. It matters more now rather than less: `--max-iterations` bounds turns, and turns are not the same size.
 
 ## Still open
 
 These were raised in the design and are deliberately not settled yet. They are tracked here so they do not get lost, not in a commit message.
 
-- **Joins in the dependency graph.** [ADR 0020](0020-a-lane-is-a-herdr-worktree.md) assigns a lane per independent issue and stacks dependent work in its predecessor's lane. An issue depending on two blockers that ran in separate lanes has two candidate base branches and no rule picking between them. `bd ready` handles the timing; the base is undecided. milhouse refuses the step and names both lanes rather than guessing, so the symptom is loud, but that is a stop rather than an answer. This is the first thing that will bite.
-- **Landing the lanes.** N lanes that each verify green can be red combined, which serial work on one branch could never produce. `bd merge-slot` is the coordination primitive and does not perform the merge. Deliberately out of scope until a parallel run has been watched. `milhouse dispatch` makes this reachable now rather than hypothetical.
-- **When to reap.** `milhouse reap` collects whatever has settled and is safe to run at any time, so `until milhouse reap; do sleep 60; done` works. Whether milhouse should poll on your behalf is a repetition policy, and the [ADR 0001](0001-shell-out-to-bd-and-herdr.md) revisit — the socket API's `events.subscribe` — is the mechanism if it should.
+- **Joins in the dependency graph.** [ADR 0020](0020-a-lane-is-a-herdr-worktree.md) assigns a lane per independent issue and stacks dependent work in its predecessor's lane. An issue depending on two blockers that ran in separate lanes has two candidate base branches and no rule picking between them. `bd ready` handles the timing; the base is undecided. milhouse refuses the step and names both lanes rather than guessing, so the symptom is loud, but that is a stop rather than an answer. [ADR 0023](0023-a-run-has-one-lane.md) takes this off the critical path for `milhouse run`, which has one base by construction. It is still the first thing that will bite `dispatch`.
+- **Landing the lanes.** N lanes that each verify green can be red combined, which serial work on one branch could never produce. `bd merge-slot` is the coordination primitive and does not perform the merge. Deliberately out of scope until a parallel run has been watched. `milhouse dispatch` makes this reachable now rather than hypothetical, and [ADR 0023](0023-a-run-has-one-lane.md) is the reason a run does not have to reach it.
+- **When to reap.** `milhouse reap` collects whatever has settled and is safe to run at any time, so `until milhouse reap; do sleep 60; done` works. [ADR 0022](0022-the-loop-is-earned.md) answers this for the serial case, where the loop waits on each turn and reaping never comes up. It is unanswered for a concurrent one, and the [ADR 0001](0001-shell-out-to-bd-and-herdr.md) revisit — the socket API's `events.subscribe` — is the mechanism if milhouse should poll on your behalf.
+- **What a concurrent run keys its lanes by.** [ADR 0023](0023-a-run-has-one-lane.md) keys a lane by the issue for `dispatch` and by the target for `run`, which are the same thing when a run works one issue at a time. A `--count N` run wants several lanes and neither key obviously fits.
 - **The per-lane bootstrap.** A fresh worktree has no `.venv`, and `[verify] command` now runs in the lane rather than the primary checkout, so a gate that assumes one fails for environmental reasons rather than real ones. Lanes need a setup command, and its shape is unknown.
 - **Re-planning caps.** An iteration that discovers new work can `bd create` mid-run. Whether that needs a cap depends on whether runs are observed to grow without bound.
 - **Agent portability.** [ADR 0003](0003-agents-run-in-herdr-panes.md) claims a second agent backend is a config change. The exit key sequence is already configurable for exactly this reason ([ADR 0011](0011-exiting-the-agent.md)), but the prompts have only ever been tuned against `claude`. Believe the claim after testing one other `--kind`, not before.

@@ -1,6 +1,6 @@
 # 0020 — A lane is a herdr worktree, and herdr is the lane registry
 
-**Status:** accepted and implemented, except for the joins and the landing it leaves open.
+**Status:** accepted and implemented, except for the joins and the landing it leaves open. Amended by [ADR 0023](0023-a-run-has-one-lane.md), which keys a lane by the target rather than the issue for `milhouse run`. Everything below still describes `milhouse dispatch`.
 
 ## Context
 
