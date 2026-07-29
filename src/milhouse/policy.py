@@ -39,7 +39,7 @@ from .models import Iteration
 
 __all__ = ["Decision", "IssueAction", "decide"]
 
-IssueAction = Literal["none", "release"]
+IssueAction = Literal["none", "release", "defer"]
 """What the issue's status becomes.
 
 ``release`` returns it to the open, unassigned pool. It is not optional
@@ -47,9 +47,15 @@ housekeeping: a claimed issue is ``in_progress``, and ``bd ready`` excludes
 those, so an unfinished issue left alone would never be offered again and the
 epic would look finished with the work undone.
 
-There is no ``block`` here. Marking an issue blocked was how the old attempt cap
-gave up on one and moved to the next, and giving up is a decision this policy
-hands to a person.
+``defer`` sets it aside instead: still open, still unfinished, no longer offered
+as ready. Only :func:`unattended` returns it, and only once an issue has used up
+its attempts. It is how a run stops spending its budget on one issue without
+deciding for anybody that the issue is hopeless
+(:doc:`ADR 0022 <../../docs/decisions/0022-the-loop-is-earned>`).
+
+There is no ``block``. Marking an issue blocked was how the old attempt cap gave
+up on one and moved to the next, and blocked in ``bd`` means something specific
+and untrue here: that the issue has an unmet dependency.
 """
 
 

@@ -51,14 +51,21 @@ class FakeTracker:
     issues: list[Issue] = field(default_factory=list)
     notes: list[tuple[str, str]] = field(default_factory=list)
     released: list[str] = field(default_factory=list)
+    deferred: list[tuple[str, str]] = field(default_factory=list)
+    """Issues set aside, as ``(issue_id, reason)``."""
 
     def ready(self, *, claim: bool) -> Issue | None:
         for issue in self.issues:
-            if issue.status == "open":
+            if issue.status == "open" and issue.id not in self._deferred_ids:
                 if claim:
                     issue.status = "in_progress"
                 return issue
         return None
+
+    @property
+    def _deferred_ids(self) -> set[str]:
+        """Deferred issues stay open and stay listed, but stop being offered."""
+        return {issue_id for issue_id, _ in self.deferred}
 
     def get(self, issue_id: str) -> Issue:
         if self.epic is not None and self.epic.id == issue_id:
@@ -76,6 +83,9 @@ class FakeTracker:
         self.get(issue_id).status = "open"
         if note:
             self.notes.append((issue_id, note))
+
+    def defer(self, issue_id: str, *, reason: str) -> None:
+        self.deferred.append((issue_id, reason))
 
     def note(self, issue_id: str, text: str) -> None:
         self.notes.append((issue_id, text))

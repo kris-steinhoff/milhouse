@@ -14,6 +14,7 @@ import pytest
 from milhouse.config import Config
 from milhouse.errors import MilhouseError, RunLockedError, UserAbortError
 from milhouse.models import Issue
+from milhouse.policy import Decision
 
 from .doubles import FakeClient, FakeRepo, FakeTracker, build
 
@@ -113,6 +114,49 @@ def test_the_run_stays_on_the_branch_it_found(config: Config, decomposed: FakeTr
         assert opened.branch == "some-worktree-branch"
 
     assert repo.branch == "some-worktree-branch"
+
+
+# -- settling an issue ---------------------------------------------------------
+
+
+def test_deferring_an_issue_also_returns_it_to_the_open_pool(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """A deferred issue still claimed reads as work somebody is doing."""
+    session, _ = build(config, tracker=decomposed, script=[])
+
+    with session as opened:
+        opened.claim()
+        opened.settle(
+            "bd-e.1",
+            Decision(issue="defer", reason="3 attempts, still stalling", note="gave up"),
+        )
+
+    assert decomposed.deferred == [("bd-e.1", "3 attempts, still stalling")]
+    assert decomposed.released == ["bd-e.1"]
+    assert decomposed.issues[0].status == "open"
+    assert decomposed.notes == [("bd-e.1", "gave up")]
+    # And it is no longer this process's to release on the way out.
+    assert session.in_flight == []
+
+
+def test_a_tracker_that_will_not_defer_does_not_take_the_turn_down(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """The turn already happened, so losing the bookkeeping beats losing it."""
+    session, _ = build(config, tracker=decomposed, script=[])
+
+    def explode(issue_id: str, *, reason: str) -> None:
+        raise MilhouseError("dolt is having a moment")
+
+    decomposed.defer = explode  # ty: ignore[invalid-assignment]
+
+    with session as opened:
+        opened.claim()
+        opened.settle("bd-e.1", Decision(issue="defer", reason="out of attempts"))
+
+    assert decomposed.released == ["bd-e.1"]
+    assert session.in_flight == []
 
 
 # -- the background a prompt gets ----------------------------------------------

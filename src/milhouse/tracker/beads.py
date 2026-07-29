@@ -93,6 +93,21 @@ class BeadsTracker:
             self.note(issue_id, note)
         self._run(["update", issue_id, "--status", "open", "--assignee", ""])
 
+    def defer(self, issue_id: str, *, reason: str) -> None:
+        """Set an issue aside with ``bd defer``.
+
+        ``bd defer`` is the tracker's own word for this: a deferred issue is
+        hidden from ``bd ready`` and still listed by ``bd list``, which is
+        exactly "unfinished, but stop offering it". Deferring without
+        ``--until`` is the status-based form, so nothing has to guess a date at
+        which the issue becomes interesting again.
+
+        ``bd update --status blocked`` was the alternative and would have been a
+        lie: blocked in ``bd`` means the issue has an unmet dependency
+        (:doc:`ADR 0022 <../../docs/decisions/0022-the-loop-is-earned>`).
+        """
+        self._run(["defer", issue_id, f"--reason={reason}"])
+
     def close(self, issue_id: str, *, note: str | None = None) -> None:
         """Close an issue.
 

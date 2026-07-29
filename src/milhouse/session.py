@@ -439,6 +439,8 @@ class Session:
         """
         if decision.issue == "release":
             self.release_claim(issue_id, decision.note)
+        elif decision.issue == "defer":
+            self.defer_claim(issue_id, decision.reason, note=decision.note)
         else:
             self.hand_off(issue_id)
 
@@ -449,6 +451,23 @@ class Session:
         except MilhouseError as exc:
             log.warning("could not re-open %s: %s", issue_id, exc)
         self.hand_off(issue_id)
+
+    def defer_claim(self, issue_id: str, reason: str, *, note: str | None = None) -> None:
+        """Set an issue aside, having first returned it to the open pool.
+
+        The release is not redundant. A deferred issue that is still
+        ``in_progress`` and still assigned reads as work somebody is doing, and
+        whoever picks it back up would have to undo two things rather than one.
+
+        A ``bd`` that will not take either is logged rather than raised, for the
+        same reason :meth:`release_claim` tolerates one: the turn already
+        happened and cannot be re-run.
+        """
+        self.release_claim(issue_id, note)
+        try:
+            self.tracker.defer(issue_id, reason=reason)
+        except MilhouseError as exc:
+            log.warning("could not defer %s: %s", issue_id, exc)
 
     def record(self, iteration: Iteration) -> None:
         """Record an iteration in the beads audit log."""

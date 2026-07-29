@@ -130,6 +130,24 @@ def test_release_reopens_and_unassigns(tracker: BeadsTracker, fake_proc: FakePro
     assert update[update.index("--assignee") + 1] == ""
 
 
+def test_defer_sets_an_issue_aside_with_a_reason(
+    tracker: BeadsTracker, fake_proc: FakeProc
+) -> None:
+    """`bd defer` hides it from `bd ready` and leaves it in `bd list`."""
+    fake_proc.expect("bd", Reply(stdout=""))
+
+    tracker.defer("bd-4rt.1", reason="3 attempts, still stalling")
+
+    assert fake_proc.ran(
+        "bd",
+        "-C",
+        str(tracker.repo_root),
+        "defer",
+        "bd-4rt.1",
+        "--reason=3 attempts, still stalling",
+    )
+
+
 def test_get_raises_for_a_missing_issue(tracker: BeadsTracker, fake_proc: FakeProc) -> None:
     fake_proc.expect("bd", Reply(stdout="[]"))
 
