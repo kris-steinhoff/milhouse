@@ -10,11 +10,13 @@ The pieces already existed. milhouse is the thing that wires them together:
 
 The defining property of a [ralph loop](https://ghuntley.com/ralph/) is a **fresh context window every iteration**. milhouse starts a new agent in the pane each time and exits it when the turn ends. State lives in beads and git, never in an accumulating chat session.
 
-**One iteration is the unit, and you type each one.** `milhouse step` claims an issue, gives it to a fresh agent, and hands straight back to you. `milhouse dispatch -n 3` and `milhouse reap` are that same turn cut in half, so three can run at once. There is deliberately no command that repeats any of them: the policy a loop needs is the open question, and the way to answer it is to watch real iterations rather than reason about them ([ADR 0017](docs/decisions/0017-no-loop-until-it-is-earned.md)). The seam for one is already there ([ADR 0014](docs/decisions/0014-step-is-the-primitive.md)).
+**One iteration is the unit.** `milhouse step` claims an issue, gives it to a fresh agent, and hands straight back to you. `milhouse dispatch -n 3` and `milhouse reap` are that same turn cut in half, so three can run at once. `milhouse run <target>` repeats it until a beads epic or issue is finished ([ADR 0022](docs/decisions/0022-the-loop-is-earned.md)).
+
+**Start with `step`, then run.** The loop's policy — three attempts then set the issue aside, stop on an agent that needs a human — was written from watched iterations rather than guessed, and yours still has to earn the same trust. One step costs one turn to find out that your issue descriptions are too thin for an agent with no context. Fifty is the expensive way.
 
 **Getting work into the tracker is your job.** milhouse does not decompose anything and has no planning agent. Issues arrive in beads however you like — by hand, from `bd create --graph`, or from an agent session driven by a prompt you own — and milhouse works whatever `bd ready` offers ([ADR 0018](docs/decisions/0018-no-task-milhouse-works-the-ready-queue.md)).
 
-**Each issue is worked in a lane**, a git worktree of its own on a branch of its own, so your checkout is left alone and several agents can eventually run at once. herdr owns the worktrees and milhouse keeps no record of them ([ADR 0020](docs/decisions/0020-a-lane-is-a-herdr-worktree.md)). Landing the branches is still yours.
+**Work happens in a lane**, a git worktree of its own on a branch of its own, so your checkout is left alone and several agents can run at once. `dispatch` gives each issue a lane; `run` gives the whole target one, so it lands as a single branch you review as a piece ([ADR 0020](docs/decisions/0020-a-lane-is-a-herdr-worktree.md), [ADR 0023](docs/decisions/0023-a-run-has-one-lane.md)). herdr owns the worktrees and milhouse keeps no record of them. Landing the branches is still yours.
 
 ## Prerequisites
 
@@ -53,6 +55,9 @@ milhouse step --dry-run
 
 # 4. Work one issue, watching the pane. Run it again for the next one.
 milhouse step --attach
+
+# 5. Once you trust what the agents do with it, work the whole epic.
+milhouse run bd-1
 ```
 
 `milhouse status` shows what is in scope and every iteration so far, at any point.
@@ -68,7 +73,9 @@ milhouse step --attach
 
 ## Status
 
-Alpha, and installed locally rather than published to PyPI. The step works and is meant to be typed by hand. The prompts, and the policy a loop over it would need, are still being learned by observation, as the ralph methodology expects.
+Alpha, and installed locally rather than published to PyPI. The step and the loop over it both work. The prompts are still being learned by observation, as the ralph methodology expects, and so is the loop's policy now that there are runs to observe.
+
+Concurrency is the part that is not finished. `dispatch` and `reap` will run several agents at once, but nothing merges the branches they produce, and an issue whose blockers ran in two different lanes is refused rather than guessed at. `milhouse run` avoids both by using one lane, which is why it is serial.
 
 ## License
 

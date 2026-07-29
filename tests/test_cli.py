@@ -62,7 +62,7 @@ def test_help_lists_every_command() -> None:
     result = invoke("--help")
 
     assert result.exit_code == 0
-    for command in ("doctor", "step", "dispatch", "reap", "status"):
+    for command in ("doctor", "step", "run", "dispatch", "reap", "status"):
         assert command in result.output
 
 
@@ -79,6 +79,18 @@ def test_there_is_no_plan_command() -> None:
         (
             "step",
             ["--agent", "--workspace", "--parent", "--label", "--dry-run", "--attach", "--repo"],
+        ),
+        (
+            "run",
+            [
+                "--max-iterations",
+                "--max-attempts",
+                "--agent",
+                "--workspace",
+                "--dry-run",
+                "--attach",
+                "--repo",
+            ],
         ),
         (
             "dispatch",
@@ -99,7 +111,7 @@ def test_every_flag_is_documented(command: str, flags: list[str]) -> None:
         assert flag in output, f"{command} is missing help for {flag}"
 
 
-@pytest.mark.parametrize("command", [None, "step", "dispatch", "reap", "status", "doctor"])
+@pytest.mark.parametrize("command", [None, "step", "run", "dispatch", "reap", "status", "doctor"])
 def test_short_help_flag_matches_long_one(command: str | None) -> None:
     """``-h`` is the same help as ``--help``, on the app and every subcommand."""
     args = [command] if command else []
@@ -329,3 +341,110 @@ def test_doctor_exits_seven_when_a_required_tool_is_missing(
 
     assert result.exit_code == 7
     assert "required checks failed" in result.output
+
+
+# -- run -----------------------------------------------------------------------
+
+
+def test_run_needs_a_target() -> None:
+    """The target is the scope, so there is nothing sensible to default it to."""
+    result = invoke("run")
+
+    assert result.exit_code != 0
+
+
+@pytest.mark.parametrize("flag", ["--parent", "--label"])
+def test_run_takes_no_scope_flags(flag: str) -> None:
+    """They would be a second answer to the question the target already answers."""
+    result = invoke("run", "bd-e", flag, "bd-x")
+
+    assert result.exit_code != 0
+    assert "No such option" in result.output
+
+
+def test_run_dry_run_shows_the_target_scope_and_caps(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    fake_proc.expect("bd", bd_reads_the_tree)
+
+    result = invoke("run", "bd-e", "--dry-run", "--max-iterations", "9")
+
+    assert result.exit_code == 0
+    assert "target    bd-e  Add a hello command" in result.output
+    assert "every ready issue under bd-e" in result.output
+    assert "caps      9 iterations, 3 attempts per issue" in result.output
+    assert "would work bd-e.2" in result.output
+    assert not fake_proc.ran("herdr", "agent")
+
+
+def test_run_dry_run_names_the_one_lane_the_whole_run_uses(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    """Named after the target, not the issue, so the run lands on one branch."""
+    fake_proc.expect("bd", bd_reads_the_tree)
+
+    result = invoke("run", "bd-e", "--dry-run")
+
+    assert "lane      milhouse/bd-e  (one lane for the whole run)" in result.output
+
+
+def test_run_refuses_a_closed_target(worked_repo: Path, fake_proc: FakeProc) -> None:
+    closed = dict(EPIC, status="closed")
+    fake_proc.expect("bd", Reply(stdout=json.dumps([closed])))
+
+    result = invoke("run", "bd-e")
+
+    assert result.exit_code == 1
+    assert "already closed" in result.output
+
+
+def test_run_refuses_a_target_that_does_not_exist(worked_repo: Path, fake_proc: FakeProc) -> None:
+    fake_proc.expect("bd", Reply(stdout="[]"))
+
+    result = invoke("run", "bd-nope")
+
+    assert result.exit_code == 4
+    assert "no such target: bd-nope" in result.output
+    assert "bd list" in result.output
+
+
+def test_run_reports_a_finished_target_and_exits_zero(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    """Everything under the epic is closed, so the run stops without a turn."""
+    fake_proc.expect("bd", bd_is_all_closed)
+
+    result = invoke("run", "bd-e")
+
+    assert result.exit_code == 0
+    assert "bd-e: 0 issue(s) closed" in result.output
+    assert "everything in scope is closed" in result.output
+    assert not fake_proc.ran("herdr", "agent")
+
+
+def test_run_exits_nine_when_work_is_left(worked_repo: Path, fake_proc: FakeProc) -> None:
+    """Nothing ready, but the tree still has an open issue in it."""
+    fake_proc.expect("bd", bd_is_stuck)
+
+    result = invoke("run", "bd-e")
+
+    assert result.exit_code == 9
+    assert "unfinished" in result.output
+
+
+def bd_is_all_closed(argv: tuple[str, ...]) -> Reply:
+    """`bd show` answers from the tree; `ready` is empty and `list` is all closed."""
+    if "show" in argv:
+        return Reply(stdout=json.dumps([EPIC]))
+    if "ready" in argv:
+        return Reply(stdout="[]")
+    return Reply(stdout=json.dumps([dict(child, status="closed") for child in CHILDREN]))
+
+
+def bd_is_stuck(argv: tuple[str, ...]) -> Reply:
+    """Nothing is ready, and one issue is still open, which is a deadlock."""
+    if "show" in argv:
+        return Reply(stdout=json.dumps([EPIC]))
+    if "ready" in argv:
+        return Reply(stdout="[]")
+    return Reply(stdout=json.dumps(CHILDREN))

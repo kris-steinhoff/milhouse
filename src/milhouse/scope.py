@@ -105,7 +105,13 @@ def resolve(
     """
     config = config or TrackerConfig()
     reader = BeadsTracker(repo_root, config)
-    target = reader.get(target_id)
+    try:
+        target = reader.get(target_id)
+    except TrackerError as exc:
+        # A typo in the target is the likeliest first mistake with `run`, and
+        # bd's own message for it arrives wrapped in an argv dump under a
+        # remedy about `bd init`. Say the useful thing instead.
+        raise _no_such(target_id, exc) from exc
 
     if target.is_closed:
         raise _finished(target)
@@ -154,6 +160,17 @@ def _closure(tracker: BeadsTracker, target: Issue) -> list[str]:
 
     walk(target)
     return order
+
+
+def _no_such(target_id: str, cause: TrackerError) -> TrackerError:
+    """The error for a target that is not in the tracker.
+
+    The cause is kept, because "no issue found" and "the database is not there"
+    both arrive here and they want opposite things done about them.
+    """
+    error = TrackerError(f"no such target: {target_id} ({cause})")
+    error.remedy = f"Check the id with `bd list`, or `bd show {target_id}`."
+    return error
 
 
 def _finished(target: Issue) -> MilhouseError:

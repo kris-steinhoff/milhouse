@@ -94,7 +94,7 @@ The agent row uses whatever `[agent] kind` is configured, so it checks the agent
 
 One iteration, then back to you. It claims the next ready issue, hands it to a **freshly started** agent, classifies what happened, and stops.
 
-This is the whole of how milhouse is driven. There is no command that repeats it, on purpose: the policy a loop would need is still the open question, and the way to answer it is to watch real iterations rather than reason about them ([ADR 0017](decisions/0017-no-loop-until-it-is-earned.md)).
+This is the primitive, and the thing to use while you are still learning what your prompts and your issue descriptions do. [`milhouse run`](#milhouse-run) repeats it for you once you trust it.
 
 ```
 milhouse step [options]
@@ -129,20 +129,22 @@ Which lane an issue gets follows the dependency graph:
 
 herdr checks lanes out under `~/.herdr/worktrees/<repo>/<branch>`, outside the repository, so they cannot show up as untracked files in another lane. `milhouse status` lists them, and `herdr worktree list` is where they actually live — milhouse keeps no record of its own.
 
-Lanes stay as branches. milhouse reports them, you merge them: building a merge queue before watching a parallel run is exactly the guessing [ADR 0017](decisions/0017-no-loop-until-it-is-earned.md) exists to prevent.
+Lanes stay as branches. milhouse reports them, you merge them: building a merge queue before watching a parallel run is exactly the guessing [ADR 0017](decisions/0017-no-loop-until-it-is-earned.md) existed to prevent. [`milhouse run`](#milhouse-run) sidesteps the whole problem by using one lane for the whole target ([ADR 0023](decisions/0023-a-run-has-one-lane.md)).
 
 Two things to know before pointing this at a real repository:
 
 - **A fresh worktree has no `.venv` and no `node_modules`.** `[verify] command` runs in the lane, so a gate that assumes a built environment fails for environmental reasons rather than real ones. Leave it unset, or point it at something that bootstraps itself (`uv run …` does).
 - **Two green lanes can be red together.** Serial work on one branch could not produce that. Nothing in milhouse checks for it yet.
 
-Exits `0` when the issue was finished and `9` when it was not, so a shell loop can stand in for the policy milhouse does not have:
+Exits `0` when the issue was finished and `9` when it was not.
+
+A shell loop over it is not the same thing as [`milhouse run`](#milhouse-run):
 
 ```sh
-while milhouse step; do :; done
+while milhouse step; do :; done   # not a substitute
 ```
 
-That stops at the first iteration that does not succeed, which is what a supervised policy would do anyway. Everything a real loop would add beyond it is the part nobody has earned yet.
+That stops at the first iteration that does not succeed, gives each issue a lane and branch of its own, and retries an issue forever if it keeps almost working. `run` caps the attempts, keeps everything on one branch, and knows the difference between a queue that is finished and one that is stuck.
 
 ### Resuming
 
@@ -272,6 +274,175 @@ the next step would work dogfood-6i2.2 and send:
 ```
 
 It is the cheapest way to see the effect of a prompt, fence, or config change.
+
+## `milhouse run`
+
+Repeats a step until a target is finished. The target is a beads id, so nothing here is a task definition ([ADR 0022](decisions/0022-the-loop-is-earned.md)).
+
+```
+milhouse run TARGET [--max-iterations N] [--max-attempts N] [--agent KIND] [--workspace ID] [--dry-run] [--attach] [--repo PATH]
+```
+
+| Option             | Default              | Meaning                                                         |
+| ------------------ | -------------------- | --------------------------------------------------------------- |
+| `TARGET`           | required             | Beads id to work towards: an epic, or a single issue.           |
+| `--max-iterations` | `50`                 | Turns this run may take before it stops and reports.            |
+| `--max-attempts`   | `3`                  | Attempts one issue gets before it is deferred.                  |
+| `--agent`          | `claude`             | Agent kind to run. Any kind herdr supports.                     |
+| `--workspace`      | `HERDR_WORKSPACE_ID` | Reuse this herdr workspace instead of creating one.             |
+| `--dry-run`        | off                  | Show the scope, the caps, and the first prompt; start no agent. |
+| `--attach`         | off                  | Focus the lane instead of leaving it hidden.                    |
+| `--repo`           | the enclosing repo   | Repository to work in.                                          |
+
+There is no `--parent` or `--label`: the target is the scope.
+
+### What the target means
+
+| Target           | In scope                                          | Finished when                  |
+| ---------------- | ------------------------------------------------- | ------------------------------ |
+| an **epic**      | everything under it, which is `bd ready --parent` | nothing under it is unfinished |
+| a **leaf issue** | it, plus everything it is transitively blocked by | it closes                      |
+
+A leaf target pulls in its blockers because `bd ready` will not offer a blocked issue, so the target cannot close until they do. `milhouse run <issue> --dry-run` prints what it worked out.
+
+### One lane, one branch
+
+The whole run happens in one lane, on `milhouse/<target-id>`, with a **fresh agent started for every iteration** ([ADR 0023](decisions/0023-a-run-has-one-lane.md)). The fresh context window is what makes this ralph, and it comes from restarting the agent rather than from the worktree, so reusing the checkout costs nothing.
+
+That gives you one branch to review as a piece. It is also why a run never hits the two-blockers-two-lanes refusal that `dispatch` can: there is only ever one base branch to continue from.
+
+Re-running the same target finds that lane again and carries on where it left off, on the same branch. Resuming is just running it again.
+
+### When it stops
+
+| Condition                                  | Exit | Report                                                  |
+| ------------------------------------------ | ---- | ------------------------------------------------------- |
+| Nothing ready, nothing in scope unfinished | `0`  | finished                                                |
+| Nothing ready, work still unfinished       | `9`  | deadlocked, and names what is left                      |
+| An agent stopped waiting on a human        | `9`  | nobody is there to approve, and the next turn would too |
+| milhouse itself failed (`bd`, herdr)       | `9`  | its own failure rather than the agent's                 |
+| A closed issue left uncommitted changes    | `9`  | the next iteration in this lane would inherit them      |
+| `--max-iterations` reached                 | `9`  | the ceiling                                             |
+
+An issue that fails `--max-attempts` times does **not** stop the run. It is deferred with the reason on it, and the run moves to the next ready issue. A deferred issue is hidden from `bd ready` and still listed by `bd list`, so it still counts as unfinished — which is why a run that deferred anything exits `9` rather than claiming success. `bd undefer <id>` puts one back.
+
+Attempts are counted over the whole audit history rather than over one run, so re-running a target does not hand a hopeless issue three more turns.
+
+### Reading the report
+
+`--dry-run` first, always. It resolves the target, names the lane, and prints the prompt the first iteration would send, without starting anything:
+
+```console
+$ milhouse run greet-qit --repo ../greet --dry-run
+dry run — no agent will be started
+target    greet-qit  Add a goodbye function
+scope     every ready issue under greet-qit
+branch    main
+agent     claude
+verify    (none — a closed issue is taken on trust)
+caps      50 iterations, 3 attempts per issue
+run dir   /tmp/greet/.milhouse/runs
+lane      milhouse/greet-qit  (one lane for the whole run)
+
+the next iteration would work greet-qit.1 and send:
+
+    You are working **one issue** for the milhouse orchestrator. milhouse picked it,
+    …
+```
+
+Point it at a leaf issue and the scope line is the other kind:
+
+```console
+$ milhouse run greet-qit.2 --repo ../greet --dry-run
+target    greet-qit.2  Document goodbye in the README
+scope     greet-qit.2 and its 1 unmet blocker(s)
+…
+the next iteration would work greet-qit.1 and send:
+```
+
+Note which issue that would work: the blocker, not the target. A leaf target is a goal, not an assignment.
+
+A real run, from the dogfood repository, that did not finish:
+
+```console
+$ milhouse run greet-qit --repo ../greet --max-iterations 4
+target  greet-qit  Add a goodbye function
+scope   every ready issue under greet-qit
+reconciling: re-opening greet-qit.1, claimed by a run that did not finish
+created herdr workspace wG (milhouse:greet)
+iteration 2: greet-qit.1 Add greet.goodbye() (attempt 2)
+  lane wH on milhouse/greet-qit (/home/you/.herdr/worktrees/greet/milhouse-greet-qit)
+  → timeout: the turn did not finish within the turn timeout
+iteration 3: greet-qit.1 Add greet.goodbye() (attempt 3)
+  lane wH on milhouse/greet-qit (/home/you/.herdr/worktrees/greet/milhouse-greet-qit)
+  → partial: greet-qit.1 is still open, but 1 commit landed for it
+stopping: nothing is ready but 2 issue(s) are unfinished (greet-qit.1, greet-qit.2); `bd blocked` says what is stuck, and this run deferred 1 of them
+the herdr workspace wG is left open
+
+iterations (2, 2m)
+    2  timeout   greet-qit.1  the turn did not finish within the turn timeout
+    3  partial   greet-qit.1  greet-qit.1 is still open, but 1 commit landed for it
+
+deferred (1)
+  greet-qit.1  greet-qit.1 did not finish in 3 attempt(s) (last: partial, greet-qit.1 is still open, but 1 commit landed for it); deferred so the run can move on
+  `bd undefer <id>` puts one back in the queue.
+
+branch  milhouse/greet-qit
+lane    /home/you/.herdr/worktrees/greet/milhouse-greet-qit
+
+greet-qit: 0 issue(s) closed — nothing is ready but 2 issue(s) are unfinished (greet-qit.1, greet-qit.2); `bd blocked` says what is stuck, and this run deferred 1 of them
+```
+
+Worth reading closely, because most of what a run does is visible in it:
+
+- **Iteration numbers keep counting across runs.** This one starts at 2, because iteration 1 belonged to an earlier attempt. They name the artifact files.
+- **`reconciling:`** is the previous run's abandoned claim being re-opened. Running again is the resume mechanism ([ADR 0008](decisions/0008-crash-recovery-by-reconciliation.md)).
+- **Both iterations name the same lane.** That is the point of [ADR 0023](decisions/0023-a-run-has-one-lane.md): the second attempt continues on the branch the first one committed to.
+- **`partial` means a commit landed and the issue did not close.** The work may be nearly done, which is exactly why the note the agent leaves matters more than the outcome word.
+- **The deferral is not a verdict.** `greet-qit.1` had in fact been implemented and committed by the third attempt; what it had not done was `bd close`.
+- **Exit `9`, and `0 issue(s) closed`.** Nothing here pretends the target is done.
+
+`bd undefer greet-qit.1`, then the same command again. A fourth attempt saw the commit the third one left and closed the issue:
+
+```console
+$ milhouse run greet-qit --repo ../greet --max-iterations 4
+target  greet-qit  Add a goodbye function
+scope   every ready issue under greet-qit
+iteration 4: greet-qit.1 Add greet.goodbye() (attempt 4)
+  lane wH on milhouse/greet-qit (/home/you/.herdr/worktrees/greet/milhouse-greet-qit)
+  → success: greet-qit.1 closed in beads
+iteration 5: greet-qit.2 Document goodbye in the README
+  lane wH on milhouse/greet-qit (/home/you/.herdr/worktrees/greet/milhouse-greet-qit)
+  → success: greet-qit.2 closed in beads
+stopping: no issues are ready; everything in scope is closed
+the herdr workspace wG is left open
+
+iterations (2, 2m)
+    4  success   greet-qit.1  greet-qit.1 closed in beads
+    5  success   greet-qit.2  greet-qit.2 closed in beads
+
+branch  milhouse/greet-qit
+lane    /home/you/.herdr/worktrees/greet/milhouse-greet-qit
+
+greet-qit: 2 issue(s) closed — no issues are ready; everything in scope is closed
+```
+
+Both iterations name the same lane, and the result is one branch:
+
+```console
+$ git -C /home/you/.herdr/worktrees/greet/milhouse-greet-qit log --oneline main..HEAD
+cbb3902 greet-qit.2: document goodbye() in the README
+8a0e442 greet-qit.1: add greet.goodbye()
+```
+
+That is what there is to review. Exit `0`.
+
+### Before an unattended run
+
+- **Set `[verify] command`.** Without it milhouse takes every `bd close` at face value ([ADR 0016](decisions/0016-milhouse-verifies.md)), and a falsely closed issue is the one failure it cannot detect. Unattended is exactly when nobody is checking.
+- **Deal with permissions first.** A default agent stops at its first permission prompt, the run halts, and you have spent one turn learning that. `[agent] args` is where the escape hatch goes ([ADR 0009](decisions/0009-permission-posture.md)), and an agent's consent screen still has to be accepted by hand once.
+- **`--max-iterations` bounds turns, not spend.** Turns are not the same size, and milhouse cannot see cost through a herdr pane ([ADR 0012](decisions/0012-no-cost-controls-in-v1.md)).
+- **Watch one `milhouse step` first.** It costs one turn to find out that your issue descriptions are too thin for an agent with no context, and fifty to find out the expensive way.
 
 ## `milhouse dispatch` and `milhouse reap`
 
@@ -404,19 +575,19 @@ Finally, run `milhouse step` twice at once in two terminals against the **same**
 
 Stable, and safe to branch on in a script.
 
-| Code  | Error                    | Means                                                                 |
-| ----- | ------------------------ | --------------------------------------------------------------------- |
-| `0`   | —                        | Success.                                                              |
-| `1`   | `MilhouseError`          | An expected failure with no more specific category.                   |
-| `2`   | `ConfigError`            | `.milhouse/config.toml`, an env var, or a flag is invalid.            |
-| `4`   | `TrackerError`           | `bd` failed, or the beads database is missing.                        |
-| `5`   | `HerdrError`             | `herdr` failed, or the server is unreachable.                         |
-| `6`   | `AgentError`             | An agent could not be started, prompted, or exited.                   |
-| `7`   | `MissingDependencyError` | A required tool is not on `PATH`. Also `doctor`'s failure code.       |
-| `8`   | `ProcessError`           | A subprocess failed in a way no caller translated.                    |
-| `9`   | (no exception)           | A step did not finish its issue. The run directory is left to resume. |
-| `10`  | `RunLockedError`         | Another milhouse process is already working this lane.                |
-| `130` | `UserAbortError`         | Interrupted, or a confirmation was declined.                          |
+| Code  | Error                    | Means                                                                  |
+| ----- | ------------------------ | ---------------------------------------------------------------------- |
+| `0`   | —                        | Success.                                                               |
+| `1`   | `MilhouseError`          | An expected failure with no more specific category.                    |
+| `2`   | `ConfigError`            | `.milhouse/config.toml`, an env var, or a flag is invalid.             |
+| `4`   | `TrackerError`           | `bd` failed, or the beads database is missing.                         |
+| `5`   | `HerdrError`             | `herdr` failed, or the server is unreachable.                          |
+| `6`   | `AgentError`             | An agent could not be started, prompted, or exited.                    |
+| `7`   | `MissingDependencyError` | A required tool is not on `PATH`. Also `doctor`'s failure code.        |
+| `8`   | `ProcessError`           | A subprocess failed in a way no caller translated.                     |
+| `9`   | (no exception)           | A step did not finish its issue, or a run stopped short of its target. |
+| `10`  | `RunLockedError`         | Another milhouse process is already working this lane.                 |
+| `130` | `UserAbortError`         | Interrupted, or a confirmation was declined.                           |
 
 `3` is retired. It was `SourceError`, raised when a task definition could not be resolved, and there are no task definitions ([ADR 0018](decisions/0018-no-task-milhouse-works-the-ready-queue.md)). The codes do not renumber, because scripts branch on them.
 

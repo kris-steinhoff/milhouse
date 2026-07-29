@@ -82,6 +82,18 @@ Keeping the target a beads id is what stops this being a revert of 0017's compan
 - **`milhouse step` is untouched.** It keeps the supervised policy, and it stays the way to watch one turn before turning a run loose on the same repository.
 - **The Repetition layer stops being empty.** `docs/architecture.md` argued that having the layer named and unoccupied is what would make filling it cheap. That claim is now testable, and the same test applies to `--count N`.
 
+## What the first runs taught
+
+Four runs against a scratch repository, watched. The table above survived, and three things about it are worth writing down before they are forgotten.
+
+**The commonest failure was not stalling, it was not closing.** Three of the first five turns ended `partial` with a commit that named the issue and did the work. What was missing was `bd close`. The retry ladder handled it — a later attempt read the commit and closed the issue in one turn — but a run pays a full turn for a missing command. That is a prompt problem rather than a policy problem, so nothing here changes, and it is the first thing to look at in `iterate.md.j2`.
+
+**A turn can burn an attempt having done nothing at all.** One iteration timed out with the agent still at 0% context: it was started, it was prompted, and it never processed the prompt. `timeout` counts as an attempt, so an issue can be deferred having had two real tries and one that never happened. The counter-argument is that milhouse cannot tell "the agent thought for thirty minutes and got nowhere" from "the agent never woke up", and inventing a distinction it cannot observe is worse than charging an attempt. Left as it is, deliberately, and recorded because the deferral report will occasionally be unfair for this reason.
+
+**Deferral is not the end of an issue, and reads as if it is.** The issue deferred in these runs was implemented, committed, and one `bd close` from done. The report said "did not finish in 3 attempt(s)", which is true and sounds much worse than the state of the work. The note on the issue carries the last outcome, so the information is there. The wording is a small thing to improve rather than a decision to revisit.
+
+Nothing observed contradicted the halt table. The blocked-agent row was not exercised, because the posture used never produced a blocked agent, so it remains the row with the weakest evidence behind it.
+
 ## Revisit when
 
-A run has been watched end to end and the table above has been contradicted by something it did. That is the most valuable outcome the first real run can have, and it lands here as an amendment rather than in a commit message.
+The blocked-agent row is exercised by a real run rather than reasoned about, or a run is watched with `[verify] command` set — every run so far took the agent at its word, so `rejected` has still never been seen in a loop.

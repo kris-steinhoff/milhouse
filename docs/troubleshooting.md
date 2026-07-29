@@ -180,6 +180,69 @@ A fresh worktree has no `.venv` and no `node_modules`, and `[verify] command` ru
 
 The per-lane bootstrap is [an open question](decisions/README.md#still-open). Until it has an answer: point the gate at something that bootstraps itself (`uv run …` creates the environment it needs), or leave `[verify] command` unset and take the agent at its word.
 
+## A run stopped and I want to know why
+
+Every run ends with a line saying what stopped it. The six answers, and what each one wants:
+
+| Stop reason                             | What happened                                                 | Do                                                      |
+| --------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------- |
+| everything in scope is closed           | The target is done.                                           | Review the branch and land it.                          |
+| nothing is ready but N are unfinished   | The queue deadlocked, usually behind a deferral or a blocker. | `bd blocked`, and the `deferred` section of the report. |
+| the agent stopped waiting on a human    | A permission prompt, most often.                              | Fix the posture, then run again. See below.             |
+| milhouse itself failed                  | `bd` or herdr, not the agent.                                 | Read the message; `milhouse doctor`.                    |
+| a closed issue left uncommitted changes | An agent closed an issue with work still in the tree.         | Look at the lane before running again.                  |
+| the ceiling                             | `--max-iterations` reached.                                   | Read the iteration list before raising it.              |
+
+Everything a run did is also in the beads audit log, which outlives the terminal:
+
+```sh
+milhouse status                          # every iteration, with outcomes
+bd list --status open                    # what is left
+```
+
+## A run deferred an issue
+
+Three failed attempts, so milhouse set it aside and spent the rest of the run on work that might still land ([ADR 0022](decisions/0022-the-loop-is-earned.md)). It is still open and still unfinished — the run exits `9` because of it — but `bd ready` will not offer it again.
+
+```sh
+bd show <id>          # the notes are what the attempts found
+bd undefer <id>       # put it back in the queue
+```
+
+**Read the notes before undeferring.** Attempts are counted over the whole audit history, not per run, so simply running again gives it no more turns. If the notes say the same thing three times, the issue is the problem, not the number of attempts: it is usually too big, or its description assumes context the agent does not have.
+
+A deferral is not always a failure of the work. An issue whose change is implemented and committed but never `bd close`d will defer, and the next agent to see it closes it immediately — that is what happened on the first dogfood run.
+
+## A run stopped on a blocked agent, immediately
+
+The agent hit a permission prompt and waited for a human. An unattended run stops rather than skipping to the next issue, because the next issue would meet the same prompt and the run would spend its whole budget discovering that ([ADR 0022](decisions/0022-the-loop-is-earned.md)).
+
+Attach to the lane herdr left open and look at what it is asking:
+
+```sh
+herdr workspace list          # the lane is labelled with the target id
+```
+
+Then set the posture for the next run ([ADR 0009](decisions/0009-permission-posture.md)):
+
+```toml
+[agent]
+args = ["--permission-mode", "acceptEdits", "--allowedTools", "Write,Edit,Read,Bash"]
+```
+
+Scoping `Bash` to specific commands looks safer and is not workable in practice: agents compose shell commands, and a scoped allowlist blocks nearly every iteration on something. An agent's own consent screen for a wider posture also has to be accepted by hand once, in a real terminal, before any run gets past it.
+
+## A run worked the wrong repository
+
+Check which workspace it used. herdr exports `HERDR_WORKSPACE_ID` into every pane it launches, `milhouse` reads it as `[herdr] workspace`, and that is right when you are stepping the repo you are sitting in and wrong when you passed `--repo` somewhere else.
+
+```sh
+milhouse status --repo <path>            # names the workspace and where it came from
+env -u HERDR_WORKSPACE_ID milhouse run <target> --repo <path>
+```
+
+The symptom is a lane whose checkout is under `~/.herdr/worktrees/<other-repo>/`, an agent that stalls because the files it was told about are not there, and a branch left in a repository nobody asked it to touch.
+
 ## A step reported the working tree is dirty
 
 The iteration left uncommitted changes behind. That matters before you step again, because the next agent would inherit changes it did not make and cannot explain.
@@ -190,6 +253,8 @@ git diff
 ```
 
 Commit them if they are the work, discard them if they are not, then step again.
+
+A **run** stops outright when this happens after a closed issue, rather than reporting it and continuing. Every iteration in a run shares one lane, so the next agent would start in the mess ([ADR 0023](decisions/0023-a-run-has-one-lane.md)). After a _failed_ turn it is reported and the run carries on: that issue is going to be retried anyway.
 
 If `git status` shows only files your issue tracker wrote, that is not the agent's doing. `bd` appends to `.beads/interactions.jsonl` on every call, milhouse calls `bd` several times a step, and a repository that tracks that file therefore reads as dirty during and after every run. `bd init` ignores it for you; a repository that predates that does not. Ignore it and the report goes quiet:
 

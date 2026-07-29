@@ -213,10 +213,24 @@ def test_a_closure_lists_only_its_members(repo: Path, fake_proc: FakeProc, shown
 # -- targets that are not work -------------------------------------------------
 
 
-def test_a_missing_target_is_refused(repo: Path, fake_proc: FakeProc) -> None:
+def test_a_missing_target_is_refused_with_a_useful_remedy(repo: Path, fake_proc: FakeProc) -> None:
+    """A typo in the target is the likeliest first mistake with `run`."""
     fake_proc.expect("bd", Reply(stdout="[]"))
 
-    with pytest.raises(TrackerError, match="no such issue"):
+    with pytest.raises(TrackerError, match="no such target: bd-nope") as caught:
+        resolve("bd-nope", repo_root=repo)
+
+    assert caught.value.remedy is not None
+    assert "bd list" in caught.value.remedy
+
+
+def test_a_target_bd_refuses_outright_is_reported_the_same_way(
+    repo: Path, fake_proc: FakeProc
+) -> None:
+    """`bd show` exits non-zero for an unknown id rather than returning nothing."""
+    fake_proc.expect("bd", Reply(stderr='no issue found matching "bd-nope"', returncode=1))
+
+    with pytest.raises(TrackerError, match="no such target: bd-nope"):
         resolve("bd-nope", repo_root=repo)
 
 

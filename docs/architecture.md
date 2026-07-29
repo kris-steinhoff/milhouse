@@ -2,7 +2,7 @@
 
 ## The step
 
-One iteration is the unit milhouse is built from, and one `milhouse step` runs exactly one ([ADR 0014](decisions/0014-step-is-the-primitive.md)). Nothing repeats it: a loop needs a policy, and that policy is the open question ([ADR 0017](decisions/0017-no-loop-until-it-is-earned.md)).
+One iteration is the unit milhouse is built from, and one `milhouse step` runs exactly one ([ADR 0014](decisions/0014-step-is-the-primitive.md)). Three commands drive that same turn: `step` runs one and hands back, `dispatch` and `reap` are it cut in half so several can be in flight, and `run` repeats it until a target is finished.
 
 ```
 milhouse step
@@ -41,15 +41,40 @@ milhouse dispatch -n 3        milhouse reap
 
 Everything above the prompt and everything below it is shared: `step` is `dispatch`-one plus the wait plus `reap`-that-one, which is why splitting it left `outcome.py` and `policy.py` untouched. The two halves are joined by a `dispatch` entry in the audit log, so the process that reaps a turn need not be the one that started it.
 
-This is not a loop. `dispatch` starts a bounded number of turns once and returns; nothing decides whether there should be more ([ADR 0017](decisions/0017-no-loop-until-it-is-earned.md)). What went away is the requirement that turns be serial, and with it the repo-wide run lock — the lock is per lane now, and `bd ready --claim` is what makes two dispatchers safe ([ADR 0015](decisions/0015-one-run-at-a-time.md)).
+Neither half is a loop. `dispatch` starts a bounded number of turns once and returns, and nothing in either decides whether there should be more. What went away is the requirement that turns be serial, and with it the repo-wide run lock — the lock is per lane now, and `bd ready --claim` is what makes two dispatchers safe ([ADR 0015](decisions/0015-one-run-at-a-time.md)).
+
+## The run
+
+`milhouse run <target>` is the loop over that turn ([ADR 0022](decisions/0022-the-loop-is-earned.md)). The target is a beads id, so nothing about it reintroduces the task definition [ADR 0018](decisions/0018-no-task-milhouse-works-the-ready-queue.md) removed.
+
+```
+milhouse run <target>
+  │
+  ├─ scope.resolve(target) ─► a Tracker fenced to the target:
+  │                             an epic     → bd ready --parent <target>
+  │                             a leaf issue → the target + its unmet blockers
+  │
+  ├─ open the session ──────► with lane_key=<target>: ONE lane, ONE lock
+  │
+  └─ repeat ───────────────► step(), with policy=unattended(max_attempts)
+        nothing claimed?  → nothing_ready() says finished or deadlocked, stop
+        should_halt()     → blocked agent, milhouse error, dirty tree, ceiling
+        otherwise         → go again
+```
+
+Three things are worth reading off that. **Scope is a tracker**, so no layer below `run` learns that a target exists. **The lane is the target's**, not each issue's, so the whole run lands on one reviewable branch and the undecided two-blocker join cannot fire ([ADR 0023](decisions/0023-a-run-has-one-lane.md)). And **the loop body is an argument**, defaulting to one `step`, so a later `--count N` swaps in dispatch-then-reap without the loop learning anything new.
+
+The agent is still started fresh every iteration and exited when the turn ends. Reusing the lane's checkout does not change that, because the fresh context window comes from restarting the agent rather than from the worktree.
 
 ## Lanes
 
-Every turn happens in a **lane**: a herdr worktree labelled with the issue id, which is a checkout of its own, on a branch of its own, in a workspace of its own ([ADR 0020](decisions/0020-a-lane-is-a-herdr-worktree.md)). That container is what will let several agents work at once, and herdr already had it.
+Every turn happens in a **lane**: a herdr worktree with a label on it, which is a checkout of its own, on a branch of its own, in a workspace of its own ([ADR 0020](decisions/0020-a-lane-is-a-herdr-worktree.md)). That container is what lets several agents work at once, and herdr already had it.
 
-**herdr is the registry.** `herdr worktree list` says what lanes exist and on what branches; `herdr workspace list` says which issue each one is for, because the id is the workspace label. milhouse keeps no lane state — the same rule it applies to issues.
+**The label is the unit somebody will review**, and that differs between the two ways of driving milhouse ([ADR 0023](decisions/0023-a-run-has-one-lane.md)). `dispatch` reviews an issue, so a lane is labelled with an issue id and assigned by the rules below. `run` reviews a target, so the whole run gets one lane labelled with the target id, and none of the rules apply.
 
-Assignment is the one part that is milhouse's own judgement, and it is four rules over the dependency graph:
+**herdr is the registry.** `herdr worktree list` says what lanes exist and on what branches; `herdr workspace list` says what each one is labelled with. milhouse keeps no lane state — the same rule it applies to issues.
+
+Assignment under `dispatch` is the one part that is milhouse's own judgement, and it is four rules over the dependency graph:
 
 | The issue                               | Gets                                           |
 | --------------------------------------- | ---------------------------------------------- |
@@ -64,7 +89,7 @@ herdr checks lanes out under `~/.herdr/worktrees/`, outside the repository, so a
 
 The defining property of ralph is a **fresh context window every iteration**. milhouse gets that by starting a new agent in the pane each step and exiting it when the turn ends, rather than reusing one long-lived session. State lives in beads and git, never in an accumulating chat session.
 
-That is what the ralph methodology is about, and it is not the part that was de-scoped. What is missing is stringing the iterations together automatically, which needs a policy nobody has earned yet. `step()` already takes the policy as an argument, so writing one is writing a function.
+`milhouse run` reuses one lane for every iteration and does not weaken that: the agent is still started fresh and exited each turn, and the only thing carried between them is what a `bd note` and a commit carry.
 
 ## The layering
 
@@ -78,7 +103,7 @@ Five layers, each defined by what it is **not** allowed to do. The filenames bel
 | **Judgement**   | What to do about what happened            | yes   | perform I/O, or observe                    |
 | **Repetition**  | How many units of work happen             | no    | anything else                              |
 
-In this codebase: `session.py`, `step.py`, `outcome.py`, `policy.py`, and — today — nothing at all.
+In this codebase: `session.py`, `step.py`, `outcome.py`, `policy.py`, and `run.py`.
 
 ### Why observation and judgement are separate
 
@@ -88,37 +113,52 @@ The usual advice would stop at a functional core and an imperative shell, with o
 
 It also means two decision tables instead of one, and a table is the cheapest thing in the world to test exhaustively. `test_outcome.py` and `test_policy.py` between them run no subprocess and start no agent.
 
-### Why the empty layer matters
+### The empty layer, and what filling it cost
 
-**Repetition is a layer with nothing in it.** That is not an omission, it is the current state of the design ([ADR 0017](decisions/0017-no-loop-until-it-is-earned.md)): `milhouse step` runs one unit of work and a person decides whether there is another.
+**Repetition was a layer with nothing in it**, from [ADR 0017](decisions/0017-no-loop-until-it-is-earned.md) until [ADR 0022](decisions/0022-the-loop-is-earned.md). The argument for naming it anyway was that having it named and empty is what made removing the loop cost one file: nothing below it had a position on how many iterations there would be, so nothing below it changed, and putting one back would be cheap for the same reason.
 
-Having it named and empty is what made removing the loop cost one file. Nothing below it had a position on how many iterations there would be, so nothing below it changed. The same property is what will make putting one back cheap, and it is the test to apply when adding anything: if a new piece would need to know how many units of work are coming, it is in the wrong layer.
+That claim has now been tested, and it mostly held. `run.py` is the new file, and none of the four layers under it moved: `Session` did not learn what a run is, `step()` did not learn that it might be called again, and `outcome.classify` was not touched at all.
+
+What it did cost is worth recording, because it is where the layering was not free:
+
+| Change                                    | Layer     | Why it was needed                                                                                                                           |
+| ----------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Iteration.attempt`                       | values    | A pure policy cannot count attempts by looking them up, so the count had to arrive on the value it is handed                                |
+| `policy.unattended`, `Tracker.defer`      | Judgement | A supervised policy hands every decision to a person; an unattended one has to settle "give up on this issue" itself                        |
+| `Session(lane_key=...)`, `Lanes.open_for` | Resources | A run reviews a target rather than an issue, so the lane it works in is a different lane ([ADR 0023](decisions/0023-a-run-has-one-lane.md)) |
+| `scope.py`                                | Resources | A target fences the ready queue, and expressing that as a `Tracker` is what kept it out of every layer above                                |
+
+None of those is repetition leaking downwards. Each is a thing that was underspecified while a person was in the loop, and had to be decided once nobody was. That is the distinction to apply to the next addition, alongside the original test: **if a new piece would need to know how many units of work are coming, it is in the wrong layer.**
+
+The claim is due to be tested once more. A `--count N` run would replace `run.py`'s loop body and nothing else, which is why the body is an argument rather than a call to `step`.
 
 ## Modules
 
 ```
 src/milhouse/
-  cli.py         typer app — step, dispatch, reap, status, doctor. Parsing only.
+  cli.py         typer app — step, run, dispatch, reap, status, doctor. Parsing only.
   completion.py  what each parameter offers on tab. Filesystem and constants only.
   config.py      layered: defaults < .milhouse/config.toml < env < flags
   models.py      Issue, Iteration (pydantic values)
   rundir.py      .milhouse/runs — turn artifacts and the run lock
   audit.py       AuditLog — the iteration history, in bd's audit trail
-  lanes.py       Lane, Lanes — which worktree an issue is worked in
+  lanes.py       Lane, Lanes — which worktree a turn is worked in
   proc.py        run() / run_json() — the single subprocess chokepoint
   errors.py      MilhouseError hierarchy, mapped to exit codes
   gitrepo.py     one working directory: read HEAD, ask what landed, branch it
   doctor.py      preflight checks, as data
   tracker/
-    base.py      Tracker protocol (ready, get, children, release, note)
+    base.py      Tracker protocol (ready, get, children, release, defer, note)
     beads.py     bd wrapper
   herdr.py       narrow client over the herdr CLI — swappable transport
   runner.py      Runner protocol, and AgentRunner — start/prompt/read/exit
   session.py     Session — lock, branch, workspace, lane, claim. No policy.
   outcome.py     classify(issue_after, git, agent_state) -> Verdict
-  policy.py      decide(iteration) -> Decision. No I/O.
+  policy.py      decide / unattended(max_attempts) -> Decision. No I/O.
   verify.py      run the repo's own gate over an issue the agent closed
   step.py        step / dispatch / reap — one turn, whole or in halves
+  scope.py       resolve(target) -> a Tracker fenced to an epic or a closure
+  run.py         the loop, the halt rules, and what a finished run reports
   prompts/
     iterate.md.j2   per-issue prompt
 ```
@@ -129,7 +169,9 @@ src/milhouse/
 - **`herdr.py` is a narrow client.** Swapping the CLI transport for the socket API ([ADR 0001](decisions/0001-shell-out-to-bd-and-herdr.md)) should be one file, not a refactor. Nothing above it knows argv exists.
 - **`gitrepo.py` reads one working directory.** A `GitRepo` is bound to the path it was given, and a turn is classified against the directory the agent actually worked in — the repository root today, a worktree once lanes exist ([ADR 0020](decisions/0020-a-lane-is-a-herdr-worktree.md)). Reading the root instead would credit an issue with commits someone else made, whether that is another lane or a human in another terminal.
 - **`outcome.py` and `policy.py` are pure.** See [the layering](#the-layering): values in, values out, so every row of both decision tables is a unit test with no subprocess involved.
-- **`session.py` holds no policy.** It does not decide what to work on next or whether there is a next. That is what would let a loop reuse it unchanged.
+- **`session.py` holds no policy.** It does not decide what to work on next or whether there is a next. That is what let `run.py` reuse it unchanged.
+- **`scope.py` produces a `Tracker`.** A target fences the ready queue, and expressing the fence as a tracker is what keeps `Session`, `step`, `dispatch`, and `reap` from ever hearing about targets.
+- **`run.py` owns only the count.** It may not classify a turn, decide what becomes of an issue, or know what is in scope. Its loop body is an argument for the same reason.
 - **`cli.py` holds no behaviour, and no private attributes.** It resolves config, drives a `Session` through public methods, and formats the result.
 - **`completion.py` never raises and never calls a server.** Its callbacks run on a keypress, in a shell with nowhere to show a traceback, so they answer from the filesystem and from constants rather than from `bd`, `herdr`, or `gh`.
 - **`Tracker` and `Runner` are protocols with one implementation each.** The protocol is not speculative generality: it is what `tests/doubles.py` implements. `Tracker` is six methods — `ready`, `get`, `children`, `release`, `defer`, `note` — and nothing on it creates an issue.
@@ -157,15 +199,20 @@ The dependency graph is the only structure milhouse reads, and `bd` owns it. Not
 
 ## Where state lives
 
-| State                              | Home                                   | Authoritative? |
-| ---------------------------------- | -------------------------------------- | -------------- |
-| The work: what to do, what is done | beads                                  | yes            |
-| The code                           | git, on each lane's branch             | yes            |
-| Which lane an issue is worked in   | herdr, found by workspace label        | yes            |
-| Which branch a lane is on          | herdr's worktree list, and git         | yes            |
-| Iteration and dispatch history     | `.beads/interactions.jsonl`, via `bd`  | bookkeeping    |
-| Who is working a lane              | `.milhouse/runs/<issue-id>/lock.json`  | bookkeeping    |
-| Exact prompt sent, pane transcript | `.milhouse/runs/<issue-id>/iter-NNN.*` | bookkeeping    |
+| State                              | Home                                     | Authoritative? |
+| ---------------------------------- | ---------------------------------------- | -------------- |
+| The work: what to do, what is done | beads                                    | yes            |
+| The code                           | git, on each lane's branch               | yes            |
+| Which lane a turn is worked in     | herdr, found by workspace label          | yes            |
+| Which branch a lane is on          | herdr's worktree list, and git           | yes            |
+| What a run gave up on              | beads, as a deferred issue with a reason | yes            |
+| Iteration and dispatch history     | `.beads/interactions.jsonl`, via `bd`    | bookkeeping    |
+| Who is working a lane              | `.milhouse/runs/<lane-key>/lock.json`    | bookkeeping    |
+| Exact prompt sent, pane transcript | `.milhouse/runs/<issue-id>/iter-NNN.*`   | bookkeeping    |
+
+The lane key is the issue for a `dispatch` and the target for a `run` ([ADR 0023](decisions/0023-a-run-has-one-lane.md)), so a run holds one lock however many issues it works. Turn artifacts stay filed under the issue that was worked, because that is what a post-mortem looks for.
+
+**A run keeps nothing of its own either.** What it deferred is in beads, what it committed is in git, what it did is in the audit log, and how far it got is recoverable from those three. There is no run file.
 
 **milhouse stores no state of its own.** Every row above is somebody else's, except the lock and the turn artifacts — and the artifacts are captured text with no other home, because herdr's scrollback is live, bounded, and gone once a pane is replaced.
 
