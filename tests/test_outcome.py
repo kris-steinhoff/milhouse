@@ -21,14 +21,12 @@ def test_a_closed_issue_is_success() -> None:
     verdict = classify(issue_after=issue("closed"), commits=["abc1234"], agent_state="done")
 
     assert verdict.outcome == "success"
-    assert not verdict.counts_as_attempt
 
 
 def test_a_blocked_agent_needs_a_human() -> None:
     verdict = classify(issue_after=issue(), commits=[], agent_state="blocked")
 
     assert verdict.outcome == "blocked"
-    assert not verdict.counts_as_attempt
 
 
 def test_an_open_issue_with_a_commit_for_it_is_partial() -> None:
@@ -37,7 +35,6 @@ def test_an_open_issue_with_a_commit_for_it_is_partial() -> None:
     )
 
     assert verdict.outcome == "partial"
-    assert verdict.counts_as_attempt
     assert "1 commit landed for it" in verdict.detail
 
 
@@ -55,7 +52,6 @@ def test_an_open_issue_with_no_commit_is_stalled() -> None:
     verdict = classify(issue_after=issue(), commits=[], agent_state="done")
 
     assert verdict.outcome == "stalled"
-    assert verdict.counts_as_attempt
 
 
 def test_a_timed_out_turn_is_a_timeout() -> None:
@@ -64,7 +60,6 @@ def test_a_timed_out_turn_is_a_timeout() -> None:
     )
 
     assert verdict.outcome == "timeout"
-    assert verdict.counts_as_attempt
 
 
 def test_a_milhouse_side_failure_is_an_error() -> None:

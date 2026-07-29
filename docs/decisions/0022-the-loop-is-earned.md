@@ -48,7 +48,7 @@ Nothing else about a turn changes. The agent gets one issue and a fresh context 
 
 **Attempts are capped, and the cap defers.** A failing outcome on attempt `max_attempts` runs `bd defer <id> --reason=...` and the run moves to the next ready issue. The final report names every issue it gave up on.
 
-**Why defer rather than block.** [ADR 0014](0014-step-is-the-primitive.md) removed `block` from `IssueAction` on the grounds that giving up is a person's decision. Deferring does not take that decision, it hands it over: `bd defer` hides the issue from `bd ready` while leaving it in `bd list`, so it stays unfinished, the report names it, and a person chooses whether to undefer. `bd update --status blocked` was rejected because blocked in bd means the issue has an unmet dependency, and using it here would put a false statement in the tracker.
+**Why defer rather than block.** [ADR 0014](0014-step-is-the-primitive.md) removed `block` from `IssueAction` on the grounds that giving up is a person's decision. Deferring does not take that decision, it hands it over: `bd defer` hides the issue from `bd ready` while leaving it in `bd list`, so it stays unfinished, the report names it, and `bd undefer` is how a person picks it back up. `bd update --status blocked` was rejected because blocked in bd means the issue has an unmet dependency, and using it here would put a false statement in the tracker.
 
 Two things 0017 deleted come back in a different shape, which is worth being precise about because neither is a revert:
 

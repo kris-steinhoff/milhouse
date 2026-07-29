@@ -22,7 +22,6 @@ still holds, and the seam a loop would swap is still the ``policy`` argument
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -33,15 +32,12 @@ from . import prompts
 from .errors import AgentError, HerdrError, MilhouseError
 from .lanes import Lane
 from .models import Issue, Iteration, now
-from .policy import Decision, decide
+from .policy import Decision, Policy, decide
 from .runner import Runner, TurnResult
 from .session import Session
 from .verify import Verification, verify
 
 __all__ = ["Dispatched", "StepResult", "dispatch", "nothing_ready", "reap", "step"]
-
-Policy = Callable[[Iteration], Decision]
-"""What decides the aftermath of an iteration. Defaults to the supervised rule."""
 
 
 @dataclass(frozen=True)

@@ -32,15 +32,6 @@ class Verdict:
     outcome: Outcome
     detail: str
 
-    @property
-    def counts_as_attempt(self) -> bool:
-        """Whether this outcome burns one of the issue's attempts.
-
-        ``success`` finished the work and ``blocked`` is waiting on a human;
-        neither is a failed attempt.
-        """
-        return self.outcome not in ("success", "blocked")
-
 
 def classify(
     *,
