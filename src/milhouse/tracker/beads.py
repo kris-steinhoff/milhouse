@@ -17,6 +17,7 @@ blocked, deferred, and in-progress issues.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -34,15 +35,27 @@ TIMEOUT = 120.0
 class BeadsTracker:
     """Talks to the beads database in one repository."""
 
-    def __init__(self, repo_root: Path, config: TrackerConfig | None = None) -> None:
+    def __init__(
+        self,
+        repo_root: Path,
+        config: TrackerConfig | None = None,
+        *,
+        members: Collection[str] | None = None,
+    ) -> None:
         """Bind to the beads database discovered from ``repo_root``.
 
         Args:
             repo_root: Repository whose ``.beads`` database to use.
             config: The ready-queue filter. Unfiltered if omitted.
+            members: An explicit set of issues to work, and nothing else.
+                ``None`` leaves the fence to ``config``. This is the one scope
+                ``bd`` cannot express, so milhouse applies it here rather than
+                threading it through everything that holds a tracker
+                (:mod:`milhouse.scope`).
         """
         self.repo_root = repo_root
         self.config = config or TrackerConfig()
+        self.members = frozenset(members) if members is not None else None
 
     # -- queries ---------------------------------------------------------
 
@@ -65,7 +78,10 @@ class BeadsTracker:
             argv += ["--parent", parent]
         if self.config.label:
             argv += ["--label", self.config.label]
-        return self._issues(argv)
+        issues = self._issues(argv)
+        if self.members is not None and parent_id is None:
+            return [issue for issue in issues if issue.id in self.members]
+        return issues
 
     def ready(self, *, claim: bool) -> Issue | None:
         """Return the next ready issue in scope, optionally claiming it.
@@ -75,15 +91,43 @@ class BeadsTracker:
         the same issue. Epics are excluded: an epic is a container for the work,
         not a unit of it.
         """
-        argv = ["ready", "--limit", "1", "--exclude-type", "epic"]
+        if self.members is not None:
+            return self._ready_among(claim=claim)
+        issues = self._issues([*self._ready_argv(limit="1"), *(["--claim"] if claim else [])])
+        return issues[0] if issues else None
+
+    def _ready_argv(self, *, limit: str) -> list[str]:
+        """``bd ready`` with whatever fence ``bd`` itself can apply."""
+        argv = ["ready", "--limit", limit, "--exclude-type", "epic"]
         if self.config.parent:
             argv += ["--parent", self.config.parent]
         if self.config.label:
             argv += ["--label", self.config.label]
-        if claim:
-            argv.append("--claim")
-        issues = self._issues(argv)
-        return issues[0] if issues else None
+        return argv
+
+    def _ready_among(self, *, claim: bool) -> Issue | None:
+        """The next ready issue that is one of :attr:`members`.
+
+        An explicit set of ids is the one fence ``bd ready`` does not take, so
+        this asks for the whole ready queue and keeps the first issue in scope.
+        Claiming is then by id, which ``bd update --claim`` does atomically.
+
+        **This gives up the atomicity of ``bd ready --claim``.** Between the
+        list and the claim another process could take the issue, and the claim
+        would then quietly succeed against an issue that is already somebody
+        else's. A serial run holding one lock is safe, and this is a real
+        constraint on ever running several at once
+        (:doc:`ADR 0022 <../../docs/decisions/0022-the-loop-is-earned>`).
+        """
+        assert self.members is not None
+        for issue in self._issues(self._ready_argv(limit="0")):
+            if issue.id not in self.members:
+                continue
+            if not claim:
+                return issue
+            self._run(["update", issue.id, "--claim"])
+            return self.get(issue.id)
+        return None
 
     # -- mutations -------------------------------------------------------
 
