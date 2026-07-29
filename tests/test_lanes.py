@@ -266,3 +266,59 @@ def test_locating_a_lane_does_not_choose_a_pane(lanes: Lanes, client: FakeClient
     assert located[0].path == lane.path
     assert located[0].pane_id == ""
     assert client.avoided == "not asked"
+
+
+# -- a run's lane --------------------------------------------------------------
+
+
+def open_for(lanes: Lanes, key: str) -> Any:
+    return lanes.open_for(key, source_workspace=SOURCE, base="main")
+
+
+def test_a_run_gets_one_lane_named_after_its_target(lanes: Lanes, client: FakeClient) -> None:
+    lane = open_for(lanes, "bd-e")
+
+    assert lane.key == "bd-e"
+    assert lane.branch == "milhouse/bd-e"
+    assert client.workspaces[lane.workspace_id] == "bd-e"
+
+
+def test_every_issue_in_a_run_lands_in_that_one_lane(lanes: Lanes) -> None:
+    first = open_for(lanes, "bd-e")
+
+    second = open_for(lanes, "bd-e")
+
+    assert (second.path, second.branch, second.workspace_id) == (
+        first.path,
+        first.branch,
+        first.workspace_id,
+    )
+
+
+def test_a_run_ignores_the_dependency_rules_that_dispatch_follows(lanes: Lanes) -> None:
+    """One base branch by construction, so a join has nothing to choose between."""
+    dispatched = open_lane(lanes, issue("bd-e.1"))
+
+    run_lane = open_for(lanes, "bd-e")
+
+    assert run_lane.branch == "milhouse/bd-e"
+    assert run_lane.path != dispatched.path
+
+
+def test_dispatch_still_gets_a_lane_per_issue(lanes: Lanes) -> None:
+    """ADR 0023 amends how a run picks a lane, and nothing about dispatch."""
+    first = open_lane(lanes, issue("bd-e.1"))
+    second = open_lane(lanes, issue("bd-e.2"))
+
+    assert first.branch == "milhouse/bd-e.1"
+    assert second.branch == "milhouse/bd-e.2"
+
+
+def test_a_second_run_of_the_same_target_resumes_its_branch(lanes: Lanes) -> None:
+    """Which is what makes re-running a target pick the work back up."""
+    first = open_for(lanes, "bd-e")
+
+    resumed = open_for(lanes, "bd-e")
+
+    assert resumed.branch == first.branch
+    assert resumed.path == first.path

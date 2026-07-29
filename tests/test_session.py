@@ -116,6 +116,50 @@ def test_the_run_stays_on_the_branch_it_found(config: Config, decomposed: FakeTr
     assert repo.branch == "some-worktree-branch"
 
 
+# -- a run's lane and lock -----------------------------------------------------
+
+
+def test_a_run_works_every_issue_in_the_lane_named_after_its_target(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """One reviewable branch, rather than an epic finished in several places."""
+    client = FakeClient()
+    session, _ = build(config, tracker=decomposed, script=[], client=client)
+    session._runner = None
+    session.lane_key = "bd-e"
+
+    with session as opened:
+        first = opened.runner_for(decomposed.issues[0])
+        second = opened.runner_for(decomposed.issues[1])
+
+    assert first.workdir == second.workdir
+    assert first.agent_name == second.agent_name == "milhouse-bd-e"
+    assert client.workspaces[first.pane_id.split(":")[0]] == "bd-e"
+
+
+def test_a_run_holds_one_lock_however_many_issues_it_works(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """A lock per issue would let a second run start the moment this one moved on."""
+    session, _ = build(config, tracker=decomposed, script=[])
+    session.lane_key = "bd-e"
+
+    with session as opened:
+        assert opened.lock_for("bd-e.1") is opened.lock_for("bd-e.2")
+        assert (config.run_dir() / "bd-e" / "lock.json").exists()
+
+    assert not (config.run_dir() / "bd-e.1" / "lock.json").exists()
+
+
+def test_without_a_lane_key_each_issue_still_gets_its_own_lock(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    session, _ = build(config, tracker=decomposed, script=[])
+
+    with session as opened:
+        assert opened.lock_for("bd-e.1") is not opened.lock_for("bd-e.2")
+
+
 # -- settling an issue ---------------------------------------------------------
 
 

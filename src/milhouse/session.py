@@ -63,6 +63,7 @@ class Session:
         audit: AuditLog | None = None,
         report: Reporter = lambda line: None,
         attach: bool = False,
+        lane_key: str | None = None,
         runner: Runner | None = None,
     ) -> None:
         """Assemble a session from its collaborators.
@@ -78,6 +79,12 @@ class Session:
             attach: Focus the workspace when creating it, so a human watches it
                 happen. Off by default, so a background run does not steal the
                 screen.
+            lane_key: Work every issue in the one lane labelled this, and hold
+                one lock on it. What ``milhouse run`` passes, so a whole target
+                lands on one reviewable branch
+                (:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`).
+                ``None`` gives each issue a lane and a lock of its own, which is
+                what ``step``, ``dispatch``, and ``reap`` want.
             runner: Run turns with this instead of starting agents in the pane.
                 Nothing in the package passes one; the tests do.
         """
@@ -88,6 +95,7 @@ class Session:
         self.audit = audit or AuditLog(config.repo_root)
         self.report = report
         self.attach = attach
+        self.lane_key = lane_key
         self.lanes = Lanes(client, config)
         self.branch: str | None = None
         self.workspace: Workspace | None = None
@@ -156,8 +164,15 @@ class Session:
         --claim`` is atomic — so all this stops is two processes working the
         same lane, which is the case that would drive one pane from two places.
 
+        A run works every issue in one lane, so it takes one lock, on the
+        target. Taking a lock per issue would let a second run of the same
+        target start the moment the first one moved on
+        (:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`).
+
         Args:
-            issue_id: The issue whose lane is being worked.
+            issue_id: The issue whose lane is being worked. Ignored when this
+                session has a :attr:`lane_key`, which names the only lane there
+                is.
 
         Returns:
             The held lock.
@@ -165,14 +180,15 @@ class Session:
         Raises:
             RunLockedError: A live process already holds this lane.
         """
-        held = self._locks.get(issue_id)
+        key = self.lane_key or issue_id
+        held = self._locks.get(key)
         if held is not None:
             return held
-        lock = RunLock(self.config.run_dir() / issue_id / LOCK_FILENAME)
+        lock = RunLock(self.config.run_dir() / key / LOCK_FILENAME)
         stale = lock.acquire()
         if stale is not None:
-            self.report(f"took over the lock on {issue_id} from a dead run ({stale.describe()})")
-        self._locks[issue_id] = lock
+            self.report(f"took over the lock on {key} from a dead run ({stale.describe()})")
+        self._locks[key] = lock
         return lock
 
     def _release_locks(self) -> None:
@@ -275,7 +291,9 @@ class Session:
 
         Each issue gets its own lane, its own branch, and its own agent name, so
         two turns can be in flight without either seeing the other's pane or
-        commits.
+        commits. A session with a :attr:`lane_key` works them all in that one
+        lane instead
+        (:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`).
 
         Args:
             issue: The claimed issue.
@@ -292,11 +310,14 @@ class Session:
             return self._runner
         if self.workspace is None:
             raise MilhouseError("no herdr workspace has been opened yet")
-        lane = self.lanes.open(
-            issue,
-            source_workspace=self.workspace.workspace_id,
-            base=self.branch or "HEAD",
-            focus=self.attach,
+        source = self.workspace.workspace_id
+        base = self.branch or "HEAD"
+        lane = (
+            self.lanes.open_for(
+                self.lane_key, source_workspace=source, base=base, focus=self.attach
+            )
+            if self.lane_key
+            else self.lanes.open(issue, source_workspace=source, base=base, focus=self.attach)
         )
         self._opened[issue.id] = lane
         self.report(f"  lane {lane.workspace_id} on {lane.branch} ({lane.path})")
@@ -346,7 +367,7 @@ class Session:
         if opened is not None:
             return opened
         return Lane(
-            issue_id=issue.id,
+            key=self.lane_key or issue.id,
             path=runner.workdir,
             branch=self.repo.at(runner.workdir).current_branch() or "",
             workspace_id="",

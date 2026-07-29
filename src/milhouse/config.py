@@ -25,6 +25,7 @@ __all__ = [
     "Config",
     "HerdrConfig",
     "LaneConfig",
+    "RunConfig",
     "TrackerConfig",
     "VerifyConfig",
     "config_path",
@@ -67,6 +68,32 @@ class AgentConfig(BaseModel):
     Use the ``ctrl+`` spelling. herdr also accepts ``c-c`` and ``C-c``, but not
     every control key has a short form: ``c-d`` is rejected with ``invalid_key``
     while ``ctrl+d`` works. ``ctrl-c``, with a hyphen, is rejected too.
+    """
+
+
+class RunConfig(BaseModel):
+    """What bounds one ``milhouse run``.
+
+    The two guardrails that only mean anything once nobody is watching
+    (:doc:`ADR 0022 <../../docs/decisions/0022-the-loop-is-earned>`). The
+    section is ``[run]`` rather than the ``[loop]`` that ADR 0017 deleted, so an
+    old config file cannot silently start meaning something new.
+    """
+
+    max_iterations: int = Field(default=50, ge=1)
+    """Turns one run may take before it stops and reports.
+
+    A ceiling on turns rather than on spend, and turns are not the same size
+    (:doc:`ADR 0012 <../../docs/decisions/0012-no-cost-controls-in-v1>`). Zero
+    is rejected: a run that stops at the ceiling having done nothing is worse
+    than an error, because it reports a stop reason that sounds like progress.
+    """
+
+    max_attempts: int = Field(default=3, ge=1)
+    """Attempts one issue gets before the run sets it aside and moves on.
+
+    Counted over the whole audit history rather than over one run, so
+    re-running does not hand a hopeless issue three more turns.
     """
 
 
@@ -146,6 +173,7 @@ class Config(BaseModel):
     """Root of the git repository milhouse is operating on."""
 
     agent: AgentConfig = Field(default_factory=AgentConfig)
+    run: RunConfig = Field(default_factory=RunConfig)
     verify: VerifyConfig = Field(default_factory=VerifyConfig)
     lane: LaneConfig = Field(default_factory=LaneConfig)
     tracker: TrackerConfig = Field(default_factory=TrackerConfig)
@@ -218,6 +246,8 @@ _ENV_MAP: dict[str, tuple[str, str, str]] = {
     "MILHOUSE_AGENT_START_TIMEOUT_MS": ("agent", "start_timeout_ms", "int"),
     "MILHOUSE_AGENT_EXIT_TIMEOUT_MS": ("agent", "exit_timeout_ms", "int"),
     "MILHOUSE_TURN_TIMEOUT_MS": ("agent", "turn_timeout_ms", "int"),
+    "MILHOUSE_RUN_MAX_ITERATIONS": ("run", "max_iterations", "int"),
+    "MILHOUSE_RUN_MAX_ATTEMPTS": ("run", "max_attempts", "int"),
     "MILHOUSE_VERIFY_COMMAND": ("verify", "command", "argv"),
     "MILHOUSE_VERIFY_TIMEOUT_MS": ("verify", "timeout_ms", "int"),
     "MILHOUSE_LANE_BRANCH_PREFIX": ("lane", "branch_prefix", "str"),

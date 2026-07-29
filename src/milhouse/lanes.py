@@ -1,10 +1,19 @@
-"""Where an issue's agent works.
+"""Where an agent works.
 
-A **lane** is a herdr worktree labelled with the issue id: a checkout of its own,
-on a branch of its own, in a workspace of its own
+A **lane** is a herdr worktree with a label on it: a checkout of its own, on a
+branch of its own, in a workspace of its own
 (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`). That
 container is what lets several agents work at once without treading on each
 other, and herdr already had it, so milhouse did not build one.
+
+**The label is the unit somebody will review**, which differs between the two
+ways of driving milhouse
+(:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`):
+
+- ``milhouse dispatch`` reviews an issue, so :meth:`Lanes.open` labels a lane
+  with the issue id and assigns it by the dependency rules below.
+- ``milhouse run`` reviews a target, so :meth:`Lanes.open_for` gives the whole
+  run one lane labelled with the target id and no rules at all.
 
 **herdr is the registry.** ``herdr worktree list`` answers what lanes exist and
 on what branches, and ``herdr workspace list`` answers which issue each one is
@@ -55,17 +64,19 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 @dataclass(frozen=True)
 class Lane:
-    """One issue's working directory, and the herdr container holding it.
+    """One working directory, and the herdr container holding it.
 
     Attributes:
-        issue_id: The issue this lane was opened for.
+        key: What the lane is labelled with, which is the unit somebody will
+            review: the issue for ``dispatch``, the target for ``run``
+            (:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`).
         path: The checkout the agent works in.
         branch: The branch it commits to.
         workspace_id: The herdr workspace holding the lane.
-        pane_id: The pane to start this issue's agent in.
+        pane_id: The pane to start the next agent in.
     """
 
-    issue_id: str
+    key: str
     path: Path
     branch: str
     workspace_id: str
@@ -79,7 +90,7 @@ class Lane:
     @property
     def agent_name(self) -> str:
         """The herdr agent name for this lane's turns, e.g. ``milhouse-bd-e.1``."""
-        return f"milhouse-{_UNSAFE.sub('-', self.issue_id)}"
+        return f"milhouse-{_UNSAFE.sub('-', self.key)}"
 
 
 class Lanes:
@@ -109,7 +120,7 @@ class Lanes:
         labels = self.client.workspace_labels()
         return [
             Lane(
-                issue_id=labels.get(worktree.workspace_id, ""),
+                key=labels.get(worktree.workspace_id, ""),
                 path=worktree.path,
                 branch=worktree.branch,
                 workspace_id=worktree.workspace_id,
@@ -118,8 +129,8 @@ class Lanes:
             if worktree.path != self.config.repo_root
         ]
 
-    def locate(self, issue_id: str) -> tuple[Lane, str | None] | None:
-        """The lane carrying ``issue_id`` and the tab it is in, without a pane.
+    def locate(self, key: str) -> tuple[Lane, str | None] | None:
+        """The lane labelled ``key`` and the tab it is in, without a pane.
 
         Two places carry an id: a lane's own workspace label, and the label of a
         tab added to somebody else's lane for a stacked issue. Both are looked
@@ -130,11 +141,11 @@ class Lanes:
         exists — reconciling, or reaping a turn whose agent already has a pane.
 
         Args:
-            issue_id: The issue to look for.
+            key: The label to look for: an issue id, or a run's target id.
 
         Returns:
             The lane and its tab id (``None`` for a lane of its own), or ``None``
-            when no lane carries the issue.
+            when no lane carries the label.
         """
         labels = self.client.workspace_labels()
         open_worktrees = [
@@ -143,24 +154,24 @@ class Lanes:
             if worktree.workspace_id
         ]
         for worktree in open_worktrees:
-            if labels.get(worktree.workspace_id) == issue_id:
-                return self._lane(issue_id, worktree), None
+            if labels.get(worktree.workspace_id) == key:
+                return self._lane(key, worktree), None
         for worktree in open_worktrees:
             for tab in self.client.tabs(worktree.workspace_id):
-                if tab.get("label") == issue_id:
-                    return self._lane(issue_id, worktree), str(tab["tab_id"])
+                if tab.get("label") == key:
+                    return self._lane(key, worktree), str(tab["tab_id"])
         return None
 
-    def find(self, issue_id: str) -> Lane | None:
-        """The lane carrying ``issue_id``, with a pane ready for an agent.
+    def find(self, key: str) -> Lane | None:
+        """The lane labelled ``key``, with a pane ready for an agent.
 
         Args:
-            issue_id: The issue to look for.
+            key: The label to look for.
 
         Returns:
             The lane, or ``None`` when there is none.
         """
-        located = self.locate(issue_id)
+        located = self.locate(key)
         if located is None:
             return None
         lane, tab_id = located
@@ -202,14 +213,38 @@ class Lanes:
 
         predecessors = [lane for lane in map(self.find, issue.blocked_by) if lane is not None]
         if len(predecessors) > 1:
-            where = ", ".join(f"{lane.issue_id} on {lane.branch}" for lane in predecessors)
+            where = ", ".join(f"{lane.key} on {lane.branch}" for lane in predecessors)
             raise MilhouseError(
                 f"{issue.id} depends on work in more than one lane ({where}), and which "
                 "branch it should continue from is not decided. Land one of them first."
             )
         if predecessors:
             return self._stack_on(predecessors[0], issue, focus=focus)
-        return self._new_lane(issue, source_workspace=source_workspace, base=base, focus=focus)
+        return self._new_lane(issue.id, source_workspace=source_workspace, base=base, focus=focus)
+
+    def open_for(self, key: str, *, source_workspace: str, base: str, focus: bool = False) -> Lane:
+        """The one lane labelled ``key``, creating it if there is none.
+
+        What ``milhouse run`` opens. None of the dependency rules in :meth:`open`
+        apply, because every issue in a run shares this lane by construction:
+        there is one base branch, so a join has nothing to choose between, and
+        an issue whose blocker ran elsewhere does not drag the run into
+        somebody else's lane
+        (:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`).
+
+        Args:
+            key: What to label the lane with, which for a run is the target id.
+            source_workspace: The workspace of the primary checkout.
+            base: Ref a new lane branches from.
+            focus: Bring a newly created lane to the front.
+
+        Returns:
+            The lane, with a pane ready for an agent.
+        """
+        existing = self.find(key)
+        if existing is not None:
+            return existing
+        return self._new_lane(key, source_workspace=source_workspace, base=base, focus=focus)
 
     def _stack_on(self, predecessor: Lane, issue: Issue, *, focus: bool) -> Lane:
         """Give ``issue`` a tab in the lane its blocker ran in.
@@ -221,22 +256,22 @@ class Lanes:
             predecessor.workspace_id, predecessor.path, issue.id, focus=focus
         )
         return Lane(
-            issue_id=issue.id,
+            key=issue.id,
             path=predecessor.path,
             branch=predecessor.branch,
             workspace_id=predecessor.workspace_id,
             pane_id=pane_id,
         )
 
-    def _new_lane(self, issue: Issue, *, source_workspace: str, base: str, focus: bool) -> Lane:
-        """Open a worktree for ``issue``, re-using the checkout if one survived."""
-        branch = f"{self.config.lane.branch_prefix}{issue.id}"
+    def _new_lane(self, key: str, *, source_workspace: str, base: str, focus: bool) -> Lane:
+        """Open a worktree labelled ``key``, re-using the checkout if one survived."""
+        branch = f"{self.config.lane.branch_prefix}{key}"
         sleeping = self.dormant(branch)
         if sleeping is not None:
             worktree = self.client.open_worktree(
                 source_workspace=source_workspace,
                 path=sleeping.path,
-                label=issue.id,
+                label=key,
                 focus=focus,
             )
         else:
@@ -244,12 +279,12 @@ class Lanes:
                 source_workspace=source_workspace,
                 branch=branch,
                 base=base,
-                label=issue.id,
+                label=key,
                 focus=focus,
             )
         self._keep_git_out_of_it(worktree.path)
         return Lane(
-            issue_id=issue.id,
+            key=key,
             path=worktree.path,
             branch=worktree.branch,
             workspace_id=worktree.workspace_id,
@@ -258,10 +293,10 @@ class Lanes:
 
     # -- plumbing ---------------------------------------------------------
 
-    def _lane(self, issue_id: str, worktree: Worktree) -> Lane:
+    def _lane(self, key: str, worktree: Worktree) -> Lane:
         """Build a :class:`Lane` from a registry entry, with no pane chosen."""
         return Lane(
-            issue_id=issue_id,
+            key=key,
             path=worktree.path,
             branch=worktree.branch,
             workspace_id=worktree.workspace_id,

@@ -487,8 +487,7 @@ def _lane_branch(config: Config, issue: Issue) -> tuple[str, str]:
     fresh = f"{config.lane.branch_prefix}{issue.id}"
     try:
         held = {
-            lane.issue_id: lane
-            for lane in Lanes(HerdrClient(cwd=config.repo_root), config).registry()
+            lane.key: lane for lane in Lanes(HerdrClient(cwd=config.repo_root), config).registry()
         }
     except MilhouseError as exc:
         return fresh, f"herdr unavailable, so this is a guess: {exc}"
@@ -505,6 +504,11 @@ def _print_lanes(client: HerdrClient, config: Config) -> None:
     milhouse keeps no lane state, so this is a read of ``herdr worktree list``
     joined to the workspace labels
     (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
+
+    The first column is the label, which is an issue id for a lane ``dispatch``
+    opened and a target id for one ``run`` did
+    (:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`). Both are
+    beads ids, so the column is headed rather than explained per row.
     """
     try:
         lanes = Lanes(client, config).registry()
@@ -514,9 +518,9 @@ def _print_lanes(client: HerdrClient, config: Config) -> None:
     if not lanes:
         return
     typer.echo("")
-    typer.echo(f"lanes ({len(lanes)})")
+    typer.echo(f"lanes ({len(lanes)})  issue or target, branch, checkout")
     for lane in lanes:
-        held = lane.issue_id or "(no workspace holds it)"
+        held = lane.key or "(no workspace holds it)"
         typer.echo(f"  {held}  {lane.branch}  {lane.path}")
 
 

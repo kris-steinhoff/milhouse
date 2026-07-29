@@ -19,6 +19,10 @@ An unset flag is not the same as an explicit one: `None` overrides are dropped b
 kind = "claude"
 args = ["--permission-mode", "acceptEdits"]
 
+[run]
+max_iterations = 50
+max_attempts = 3
+
 [verify]
 command = ["uv", "run", "pytest", "-m", "not herdr and not beads"]
 
@@ -41,7 +45,22 @@ How the interactive agent is started in its herdr pane. See [ADR 0003](decisions
 
 `--agent` on the CLI overrides `agent.kind`.
 
-There is no `[loop]` section. `max_iterations`, `max_attempts`, `on_blocked`, and `blocked_timeout_ms` were all removed: they only ever answered questions an unattended loop asks, and there is no loop ([ADR 0017](decisions/0017-no-loop-until-it-is-earned.md)). What was left of the section, `turn_timeout_ms`, bounds one agent turn and moved to `[agent]`.
+## `[run]`
+
+What bounds one `milhouse run`. Nothing here affects `step`, `dispatch`, or `reap`, which take one turn and hand back. See [ADR 0022](decisions/0022-the-loop-is-earned.md).
+
+| Key              | Type | Default | Environment                   | Meaning                                                                       |
+| ---------------- | ---- | ------- | ----------------------------- | ----------------------------------------------------------------------------- |
+| `max_iterations` | int  | `50`    | `MILHOUSE_RUN_MAX_ITERATIONS` | Turns one run may take before it stops and reports.                           |
+| `max_attempts`   | int  | `3`     | `MILHOUSE_RUN_MAX_ATTEMPTS`   | Attempts one issue gets before the run defers it and works on something else. |
+
+`--max-iterations` and `--max-attempts` override these. Both must be at least 1: zero is rejected rather than silently meaning a run that stops at the ceiling having done nothing, which reports a stop reason that sounds like progress.
+
+`max_iterations` bounds turns, not spend, and turns are not the same size. It is the only thing bounding an overnight run ([ADR 0012](decisions/0012-no-cost-controls-in-v1.md)).
+
+`max_attempts` is counted over the whole audit history rather than over one run, so re-running a target does not hand a hopeless issue three more turns. An issue that uses them up is deferred with the reason on it: still unfinished, still listed, no longer offered as ready. `bd undefer <id>` is how it comes back, and the run's report names everything it set aside.
+
+The old `[loop]` section is not this one under a new name, and the name is not reused so an old config file cannot silently start meaning something new. `on_blocked` and `blocked_timeout_ms` are gone for good: a blocked agent stops the run, because nobody is there to approve and every later turn would meet the same prompt. `turn_timeout_ms` bounds one agent turn regardless of what drives it, and stayed in `[agent]`.
 
 ## `[verify]`
 
@@ -111,6 +130,8 @@ A reused workspace is not an empty one, which is why `self_pane` exists. Its pan
 | `MILHOUSE_AGENT_START_TIMEOUT_MS` | `agent.start_timeout_ms` |
 | `MILHOUSE_AGENT_EXIT_TIMEOUT_MS`  | `agent.exit_timeout_ms`  |
 | `MILHOUSE_TURN_TIMEOUT_MS`        | `agent.turn_timeout_ms`  |
+| `MILHOUSE_RUN_MAX_ITERATIONS`     | `run.max_iterations`     |
+| `MILHOUSE_RUN_MAX_ATTEMPTS`       | `run.max_attempts`       |
 | `MILHOUSE_VERIFY_COMMAND`         | `verify.command`         |
 | `MILHOUSE_VERIFY_TIMEOUT_MS`      | `verify.timeout_ms`      |
 | `MILHOUSE_LANE_BRANCH_PREFIX`     | `lane.branch_prefix`     |

@@ -24,6 +24,8 @@ def test_defaults_apply_without_a_config_file(repo: Path) -> None:
     assert resolved.agent.turn_timeout_ms == 1_800_000
     assert resolved.tracker.label is None
     assert resolved.tracker.parent is None
+    assert resolved.run.max_iterations == 50
+    assert resolved.run.max_attempts == 3
     assert resolved.herdr.read_source == "visible"
 
 
@@ -139,3 +141,25 @@ def test_a_repository_can_fence_the_ready_queue(repo: Path) -> None:
 
     assert resolved.tracker.label == "agent"
     assert resolved.tracker.parent == "bd-e"
+
+
+def test_the_run_caps_are_layered_like_everything_else(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_config(repo, "[run]\nmax_iterations = 12\nmax_attempts = 5\n")
+    monkeypatch.setenv("MILHOUSE_RUN_MAX_ITERATIONS", "20")
+
+    resolved = config_module.load(repo, overrides={"run": {"max_attempts": 2}})
+
+    assert resolved.run.max_iterations == 20
+    assert resolved.run.max_attempts == 2
+
+
+@pytest.mark.parametrize("key", ["max_iterations", "max_attempts"])
+@pytest.mark.parametrize("value", [0, -1])
+def test_a_run_cap_below_one_is_refused(repo: Path, key: str, value: int) -> None:
+    """A ceiling of zero is a run that does nothing and says it hit the ceiling."""
+    write_config(repo, f"[run]\n{key} = {value}\n")
+
+    with pytest.raises(ConfigError, match=f"run.{key}"):
+        config_module.load(repo)
