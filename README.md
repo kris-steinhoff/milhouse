@@ -1,6 +1,6 @@
 # milhouse
 
-An agentic AI orchestrator. It takes your tracker's ready queue and works through it one issue at a time, each with a fresh agent.
+An agentic AI orchestrator. It takes your tracker's ready queue and works through it, one issue per agent, each with a fresh context window.
 
 The pieces already existed. milhouse is the thing that wires them together:
 
@@ -10,13 +10,13 @@ The pieces already existed. milhouse is the thing that wires them together:
 
 The defining property of a [ralph loop](https://ghuntley.com/ralph/) is a **fresh context window every iteration**. milhouse starts a new agent in the pane each time and exits it when the turn ends. State lives in beads and git, never in an accumulating chat session.
 
-**One iteration is the unit.** `milhouse step` claims an issue, gives it to a fresh agent, and hands straight back to you. `milhouse dispatch -n 3` and `milhouse reap` are that same turn cut in half, so three can run at once. `milhouse run <target>` repeats it until a beads epic or issue is finished ([ADR 0022](docs/decisions/0022-the-loop-is-earned.md)).
+**One iteration is the unit.** `milhouse step` claims an issue, gives it to a fresh agent, and hands straight back to you. `milhouse dispatch -n 3` and `milhouse reap` are that same turn cut in half, so three can run at once. `milhouse run <target>` repeats it until a beads epic or issue is finished ([ADR 0022](docs/decisions/0022-the-loop-is-earned.md)), and `milhouse run <target> --count N` keeps N of those turns in flight ([ADR 0024](docs/decisions/0024-an-integration-lane-and-worker-lanes.md)).
 
 **Start with `step`, then run.** The loop's policy — three attempts then set the issue aside, stop on an agent that needs a human — was written from watched iterations rather than guessed, and yours still has to earn the same trust. One step costs one turn to find out that your issue descriptions are too thin for an agent with no context. Fifty is the expensive way.
 
 **Getting work into the tracker is your job.** milhouse does not decompose anything and has no planning agent. Issues arrive in beads however you like — by hand, from `bd create --graph`, or from an agent session driven by a prompt you own — and milhouse works whatever `bd ready` offers ([ADR 0018](docs/decisions/0018-no-task-milhouse-works-the-ready-queue.md)).
 
-**Work happens in a lane**, a git worktree of its own on a branch of its own, so your checkout is left alone and several agents can run at once. `dispatch` gives each issue a lane; `run` gives the whole target one, so it lands as a single branch you review as a piece ([ADR 0020](docs/decisions/0020-a-lane-is-a-herdr-worktree.md), [ADR 0023](docs/decisions/0023-a-run-has-one-lane.md)). herdr owns the worktrees and milhouse keeps no record of them. Landing the branches is still yours.
+**Work happens in a lane**, a git worktree of its own on a branch of its own, so your checkout is left alone and several agents can run at once. `dispatch` gives each issue a lane; `run` gives the whole target an integration lane, and above `--count 1` each issue in flight a worker lane branched from it and merged back into it, so the target lands as a single branch you review as a piece ([ADR 0020](docs/decisions/0020-a-lane-is-a-herdr-worktree.md), [ADR 0023](docs/decisions/0023-a-run-has-one-lane.md), [ADR 0024](docs/decisions/0024-an-integration-lane-and-worker-lanes.md)). herdr owns the worktrees and milhouse keeps no record of them. Landing a `dispatch` lane is still yours, and so is landing the integration branch itself.
 
 ## Prerequisites
 
@@ -75,7 +75,7 @@ milhouse run bd-1
 
 Alpha, and installed locally rather than published to PyPI. The step and the loop over it both work. The prompts are still being learned by observation, as the ralph methodology expects, and so is the loop's policy now that there are runs to observe.
 
-Concurrency is the part that is not finished. `dispatch` and `reap` will run several agents at once, but nothing merges the branches they produce, and an issue whose blockers ran in two different lanes is refused rather than guessed at. `milhouse run` avoids both by using one lane, which is why it is serial.
+Concurrency works and is young. `milhouse run --count N` keeps N turns in flight, each in its own lane, and merges every successful one into the run's integration branch as it settles ([ADR 0024](docs/decisions/0024-an-integration-lane-and-worker-lanes.md)). It has been watched end to end on a scratch repository, which is where its rough edges came from: merges conflict often, a turn can be collected before its agent ever started, and the per-lane bootstrap tax is back to once per issue. `dispatch` and `reap` still merge nothing, and an issue whose blockers ran in two different `dispatch` lanes is still refused rather than guessed at. Start at `--count 1`, which is the serial run, and raise it once you have watched one.
 
 ## License
 

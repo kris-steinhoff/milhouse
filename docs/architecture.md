@@ -48,29 +48,50 @@ Neither half is a loop. `dispatch` starts a bounded number of turns once and ret
 `milhouse run <target>` is the loop over that turn ([ADR 0022](decisions/0022-the-loop-is-earned.md)). The target is a beads id, so nothing about it reintroduces the task definition [ADR 0018](decisions/0018-no-task-milhouse-works-the-ready-queue.md) removed.
 
 ```
-milhouse run <target>
+milhouse run <target> [--count N]
   │
   ├─ scope.resolve(target) ─► a Tracker fenced to the target:
   │                             an epic     → bd ready --parent <target>
   │                             a leaf issue → the target + its unmet blockers
   │
-  ├─ open the session ──────► with lane_key=<target>: ONE lane, ONE lock
+  ├─ open the session ──────► with lane_key=<target>: the INTEGRATION lane and its lock
+  │                           worker_lanes above --count 1: a lane and a lock per issue
   │
-  └─ repeat ───────────────► step(), with policy=unattended(max_attempts)
+  └─ repeat ───────────────► the body, with policy=unattended(max_attempts)
+        --count 1 → step():   claim, wait, settle, in the integration lane
+        --count N → Parallel: dispatch up to N, poll at [run] poll_ms, reap,
+                              merge each success into the integration branch,
+                              hand back one finished turn per call
         nothing claimed?  → nothing_ready() says finished or deadlocked, stop
-        should_halt()     → blocked agent, milhouse error, dirty tree, ceiling
+        should_halt()     → blocked agent, milhouse error, dirty tree, a merge
+                            that did not land, a red integration branch, ceiling
+        halting?          → drain: start nothing more, finish what is in flight
         otherwise         → go again
 ```
 
-Three things are worth reading off that. **Scope is a tracker**, so no layer below `run` learns that a target exists. **The lane is the target's**, not each issue's, so the whole run lands on one reviewable branch and the undecided two-blocker join cannot fire ([ADR 0023](decisions/0023-a-run-has-one-lane.md)). And **the loop body is an argument**, defaulting to one `step`, so a later `--count N` swaps in dispatch-then-reap without the loop learning anything new.
+Three things are worth reading off that. **Scope is a tracker**, so no layer below `run` learns that a target exists. **The lanes nest**: the target's lane is the branch a person reviews, and above `--count 1` each issue in flight also gets a worker lane branched from that branch and merged back into it as its turn settles ([ADR 0023](decisions/0023-a-run-has-one-lane.md), [ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)). And **the loop body is an argument**, defaulting to one `step`, which is how `--count N` arrived: `parallel.Parallel` is a different body rather than a different loop. What that actually cost is [below](#the-empty-layer-and-what-filling-it-cost).
 
-The agent is still started fresh every iteration and exited when the turn ends. Reusing the lane's checkout does not change that, because the fresh context window comes from restarting the agent rather than from the worktree.
+The agent is still started fresh every iteration and exited when the turn ends. Reusing a lane's checkout does not change that, because the fresh context window comes from restarting the agent rather than from the worktree.
 
 ## Lanes
 
 Every turn happens in a **lane**: a herdr worktree with a label on it, which is a checkout of its own, on a branch of its own, in a workspace of its own ([ADR 0020](decisions/0020-a-lane-is-a-herdr-worktree.md)). That container is what lets several agents work at once, and herdr already had it.
 
-**The label is the unit somebody will review**, and that differs between the two ways of driving milhouse ([ADR 0023](decisions/0023-a-run-has-one-lane.md)). `dispatch` reviews an issue, so a lane is labelled with an issue id and assigned by the rules below. `run` reviews a target, so the whole run gets one lane labelled with the target id, and none of the rules apply.
+**The label is the unit somebody will review**, and that differs between the two ways of driving milhouse ([ADR 0023](decisions/0023-a-run-has-one-lane.md)). `dispatch` reviews an issue, so a lane is labelled with an issue id and assigned by the rules below. `run` reviews a target, so the run gets a lane labelled with the target id, and none of the rules apply.
+
+A concurrent run needs both keys, one nested inside the other ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)):
+
+| Lane            | Labelled with | On branch                    | Holds                                                 |
+| --------------- | ------------- | ---------------------------- | ----------------------------------------------------- |
+| **integration** | the target    | `milhouse/<target>`          | the branch a person reviews; every merge happens here |
+| **worker**      | an issue      | `milhouse/<target>--<issue>` | one turn, branched from the integration branch        |
+| `dispatch`      | an issue      | `milhouse/<issue>`           | one turn, branched from the primary checkout          |
+
+At `--count 1` there are no worker lanes at all, so a serial run is ADR 0023 unchanged: it works in the integration lane and has nothing to merge into it.
+
+**The worker separator is `--`, and that is git's decision rather than milhouse's.** Refs are a directory hierarchy, so `refs/heads/milhouse/bd-e` and `refs/heads/milhouse/bd-e/bd-e.1` are a file and a directory of the same name, and git refuses the second with `cannot lock ref`. The integration branch is the one a person reviews, so the worker branch is the one that gave way. It lives in one constant, `lanes.WORKER_SEPARATOR`, because `milhouse status` splits on it to print worker lanes under the integration lane they land in, and two spellings would silently stop grouping rather than fail.
+
+A worker lane is labelled with its issue and not with its namespaced branch, which is what lets `Lanes.locate` find it and reconciliation tell an in-flight turn from an orphaned claim. The branch is then the only thing distinguishing it from a `dispatch` lane for the same issue, which is why an existing worker lane is looked up by branch.
 
 **herdr is the registry.** `herdr worktree list` says what lanes exist and on what branches; `herdr workspace list` says what each one is labelled with. milhouse keeps no lane state — the same rule it applies to issues.
 
@@ -89,7 +110,7 @@ herdr checks lanes out under `~/.herdr/worktrees/`, outside the repository, so a
 
 The defining property of ralph is a **fresh context window every iteration**. milhouse gets that by starting a new agent in the pane each step and exiting it when the turn ends, rather than reusing one long-lived session. State lives in beads and git, never in an accumulating chat session.
 
-`milhouse run` reuses one lane for every iteration and does not weaken that: the agent is still started fresh and exited each turn, and the only thing carried between them is what a `bd note` and a commit carry.
+`milhouse run` reuses a lane across iterations and does not weaken that: the agent is still started fresh and exited each turn, and the only thing carried between them is what a `bd note` and a commit carry. That holds whether the turns share the integration lane or each get a worker lane of their own.
 
 ## The layering
 
@@ -117,20 +138,38 @@ It also means two decision tables instead of one, and a table is the cheapest th
 
 **Repetition was a layer with nothing in it**, from [ADR 0017](decisions/0017-no-loop-until-it-is-earned.md) until [ADR 0022](decisions/0022-the-loop-is-earned.md). The argument for naming it anyway was that having it named and empty is what made removing the loop cost one file: nothing below it had a position on how many iterations there would be, so nothing below it changed, and putting one back would be cheap for the same reason.
 
-That claim has now been tested, and it mostly held. `run.py` is the new file, and none of the four layers under it moved: `Session` did not learn what a run is, `step()` did not learn that it might be called again, and `outcome.classify` was not touched at all.
+That claim has now been tested twice: once by [ADR 0022](decisions/0022-the-loop-is-earned.md), which put a loop back, and once by [ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md), which made the loop concurrent. The first time it mostly held. `run.py` was the new file, and none of the four layers under it moved: `Session` did not learn what a run is, `step()` did not learn that it might be called again, and `outcome.classify` was not touched at all.
 
-What it did cost is worth recording, because it is where the layering was not free:
+What the two cost is worth recording, because it is where the layering was not free:
 
-| Change                                    | Layer     | Why it was needed                                                                                                                           |
-| ----------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Iteration.attempt`                       | values    | A pure policy cannot count attempts by looking them up, so the count had to arrive on the value it is handed                                |
-| `policy.unattended`, `Tracker.defer`      | Judgement | A supervised policy hands every decision to a person; an unattended one has to settle "give up on this issue" itself                        |
-| `Session(lane_key=...)`, `Lanes.open_for` | Resources | A run reviews a target rather than an issue, so the lane it works in is a different lane ([ADR 0023](decisions/0023-a-run-has-one-lane.md)) |
-| `scope.py`                                | Resources | A target fences the ready queue, and expressing that as a `Tracker` is what kept it out of every layer above                                |
+| Change | Layer | For | Why it was needed |
+| --- | --- | --- | --- |
+| `Iteration.attempt` | values | 0022 | A pure policy cannot count attempts by looking them up, so the count had to arrive on the value it is handed |
+| `policy.unattended`, `Tracker.defer` | Judgement | 0022 | A supervised policy hands every decision to a person; an unattended one has to settle "give up on this issue" itself |
+| `Session(lane_key=...)`, `Lanes.open_for` | Resources | 0022 | A run reviews a target rather than an issue, so the lane it works in is a different lane ([ADR 0023](decisions/0023-a-run-has-one-lane.md)) |
+| `scope.py` | Resources | 0022 | A target fences the ready queue, and expressing that as a `Tracker` is what kept it out of every layer above |
+| `parallel.py` | Repetition | 0024 | The body itself: dispatch up to N, poll the lanes, hand back one finished turn per call so `should_halt` stays pure over one iteration |
+| `run.Draining`, `run._drain` | Repetition | 0024 | A halt stops starting work, not work already started, and a concurrent body has N-1 turns whose agents are still going when the table fires |
+| `should_halt`'s `conflict` and `integration` rows | Repetition | 0024 | Two ways to stop that a serial run cannot produce: a branch that did not land, and a branch that went red once two histories were on it |
+| `RunResult.still_running`, `merged()`, `unmerged()` | Repetition | 0024 | "Closed" and "on the branch you are about to review" stop being the same thing, and a report whose numbers look complete is worse than a short one |
+| `Parallel(max_iterations=...)` | Repetition | 0024 | A turn is spent when it is dispatched rather than when it is reported, so the ceiling has to be counted where the dispatching happens |
+| `Session(worker_lanes=...)`, `integration_lane()`, `lock_for` keyed by the issue | Resources | 0024 | Two levels of lane means two levels of lock: the target's, and one per lane an issue is being worked in |
+| `Lanes.open_worker`, `worker_branch`, `WORKER_SEPARATOR` | Resources | 0024 | A worker lane's branch is namespaced under the target so two runs cannot collide, and git refused the first spelling of that name |
+| `step._land`, `step._verify_integration`, `step.merge_line` | Work | 0024 | Landing a turn is part of finishing it, and a merge that joined two histories leaves a tree the gate has never been run against |
+| `MergeRecord`, `Iteration.merge`, `Iteration.integration_verified` | values | 0024 | A pure halt table cannot ask git what a merge did, so what it did has to arrive on the value it is handed — the same shape as `Iteration.attempt` |
+| `--count`, `cli._body`, `[run] max_parallel`, `[run] poll_ms` | surface | 0024 | The width is a flag and a config key, and `cli._body` is the one place that turns it into a body |
 
-None of those is repetition leaking downwards. Each is a thing that was underspecified while a person was in the loop, and had to be decided once nobody was. That is the distinction to apply to the next addition, alongside the original test: **if a new piece would need to know how many units of work are coming, it is in the wrong layer.**
+**The 0022 rows are not repetition leaking downwards.** Each is a thing that was underspecified while a person was in the loop, and had to be decided once nobody was.
 
-The claim is due to be tested once more. A `--count N` run would replace `run.py`'s loop body and nothing else, which is why the body is an argument rather than a call to `step`.
+**The 0024 prediction did not hold, and it is worth being exact about how.** The prediction was that a `--count N` run would replace `run.py`'s loop body and nothing else. What actually shipped added `parallel.py` and changed `run.py`, `session.py`, `step.py`, `lanes.py`, `models.py`, `config.py`, and `cli.py`.
+
+What did **not** leak is the count. Nothing below the Repetition layer learned how many turns are coming: `worker_lanes` is a mode rather than a number, `step._land` merges one turn without knowing whether another exists, `outcome.py` and `policy.py` were not touched at all, and N itself lives in `parallel.py`, the config key it arrives from, and the one line of `cli.py` that turns one into the other. The original test survived the thing it was written for.
+
+What leaked instead is **simultaneity**, which is a different fact about a run than its width. Two turns at once means two branches where there was one, so every layer that touches a branch had to learn the difference between the branch a turn commits to and the branch a person reviews: `lanes.py` to name it, `session.py` to open and lock it, `step.py` to merge into it and verify it, `models.py` to carry what the merge did, and `run.py` to have an opinion when it fails. The leak went sideways rather than downwards.
+
+The count did leak once, inside the Repetition layer: `Parallel` is handed `max_iterations` as well, because `run()`'s own counter sees a turn only when it is handed back, and a `--count 4` run would overshoot its ceiling by three. Two objects now count the same budget, and they agree only because `Parallel` counts what it has dispatched rather than what it has reported.
+
+So the test to apply to the next addition is the original one plus what the second test taught: **if a new piece would need to know how many units of work are coming, it is in the wrong layer — but needing to know that another turn exists right now is a different question, and the answer to it is a mode, a branch, or a lock rather than a number.**
 
 ## Modules
 
@@ -139,7 +178,7 @@ src/milhouse/
   cli.py         typer app — step, run, dispatch, reap, status, doctor. Parsing only.
   completion.py  what each parameter offers on tab. Filesystem and constants only.
   config.py      layered: defaults < .milhouse/config.toml < env < flags
-  models.py      Issue, Iteration (pydantic values)
+  models.py      Issue, Iteration, MergeRecord, Graph (pydantic values)
   rundir.py      .milhouse/runs — turn artifacts and the run lock
   audit.py       AuditLog — the iteration history, in bd's audit trail
   lanes.py       Lane, Lanes — which worktree a turn is worked in
@@ -212,7 +251,7 @@ The dependency graph is the only structure milhouse reads, and `bd` owns it. Not
 | Who is working a lane              | `.milhouse/runs/<lane-key>/lock.json`    | bookkeeping    |
 | Exact prompt sent, pane transcript | `.milhouse/runs/<issue-id>/iter-NNN.*`   | bookkeeping    |
 
-The lane key is the issue for a `dispatch` and the target for a `run` ([ADR 0023](decisions/0023-a-run-has-one-lane.md)), so a run holds one lock however many issues it works. Turn artifacts stay filed under the issue that was worked, because that is what a post-mortem looks for.
+The lane key is the issue for a `dispatch` and the target for a `run`'s integration lane ([ADR 0023](decisions/0023-a-run-has-one-lane.md)), so a serial run holds one lock however many issues it works. A concurrent one holds the target's lock plus one per worker lane, keyed by the issue exactly as `dispatch` keys its own, so nothing else can be working an issue a run has in flight ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)). Turn artifacts stay filed under the issue that was worked, because that is what a post-mortem looks for.
 
 **A run keeps nothing of its own either.** What it deferred is in beads, what it committed is in git, what it did is in the audit log, and how far it got is recoverable from those three. There is no run file.
 

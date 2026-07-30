@@ -63,7 +63,7 @@ What bounds one `milhouse run`. Nothing here affects `step`, `dispatch`, or `rea
 
 At `1` a run is exactly what [ADR 0023](decisions/0023-a-run-has-one-lane.md) describes: one lane, one turn at a time, nothing to merge. Above `1` each issue gets a worker lane branched from the run's integration branch and merged back into it as its turn settles, and `max_iterations` then counts turns that have been _started_ rather than finished, so a wide run cannot overshoot its ceiling. A width above what the dependency graph can use is accepted rather than refused, because it is harmless: `milhouse run <target> --count N --dry-run` prints the waves and says how much of `N` the target can actually use.
 
-`poll_ms` is ignored by a serial run, which waits on each turn and has nothing to poll. Every poll asks herdr about each open lane and re-reads the audit trail, against turns that take minutes, so the default is deliberately unhurried.
+`poll_ms` is ignored by a serial run, which waits on each turn and has nothing to poll. Every poll asks herdr about each open lane and re-reads the audit trail, against turns that take minutes, so the default is deliberately unhurried. It is also the grace period on `[agent] turn_timeout_ms`: a concurrent run gives up on a lane herdr has lost one poll interval past the turn timeout, rather than a round early because the deadline fell between two checks.
 
 `max_iterations` bounds turns, not spend, and turns are not the same size. It is the only thing bounding an overnight run ([ADR 0012](decisions/0012-no-cost-controls-in-v1.md)).
 
@@ -84,7 +84,9 @@ A non-zero exit re-opens the issue with the outcome `rejected` and appends the t
 
 Empty by default, so out of the box milhouse takes the agent at its word. There is no safe guess about a given repository's gate, and a wrong one fails every iteration. Point it at the fast suite rather than the full matrix: it runs at least once per closed issue.
 
-**A concurrent run pays for this twice per merged issue.** Once in the worker lane the turn happened in, and once on the integration branch after that lane is merged into it, because a lane that is green against its own base can be red combined with another one and the merged tree is the only place that shows up ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)). A merge that fast-forwarded is skipped, since it leaves the tree the lane was already verified against, so a run working one issue at a time pays exactly what it paid before. Cost the gate accordingly: a five-minute suite on a ten-issue epic worked concurrently is up to a hundred minutes of verification, not fifty. With no command configured there are no runs at all, neither the first nor the second.
+**A concurrent run can pay for this twice per merged issue.** Once in the worker lane the turn happened in, and once on the integration branch after that lane is merged into it, because a lane that is green against its own base can be red combined with another one and the merged tree is the only place that shows up ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)).
+
+The doubling is a **ceiling rather than a rate**, and the gap between the two is large. The second run happens only after a merge that joined two histories: a fast-forward is skipped, since it leaves the tree the worker lane was already verified against, and a merge that conflicted has nothing to verify. In the watched runs [ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md#what-the-first-concurrent-runs-taught) records, that was **one merge in eight** — three fast-forwarded, four conflicted, one joined. So a five-minute suite on a ten-issue epic has a worst case of a hundred minutes of verification rather than fifty, and those runs paid nearer the fifty. A run working one issue at a time pays exactly what it paid before, and with no command configured there are no runs at all, neither the first nor the second.
 
 A red integration branch stops the run and reverts nothing. The merge stays, the issue stays closed, and the tail of the output is appended to that issue as a note, because the work was genuinely done and it is the combination that is red.
 
@@ -101,6 +103,8 @@ Where an issue's agent works. See [ADR 0020](decisions/0020-a-lane-is-a-herdr-wo
 | `branch_prefix` | string | `"milhouse/"` | `MILHOUSE_LANE_BRANCH_PREFIX` | Prefix for a lane's branch, e.g. `milhouse/bd-e.1`. |
 
 A lane is a herdr worktree labelled with the issue id, and herdr chooses where it goes — under `~/.herdr/worktrees/<repo>/<branch>` — so there is no key saying where lanes live. Nothing here turns lanes off: every turn happens in one.
+
+The prefix is in front of every branch milhouse creates, which is three shapes rather than one ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)): `milhouse/<issue>` for a `dispatch` lane, `milhouse/<target>` for a run's integration branch, and `milhouse/<target>--<issue>` for a worker branch inside that run. The `--` is not configurable, and it is not `/` because git cannot hold `milhouse/bd-e` and `milhouse/bd-e/bd-e.1` at the same time.
 
 ## `[tracker]`
 

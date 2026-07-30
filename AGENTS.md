@@ -55,7 +55,7 @@ Watch a run with `gh run watch`, and read a failure with `gh run view --log-fail
 
 ## Architecture And Conventions
 
-`milhouse` decomposes a task definition into beads issues, then works through them one at a time, each with a fresh agent in a herdr pane. One iteration is the primitive and `milhouse step` runs exactly one ([ADR 0014](docs/decisions/0014-step-is-the-primitive.md)). There is deliberately no command that repeats it yet ([ADR 0017](docs/decisions/0017-no-loop-until-it-is-earned.md)). Source lives in `src/milhouse/`, and tests mirror it in `tests/`.
+`milhouse` works its tracker's ready queue, each issue with a fresh agent in a herdr pane ([ADR 0018](docs/decisions/0018-no-task-milhouse-works-the-ready-queue.md)). One iteration is the primitive and `milhouse step` runs exactly one ([ADR 0014](docs/decisions/0014-step-is-the-primitive.md)). `milhouse run <target>` is the loop over it, which [ADR 0022](docs/decisions/0022-the-loop-is-earned.md) earned once there were watched iterations to write its policy from, and `--count N` works several issues at once, each in a worker lane branched from the run's integration branch and merged back into it ([ADR 0024](docs/decisions/0024-an-integration-lane-and-worker-lanes.md)). Source lives in `src/milhouse/`, and tests mirror it in `tests/`.
 
 The docs are the long form, and are kept current:
 

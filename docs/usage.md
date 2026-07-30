@@ -44,7 +44,7 @@ That means issue quality is entirely yours to keep up. `iterate.md.j2` hands one
 
 - **One agent-turn of work per issue**, independently verifiable.
 - **A description written for a stranger**, plus `--acceptance` saying how they know they are done.
-- **`bd dep add` for real ordering constraints only.** A dependency that is not real just serialises work that could have run in parallel.
+- **`bd dep add` for real ordering constraints only.** A dependency that is not real just serialises work that could have run in parallel, and it is what decides how much [`--count N`](#--count-n-several-issues-at-once) a target can use.
 - **An epic over the set.** Its description becomes the background every child's prompt carries, which is the only place the wider context lives now.
 
 ### Fencing the queue
@@ -129,12 +129,12 @@ Which lane an issue gets follows the dependency graph:
 
 herdr checks lanes out under `~/.herdr/worktrees/<repo>/<branch>`, outside the repository, so they cannot show up as untracked files in another lane. `milhouse status` lists them, and `herdr worktree list` is where they actually live — milhouse keeps no record of its own.
 
-Lanes stay as branches. milhouse reports them, you merge them: building a merge queue before watching a parallel run is exactly the guessing [ADR 0017](decisions/0017-no-loop-until-it-is-earned.md) existed to prevent. [`milhouse run`](#milhouse-run) sidesteps the whole problem by using one lane for the whole target ([ADR 0023](decisions/0023-a-run-has-one-lane.md)).
+A `dispatch` lane stays a branch. milhouse reports it, you merge it. [`milhouse run`](#milhouse-run) is the path that does land its own lanes: the whole target has one integration branch, and above `--count 1` each issue's worker branch is merged back into it as its turn settles ([ADR 0023](decisions/0023-a-run-has-one-lane.md), [ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)). Nothing merges a `dispatch` lane, and whether a run's answer generalises to lanes another process opened is [still open](decisions/README.md#still-open).
 
 Two things to know before pointing this at a real repository:
 
 - **A fresh worktree has no `.venv` and no `node_modules`.** `[verify] command` runs in the lane, so a gate that assumes a built environment fails for environmental reasons rather than real ones. Leave it unset, or point it at something that bootstraps itself (`uv run …` does).
-- **Two green lanes can be red together.** Serial work on one branch could not produce that. Nothing in milhouse checks for it yet.
+- **Two green lanes can be red together.** Serial work on one branch could not produce that. `milhouse run --count N` runs the gate again on the integration branch after a merge that joined two histories, which is the only place that combination is ever looked at. Nothing checks it for `dispatch`.
 
 Exits `0` when the issue was finished and `9` when it was not.
 
@@ -144,7 +144,7 @@ A shell loop over it is not the same thing as [`milhouse run`](#milhouse-run):
 while milhouse step; do :; done   # not a substitute
 ```
 
-That stops at the first iteration that does not succeed, gives each issue a lane and branch of its own, and retries an issue forever if it keeps almost working. `run` caps the attempts, keeps everything on one branch, and knows the difference between a queue that is finished and one that is stuck.
+That stops at the first iteration that does not succeed, gives each issue a lane and branch of its own, merges none of them, and retries an issue forever if it keeps almost working. `run` caps the attempts, lands everything on one branch, and knows the difference between a queue that is finished and one that is stuck.
 
 ### Resuming
 
@@ -251,7 +251,7 @@ Notice what is missing from that output: there is no `lane … is left open` lin
 
 An agent that spots work outside its issue is told to file it rather than do it ([ADR 0013](decisions/0013-iteration-prompt-contract.md)), so the ready queue can gain issues while you are working through it. In a dogfood run an agent working the third issue filed a fourth, and the next step picked it up.
 
-This is intended, and it is one of the reasons there is no loop yet: agents can add issues as fast as they are closed, so "work until the queue is empty" is not guaranteed to terminate. A person deciding whether to step again is a bound that needs no configuration.
+This is intended, and it is why [`milhouse run`](#milhouse-run) has a ceiling rather than trusting an empty queue: agents can add issues as fast as they are closed, so "work until the queue is empty" is not guaranteed to terminate. Stepping by hand needs no configuration for that. A run needs `--max-iterations`, and whether re-planning wants a cap of its own is [still open](decisions/README.md#still-open).
 
 ### `--dry-run`
 
@@ -278,24 +278,27 @@ It is the cheapest way to see the effect of a prompt, fence, or config change.
 
 ## `milhouse run`
 
-Repeats a step until a target is finished. The target is a beads id, so nothing here is a task definition ([ADR 0022](decisions/0022-the-loop-is-earned.md)).
+Repeats a step until a target is finished, one turn at a time by default and up to `--count N` at once. The target is a beads id, so nothing here is a task definition ([ADR 0022](decisions/0022-the-loop-is-earned.md)).
 
 ```
-milhouse run TARGET [--max-iterations N] [--max-attempts N] [--agent KIND] [--workspace ID] [--dry-run] [--attach] [--repo PATH]
+milhouse run TARGET [--max-iterations N] [--max-attempts N] [--count N] [--agent KIND] [--workspace ID] [--dry-run] [--attach] [--repo PATH]
 ```
 
-| Option             | Default              | Meaning                                                         |
-| ------------------ | -------------------- | --------------------------------------------------------------- |
-| `TARGET`           | required             | Beads id to work towards: an epic, or a single issue.           |
-| `--max-iterations` | `50`                 | Turns this run may take before it stops and reports.            |
-| `--max-attempts`   | `3`                  | Attempts one issue gets before it is deferred.                  |
-| `--agent`          | `claude`             | Agent kind to run. Any kind herdr supports.                     |
-| `--workspace`      | `HERDR_WORKSPACE_ID` | Reuse this herdr workspace instead of creating one.             |
-| `--dry-run`        | off                  | Show the scope, the caps, and the first prompt; start no agent. |
-| `--attach`         | off                  | Focus the lane instead of leaving it hidden.                    |
-| `--repo`           | the enclosing repo   | Repository to work in.                                          |
+| Option             | Default              | Meaning                                                                                   |
+| ------------------ | -------------------- | ----------------------------------------------------------------------------------------- |
+| `TARGET`           | required             | Beads id to work towards: an epic, or a single issue.                                     |
+| `--max-iterations` | `50`                 | Turns this run may take before it stops and reports.                                      |
+| `--max-attempts`   | `3`                  | Attempts one issue gets before it is deferred.                                            |
+| `--count`, `-n`    | `1`                  | Turns to keep in flight at once, overriding [`[run] max_parallel`](configuration.md#run). |
+| `--agent`          | `claude`             | Agent kind to run. Any kind herdr supports.                                               |
+| `--workspace`      | `HERDR_WORKSPACE_ID` | Reuse this herdr workspace instead of creating one.                                       |
+| `--dry-run`        | off                  | Show the scope, the caps, the waves, and the first prompt; start no agent.                |
+| `--attach`         | off                  | Focus the lane instead of leaving it hidden.                                              |
+| `--repo`           | the enclosing repo   | Repository to work in.                                                                    |
 
 There is no `--parent` or `--label`: the target is the scope.
+
+`--count` and `[run] max_parallel` are the same setting under two names, and they are the one such pair in milhouse ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)). [Configuration](configuration.md#run) carries the mapping.
 
 ### What the target means
 
@@ -306,28 +309,136 @@ There is no `--parent` or `--label`: the target is the scope.
 
 A leaf target pulls in its blockers because `bd ready` will not offer a blocked issue, so the target cannot close until they do. `milhouse run <issue> --dry-run` prints what it worked out.
 
-### One lane, one branch
+### One integration branch, and worker branches under it
 
-The whole run happens in one lane, on `milhouse/<target-id>`, with a **fresh agent started for every iteration** ([ADR 0023](decisions/0023-a-run-has-one-lane.md)). The fresh context window is what makes this ralph, and it comes from restarting the agent rather than from the worktree, so reusing the checkout costs nothing.
+Whatever the count, a run has an **integration lane** on `milhouse/<target-id>`, and that is the branch you review ([ADR 0023](decisions/0023-a-run-has-one-lane.md)). Every iteration gets a **fresh agent**, which is what makes this ralph: the fresh context window comes from restarting the agent rather than from the worktree, so reusing the checkout costs nothing.
 
-That gives you one branch to review as a piece. It is also why a run never hits the two-blockers-two-lanes refusal that `dispatch` can: there is only ever one base branch to continue from.
+At `--count 1` the turns happen in that lane, one after another, and nothing is merged because there is nothing to merge. Above it, each issue in flight gets a **worker lane** of its own, on `milhouse/<target-id>--<issue-id>`, branched from the integration branch as it stands at that moment and merged back into it when its turn succeeds ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)).
 
-Re-running the same target finds that lane again and carries on where it left off, on the same branch. Resuming is just running it again.
+The separator is `--` and not `/`, because git cannot hold `milhouse/bd-e` and `milhouse/bd-e/bd-e.1` at the same time: refs are a directory hierarchy, and the second is refused with `cannot lock ref`. The first watched concurrent run died on exactly that, before it started an agent.
+
+Either way you get one branch to review as a piece, and either way a run never hits the two-blockers-two-lanes refusal that `dispatch` can: a worker lane's base is the integration branch by construction, so there is never a second candidate.
+
+Re-running the same target finds those lanes again and carries on where it left off, on the same branches. Resuming is just running it again.
 
 ### When it stops
 
-| Condition                                  | Exit | Report                                                  |
-| ------------------------------------------ | ---- | ------------------------------------------------------- |
-| Nothing ready, nothing in scope unfinished | `0`  | finished                                                |
-| Nothing ready, work still unfinished       | `9`  | deadlocked, and names what is left                      |
-| An agent stopped waiting on a human        | `9`  | nobody is there to approve, and the next turn would too |
-| milhouse itself failed (`bd`, herdr)       | `9`  | its own failure rather than the agent's                 |
-| A closed issue left uncommitted changes    | `9`  | the next iteration in this lane would inherit them      |
-| `--max-iterations` reached                 | `9`  | the ceiling                                             |
+| Condition                                  | Exit | Report                                                                                                          |
+| ------------------------------------------ | ---- | --------------------------------------------------------------------------------------------------------------- |
+| Nothing ready, nothing in scope unfinished | `0`  | finished                                                                                                        |
+| Nothing ready, work still unfinished       | `9`  | deadlocked, and names what is left                                                                              |
+| An agent stopped waiting on a human        | `9`  | nobody is there to approve, and the next turn would too                                                         |
+| milhouse itself failed (`bd`, herdr)       | `9`  | its own failure rather than the agent's                                                                         |
+| A closed issue left uncommitted changes    | `9`  | serially the next turn in this lane inherits them; in a worker lane nobody does, but they are not merged either |
+| A worker branch did not land               | `9`  | `conflict`, naming both branches — only a person can land it                                                    |
+| The gate failed on the integration branch  | `9`  | `integration`, the merge stands and the output is on the issue                                                  |
+| `--max-iterations` reached                 | `9`  | the ceiling                                                                                                     |
+
+The two merge rows only fire above `--count 1`, where there is something to merge. A halt **stops starting work rather than abandoning work already started**: the run reports `draining N turn(s) already in flight`, waits for them, and merges any that succeed, because dropping them would leave claimed issues with live agents and branches nobody merges. Whatever settles during the drain is in the report, and none of it changes why the run stopped.
 
 An issue that fails `--max-attempts` times does **not** stop the run. It is deferred with the reason on it, and the run moves to the next ready issue. A deferred issue is hidden from `bd ready` and still listed by `bd list`, so it still counts as unfinished — which is why a run that deferred anything exits `9` rather than claiming success. `bd undefer <id>` puts one back.
 
 Attempts are counted over the whole audit history rather than over one run, so re-running a target does not hand a hopeless issue three more turns.
+
+### `--count N`: several issues at once
+
+`--count N` keeps up to N turns in flight. Each is still one issue, one fresh agent, one lane. The run dispatches up to N, polls the lanes it started every [`[run] poll_ms`](configuration.md#run), and finishes them one at a time as they settle ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)).
+
+**Ask what the count is worth before typing it.** The ready queue is the frontier of the dependency graph, so a target's shape decides how much concurrency it can use, and `--dry-run` is where that is printed:
+
+```console
+$ milhouse run bd-e --count 4 --dry-run
+dry run — no agent will be started
+target    bd-e  Add a hello command
+scope     every ready issue under bd-e
+branch    main
+agent     claude
+verify    uv run pytest -q
+caps      50 iterations, 3 attempts per issue
+run dir   /home/you/code/hello/.milhouse/runs
+waves     3 unfinished issue(s) in 2 wave(s), widest 2
+    1  bd-e.1, bd-e.2
+    2  bd-e.3
+count     4 requested, but no wave is wider than 2, so this is --count 2 with extra words
+lane      milhouse/bd-e  (the integration lane; bd-e.1 would work on milhouse/bd-e--bd-e.1)
+```
+
+The waves assume every turn succeeds first time, so a real run drifts off that shape as soon as anything is retried or deferred. They answer one question, which is whether `--count 8` is worth typing against a chain of eight.
+
+#### What the branches look like
+
+One integration branch, and one worker branch per issue the run had in flight:
+
+```console
+$ git branch --list 'milhouse/*'
+  milhouse/bd-e            # the integration branch — what you review
+  milhouse/bd-e--bd-e.1    # worker branch, merged into it
+  milhouse/bd-e--bd-e.2    # worker branch, merged into it
+  milhouse/bd-e--bd-e.3    # worker branch, did not land
+```
+
+`milhouse status` prints the same thing joined to the lanes herdr is holding, with the worker lanes indented under the integration lane they land in:
+
+```console
+lanes (4)  issue or target, branch, checkout
+  bd-e  milhouse/bd-e  /home/you/.herdr/worktrees/hello/milhouse-bd-e
+      bd-e.1  milhouse/bd-e--bd-e.1  /home/you/.herdr/worktrees/hello/milhouse-bd-e--bd-e-1
+      bd-e.2  milhouse/bd-e--bd-e.2  /home/you/.herdr/worktrees/hello/milhouse-bd-e--bd-e-2
+  bd-x.9  milhouse/bd-x.9  /home/you/.herdr/worktrees/hello/milhouse-bd-x-9
+```
+
+The last row is a `dispatch` lane: it carries an issue id exactly as a worker lane does, and the branch is what tells them apart.
+
+#### Inspecting and landing what a run produced
+
+The integration branch is the unit. Everything that landed is on it, in the order the turns settled:
+
+```sh
+git log --oneline --graph main..milhouse/bd-e     # what the run built
+git switch main && git merge milhouse/bd-e        # landing it is still yours
+```
+
+A worker branch is only interesting when it did **not** land. The report's `not merged` block names it, and so does the halt line:
+
+```sh
+git log --oneline milhouse/bd-e..milhouse/bd-e--bd-e.3   # the commits that are not on the branch
+```
+
+#### A `conflict` halt, and how to get out of it
+
+A merge that did not land stops the run, and it is a halt rather than a deferral because nothing an agent could be asked next would fix it: the issue is closed, the work is done, and only a person can land the branch.
+
+```console
+merged (2)
+  bd-e.1  milhouse/bd-e fast-forwarded to 9f3c1a20b6d4
+  bd-e.2  merged milhouse/bd-e--bd-e.2 into milhouse/bd-e as 4c81e0f2aa19
+
+not merged (1)
+  bd-e.3  milhouse/bd-e--bd-e.3 conflicts with milhouse/bd-e in 2 file(s): src/hello.py, tests/test_hello.py. Both branches are intact; land milhouse/bd-e--bd-e.3 by hand.
+  The issue is closed and the work is on its branch. Land it by hand.
+
+bd-e: 3 issue(s) closed, 2 merged — bd-e.3 is closed but its work is not on milhouse/bd-e: …
+```
+
+Nothing was lost and nothing is half-done. milhouse ran `git merge --abort` before reporting, so the integration lane is exactly where it was, the worker branch is intact, and the issue stays closed. Redo the merge by hand in the integration lane, which is the checkout `milhouse status` names:
+
+```sh
+cd ~/.herdr/worktrees/hello/milhouse-bd-e
+git merge milhouse/bd-e--bd-e.3     # same merge, this time with you resolving it
+# fix the conflicts, run the gate, commit
+milhouse run bd-e --count 4         # carry on: the run resumes on the same branches
+```
+
+Merging into your own checkout instead works too. Doing it in the integration lane is only so that the next run finds the branch where it expects it.
+
+Two conflicts are worth expecting rather than being surprised by. Agents told to "add it at the end" of a file all pick the same end, and the first turn to settle is the one that lands. Of the eight merges in the watched runs recorded in [ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md#what-the-first-concurrent-runs-taught), three fast-forwarded, four conflicted, and one produced a merge commit.
+
+#### Two rough edges to know about
+
+Both are open, both are reachable today, and neither is fixed:
+
+- **A turn can settle seconds after it starts, having done nothing.** herdr can report an agent as not working while its prompt is still sitting unsubmitted in the pane, and the poll believes it. The symptom is a `stalled` outcome about ten seconds after the turn was dispatched, often with `agent did not exit from key presses; replacing pane` in the same turn. It costs attempts rather than time: an issue can burn its whole retry ladder in under a minute while its siblings are still on their first turn. `milhouse step` cannot reach this, because the waiting happens inside `herdr agent prompt --wait`; `dispatch` and `reap` have always had it.
+- **A drain keeps merging into a branch that has just refused a merge.** After a `conflict` halt the run still finishes the turns already in flight and still tries to merge each success, so a run can end with more than one branch under `not merged` — and each attempt pays for a full gate run in its worker lane first.
 
 ### Reading the report
 
@@ -343,6 +454,10 @@ agent     claude
 verify    (none — a closed issue is taken on trust)
 caps      50 iterations, 3 attempts per issue
 run dir   /tmp/greet/.milhouse/runs
+waves     2 unfinished issue(s) in 2 wave(s), widest 1
+    1  greet-qit.1
+    2  greet-qit.2
+count     1 turn at a time, in the integration lane, with no worker lanes
 lane      milhouse/greet-qit  (one lane for the whole run)
 
 the next iteration would work greet-qit.1 and send:
@@ -444,6 +559,7 @@ That is what there is to review. Exit `0`.
 - **Deal with permissions first.** A default agent stops at its first permission prompt, the run halts, and you have spent one turn learning that. `[agent] args` is where the escape hatch goes ([ADR 0009](decisions/0009-permission-posture.md)), and an agent's consent screen still has to be accepted by hand once.
 - **`--max-iterations` bounds turns, not spend.** Turns are not the same size, and milhouse cannot see cost through a herdr pane ([ADR 0012](decisions/0012-no-cost-controls-in-v1.md)).
 - **Watch one `milhouse step` first.** It costs one turn to find out that your issue descriptions are too thin for an agent with no context, and fifty to find out the expensive way.
+- **Raise `--count` after a watched run, not before one.** A wide run multiplies everything, including the failures: N agents starting at once, a gate run per merge that joined anything, and conflicts to resolve by hand. `--count 1` is [ADR 0023](decisions/0023-a-run-has-one-lane.md) exactly, so the serial path stays available as the thing you already trust.
 
 ## `milhouse dispatch` and `milhouse reap`
 
@@ -569,6 +685,21 @@ Watch for:
 2. `milhouse dispatch` returns while both agents are still working.
 3. Killing the dispatching terminal does **not** re-open either claim.
 4. `milhouse reap` classifies each turn once, and reaping again finds nothing.
+
+Then a concurrent run, against a scratch repository with a real `[verify] command` and at least two independent ready issues:
+
+```sh
+milhouse run <target> --count 2 --dry-run   # the waves, and what the count is worth
+milhouse run <target> --count 2 --attach
+```
+
+Watch for:
+
+1. An integration lane on `milhouse/<target>`, and a worker lane per issue on `milhouse/<target>--<issue>`.
+2. Progress lines labelled with their issue, because two turns are interleaving them.
+3. A `merging … into …` line per successful turn, and `fast-forwarded` on the first one.
+4. `milhouse status` grouping the worker lanes under the integration lane.
+5. Every closed issue's commits reachable from `milhouse/<target>`, or named in the report's `not merged` block. Nothing should be in neither.
 
 Finally, run `milhouse step` twice at once in two terminals against the **same** issue and confirm the second refuses with exit code `10`. Against different issues both should run.
 

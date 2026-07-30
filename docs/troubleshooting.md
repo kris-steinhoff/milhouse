@@ -136,8 +136,10 @@ Exit code `10`. One process works a lane at a time, because two would drive the 
 A lock whose process is dead is taken over automatically. You only see this when the process is alive, or when it ran on another machine and its pid cannot be checked. If you are sure it is gone:
 
 ```sh
-rm -f .milhouse/runs/<issue-id>/lock.json
+rm -f .milhouse/runs/<lane-key>/lock.json
 ```
+
+The lane key is the issue for `step`, `dispatch`, and a run's worker lane, and the target for a run's integration lane, so a `--count N` run holds several of these at once ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)).
 
 ## milhouse claimed an issue that was not meant for an agent
 
@@ -172,6 +174,8 @@ git log --oneline milhouse/<issue-id> # what an agent actually committed
 git merge milhouse/<issue-id>         # landing it is yours to do
 ```
 
+A `run` is the exception to the last line. Everything it closed is already on `milhouse/<target>`, its integration branch, whether the turns happened there (`--count 1`) or in worker lanes that were merged into it ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)). A worker branch is only worth looking at when the report says it did not land.
+
 A lane outlives the workspace holding it: closing the workspace leaves the checkout and the branch alone, and stepping the same issue again re-opens it. `herdr worktree remove` is how you get rid of one for good.
 
 ## Verification fails in a lane but passes in my checkout
@@ -182,16 +186,20 @@ The per-lane bootstrap is [an open question](decisions/README.md#still-open). Un
 
 ## A run stopped and I want to know why
 
-Every run ends with a line saying what stopped it. The six answers, and what each one wants:
+Every run ends with a line saying what stopped it. The eight answers, and what each one wants:
 
-| Stop reason                             | What happened                                                 | Do                                                      |
-| --------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------- |
-| everything in scope is closed           | The target is done.                                           | Review the branch and land it.                          |
-| nothing is ready but N are unfinished   | The queue deadlocked, usually behind a deferral or a blocker. | `bd blocked`, and the `deferred` section of the report. |
-| the agent stopped waiting on a human    | A permission prompt, most often.                              | Fix the posture, then run again. See below.             |
-| milhouse itself failed                  | `bd` or herdr, not the agent.                                 | Read the message; `milhouse doctor`.                    |
-| a closed issue left uncommitted changes | An agent closed an issue with work still in the tree.         | Look at the lane before running again.                  |
-| the ceiling                             | `--max-iterations` reached.                                   | Read the iteration list before raising it.              |
+| Stop reason                               | What happened                                                  | Do                                                      |
+| ----------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------- |
+| everything in scope is closed             | The target is done.                                            | Review the branch and land it.                          |
+| nothing is ready but N are unfinished     | The queue deadlocked, usually behind a deferral or a blocker.  | `bd blocked`, and the `deferred` section of the report. |
+| the agent stopped waiting on a human      | A permission prompt, most often.                               | Fix the posture, then run again. See below.             |
+| milhouse itself failed                    | `bd` or herdr, not the agent.                                  | Read the message; `milhouse doctor`.                    |
+| a closed issue left uncommitted changes   | An agent closed an issue with work still in the tree.          | Look at the lane before running again.                  |
+| its work is not on the integration branch | A worker branch conflicted, or git refused the merge outright. | Land it by hand. See below.                             |
+| the gate failed on the integration branch | Two branches were green apart and red together.                | Fix it on the integration branch; nothing was reverted. |
+| the ceiling                               | `--max-iterations` reached.                                    | Read the iteration list before raising it.              |
+
+The last two only happen above `--count 1`, where there are worker branches to merge.
 
 Everything a run did is also in the beads audit log, which outlives the terminal:
 
@@ -212,6 +220,27 @@ bd undefer <id>       # put it back in the queue
 **Read the notes before undeferring.** Attempts are counted over the whole audit history, not per run, so simply running again gives it no more turns. If the notes say the same thing three times, the issue is the problem, not the number of attempts: it is usually too big, or its description assumes context the agent does not have.
 
 A deferral is not always a failure of the work. An issue whose change is implemented and committed but never `bd close`d will defer, and the next agent to see it closes it immediately — that is what happened on the first dogfood run.
+
+## A run stopped because a branch did not land
+
+A `--count N` run merges each successful worker branch into its integration branch as the turn settles, and a merge that conflicts or that git refuses stops the run ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)). It is a halt rather than a deferral because there is nothing to ask an agent: the issue is closed, the work is done, and only a person can land it.
+
+Nothing was lost. `git merge --abort` ran before the report, so the integration lane is where it was, the worker branch is intact, and the issue stays closed. The report's `not merged` block names both branches and every conflicted path.
+
+```sh
+milhouse status                                       # the lanes, worker under integration
+cd ~/.herdr/worktrees/<repo>/milhouse-<target>        # the integration lane
+git merge milhouse/<target>--<issue>                  # the same merge, resolved by hand
+milhouse run <target> --count N                       # carry on, on the same branches
+```
+
+Expect this more often than the word "conflict" suggests. Agents told to add something at the end of a file all choose the same end, and only the first turn to settle lands cleanly. A run that halted this way can also report more than one unmerged branch: it finishes the turns already in flight before stopping, and those merges can fail too ([usage](usage.md#two-rough-edges-to-know-about)).
+
+## A run stopped because the gate failed on the integration branch
+
+Two worker lanes were each green against their own base and red once both were on the integration branch. That is the case the second gate run exists to catch, and it is the only place the combination is ever looked at.
+
+**Nothing was reverted.** The merge stands, the issue stays closed, and the failing output is on that issue as a `bd` note, because the work was genuinely done and it is the combination that is red. Fix it on the integration branch, in the integration lane, then run again.
 
 ## A run stopped on a blocked agent, immediately
 
@@ -254,7 +283,7 @@ git diff
 
 Commit them if they are the work, discard them if they are not, then step again.
 
-A **run** stops outright when this happens after a closed issue, rather than reporting it and continuing. Every iteration in a run shares one lane, so the next agent would start in the mess ([ADR 0023](decisions/0023-a-run-has-one-lane.md)). After a _failed_ turn it is reported and the run carries on: that issue is going to be retried anyway.
+A **run** stops outright when this happens after a closed issue, rather than reporting it and continuing. Serially every iteration shares one lane, so the next agent would start in the mess ([ADR 0023](decisions/0023-a-run-has-one-lane.md)). With `--count N` each issue has a worker lane and nobody inherits it, but uncommitted work is not merged either, so the issue landed less than its close claims — the same halt for the other reason ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)). After a _failed_ turn it is reported and the run carries on: that issue is going to be retried anyway.
 
 If `git status` shows only files your issue tracker wrote, that is not the agent's doing. `bd` appends to `.beads/interactions.jsonl` on every call, milhouse calls `bd` several times a step, and a repository that tracks that file therefore reads as dirty during and after every run. `bd init` ignores it for you; a repository that predates that does not. Ignore it and the report goes quiet:
 
