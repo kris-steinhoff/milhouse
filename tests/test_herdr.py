@@ -21,9 +21,16 @@ def wrapped(call: str, result: dict) -> str:
     return json.dumps({"id": f"cli:{call}", "result": result})
 
 
-def error(call: str, code: str, message: str) -> str:
-    """Render a herdr error payload, which arrives with exit status 0."""
-    return json.dumps({"id": f"cli:{call}", "error": {"code": code, "message": message}})
+def failed(call: str, code: str, message: str) -> Reply:
+    """Reply the way herdr reports a failure: an envelope on stderr, exiting 1.
+
+    Verified against 0.7.5 across `workspace get/close`, `agent get/start/prompt`,
+    `pane get/close/send-keys`, `tab list` and `worktree list/open`. Every one of
+    them leaves stdout empty, so a client reading stdout alone sees nothing at
+    all and a client trusting the status never gets as far as the code.
+    """
+    envelope = {"id": f"cli:{call}", "error": {"code": code, "message": message}}
+    return Reply(stderr=json.dumps(envelope), returncode=1)
 
 
 WORKSPACE_CREATED = wrapped(
@@ -81,29 +88,65 @@ def test_focus_is_opt_in(client: HerdrClient, fake_proc: FakeProc) -> None:
     assert "--no-focus" not in fake_proc.calls[0]
 
 
-def test_a_herdr_error_payload_is_raised_despite_exit_zero(
-    client: HerdrClient, fake_proc: FakeProc
-) -> None:
-    """Failures arrive in the payload, not the exit status."""
+def test_a_herdr_error_reads_as_a_sentence(client: HerdrClient, fake_proc: FakeProc) -> None:
+    """The whole point of reading the envelope before the exit status.
+
+    Every herdr failure milhouse can hit passes through here, so this is what
+    decides whether one reads as herdr's own words or as JSON quoted inside a
+    subprocess failure. The code is carried separately because callers branch on
+    it, and prose is the wrong thing to match on.
+    """
     fake_proc.expect(
         "herdr workspace get",
-        Reply(
-            stdout=error("workspace:get", "workspace_not_found", "workspace wZZ not found"),
-            returncode=0,
-        ),
+        failed("workspace:get", "workspace_not_found", "workspace wZZ not found"),
     )
+
+    with pytest.raises(HerdrError) as caught:
+        client._call(["workspace", "get", "wZZ"])
+
+    assert str(caught.value) == "herdr workspace get: workspace_not_found: workspace wZZ not found"
+    assert caught.value.code == "workspace_not_found"
+
+
+def test_an_error_on_stdout_is_read_the_same_way(client: HerdrClient, fake_proc: FakeProc) -> None:
+    """0.7.5 uses stderr, and milhouse pins no herdr version.
+
+    Reading the envelope from either stream costs one loop and means a server
+    that answers differently is understood rather than quoted.
+    """
+    envelope = json.dumps(
+        {"id": "cli:workspace:get", "error": {"code": "workspace_not_found", "message": "no"}}
+    )
+    fake_proc.expect("herdr workspace get", Reply(stdout=envelope, returncode=0))
 
     with pytest.raises(HerdrError, match="workspace_not_found"):
         client._call(["workspace", "get", "wZZ"])
 
 
+def test_a_failure_with_no_envelope_reports_what_herdr_said(
+    client: HerdrClient, fake_proc: FakeProc
+) -> None:
+    """An argv herdr rejects itself: exit 2, plain text on stderr, no envelope.
+
+    Nothing here is a herdr error code, so there is none to report and the exit
+    status is all there is to go on. That path has to stay loud.
+    """
+    fake_proc.expect(
+        "herdr workspace get",
+        Reply(stderr="unknown command: nope\nrun 'herdr --help' for usage", returncode=2),
+    )
+
+    with pytest.raises(HerdrError) as caught:
+        client._call(["workspace", "get", "wZZ"])
+
+    assert "exited 2: unknown command: nope" in str(caught.value)
+    assert caught.value.code == ""
+
+
 def test_workspace_exists_turns_that_error_into_false(
     client: HerdrClient, fake_proc: FakeProc
 ) -> None:
-    fake_proc.expect(
-        "herdr workspace get",
-        Reply(stdout=error("workspace:get", "workspace_not_found", "no")),
-    )
+    fake_proc.expect("herdr workspace get", failed("workspace:get", "workspace_not_found", "no"))
 
     assert client.workspace_exists("wZZ") is False
 
@@ -209,22 +252,33 @@ def test_a_blocked_agent_is_reported_as_such(client: HerdrClient, fake_proc: Fak
 
 
 def test_a_prompt_timeout_becomes_a_turn_timeout(client: HerdrClient, fake_proc: FakeProc) -> None:
+    """`timeout` is the code `herdr agent prompt --help` names for a short --timeout."""
     fake_proc.expect(
         "herdr agent prompt",
-        Reply(stdout=error("agent:prompt", "timeout", "timed out waiting for agent status")),
+        failed("agent:prompt", "timeout", "timed out waiting for agent status"),
     )
 
     with pytest.raises(TurnTimeoutError, match="did not finish its turn"):
         client.prompt("milhouse-hello", "x", timeout_ms=1000)
 
 
+@pytest.mark.parametrize(
+    "code",
+    ["agent_not_found", "invalid_agent_timeout"],
+    ids=["unrelated", "contains-the-word"],
+)
 def test_a_non_timeout_prompt_failure_is_not_swallowed(
-    client: HerdrClient, fake_proc: FakeProc
+    client: HerdrClient, fake_proc: FakeProc, code: str
 ) -> None:
-    fake_proc.expect(
-        "herdr agent prompt",
-        Reply(stdout=error("agent:prompt", "agent_not_found", "agent target not found")),
-    )
+    """The second is why the code is matched exactly rather than searched for.
+
+    `invalid_agent_timeout` is a real 0.7.5 code (probed by asking `agent start`
+    for a 1ms readiness timeout). It means herdr refused an argument and waited
+    on nothing, which is the opposite of a turn that ran out — but it contains
+    the word, so a message search calls it a turn timeout and the step records a
+    turn that never happened.
+    """
+    fake_proc.expect("herdr agent prompt", failed("agent:prompt", code, "no"))
 
     with pytest.raises(HerdrError) as caught:
         client.prompt("milhouse-hello", "x", timeout_ms=1000)
@@ -518,25 +572,6 @@ NO_SUCH_PANE = "wZZZ:pZZZ"
 ANY_NAME = re.compile(r"(?s).*")
 
 
-def herdr_code(failure: str) -> str:
-    """The herdr error code inside a `HerdrError`, in either shape it arrives in.
-
-    `_call` renders an error payload as `herdr agent start: <code>: <message>`.
-    But 0.7.5 also exits non-zero on these, and `proc` reports a non-zero exit by
-    quoting the raw stdout, so the code comes through inside the JSON instead.
-    Both are the same verdict from herdr, and which one milhouse takes is not what
-    this test is about, so both are read rather than the exit status pinned.
-
-    Falls back to the whole message, so a failure that carries no herdr code at
-    all reads as itself rather than as a mangled code.
-    """
-    for pattern in (r"herdr agent start: (\w+):", r'"code":\s*"(\w+)"'):
-        match = re.search(pattern, failure)
-        if match:
-            return match.group(1)
-    return failure
-
-
 @pytest.mark.herdr
 def test_herdr_refuses_exactly_the_names_milhouse_refuses_against_the_live_server(
     monkeypatch: pytest.MonkeyPatch,
@@ -566,6 +601,13 @@ def test_herdr_refuses_exactly_the_names_milhouse_refuses_against_the_live_serve
     herdr 0.7.5 is what reported this rule and the wording `AGENT_NAME_RULE`
     quotes. milhouse pins no herdr version, so whether an earlier server enforced
     it is unknown.
+
+    The verdict is read from `HerdrError.code`, which is also the live proof that
+    `_call` reaches its error branch: the code is only there if the envelope was
+    parsed, and against 0.7.5 that means it was found on stderr after a non-zero
+    exit. `--timeout 1000` is below the 3000ms floor `agent start` enforces, and
+    stays that way because herdr resolves the pane before it looks at the
+    timeout — so these calls end at the pane, as the docstring above promises.
     """
     if shutil.which("herdr") is None:
         pytest.skip("herdr is not installed")
@@ -582,16 +624,18 @@ def test_herdr_refuses_exactly_the_names_milhouse_refuses_against_the_live_serve
                 relaxed.setattr("milhouse.herdr.AGENT_NAME", ANY_NAME)
             with pytest.raises(HerdrError) as caught:
                 client.start_agent(name, kind="claude", pane_id=NO_SUCH_PANE, timeout_ms=1000)
-        failures[name] = str(caught.value)
+        failures[name] = caught.value
 
     expected = {
         name: "agent_pane_not_found" if AGENT_NAME.fullmatch(name) else "invalid_agent_name"
         for name in AGENT_NAME_PROBES
     }
-    assert {name: herdr_code(failure) for name, failure in failures.items()} == expected
+    assert {name: failure.code for name, failure in failures.items()} == expected
     # AGENT_NAME_RULE claims to be herdr's own sentence, so that milhouse's early
     # refusal and herdr's own read alike. Only herdr can confirm that.
-    refused = [failures[name] for name, code in expected.items() if code == "invalid_agent_name"]
+    refused = [
+        str(failures[name]) for name, code in expected.items() if code == "invalid_agent_name"
+    ]
     assert all(AGENT_NAME_RULE in failure for failure in refused), refused
 
 
@@ -606,6 +650,6 @@ def test_the_agents_own_pane_is_reported(fake_proc: FakeProc) -> None:
 
 
 def test_an_agent_herdr_has_lost_has_no_pane(fake_proc: FakeProc) -> None:
-    fake_proc.expect("herdr agent get", Reply(stdout=error("agent:get", "agent_not_found", "gone")))
+    fake_proc.expect("herdr agent get", failed("agent:get", "agent_not_found", "gone"))
 
     assert HerdrClient().agent_pane("milhouse-bd-e_1") is None

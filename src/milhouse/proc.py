@@ -158,9 +158,13 @@ def run_json(
 ) -> Any:
     """Run a command that emits JSON on stdout and return the parsed value.
 
-    Both ``bd --json`` and the ``herdr`` socket-API subcommands print a single
-    JSON document. Some commands legitimately print nothing when there is no
-    result, which ``allow_empty`` accommodates.
+    ``bd --json`` prints one JSON document on stdout and reports failure through
+    its exit status, which is the shape this assumes. Some commands legitimately
+    print nothing when there is no result, which ``allow_empty`` accommodates.
+
+    :mod:`milhouse.herdr` deliberately does not come through here. herdr answers
+    a failure with a JSON envelope on *stderr* and a non-zero status, so it has
+    to read the response before judging the status, which is the opposite order.
 
     Args:
         argv: Command and arguments.

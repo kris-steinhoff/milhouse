@@ -13,7 +13,7 @@ from milhouse.herdr import HerdrClient
 from milhouse.runner import AgentRunner
 
 from .fakes import FakeProc, Reply
-from .test_herdr import AGENT_STARTED, error, wrapped
+from .test_herdr import AGENT_STARTED, failed, wrapped
 
 PANE_WITH_AGENT = wrapped("pane:get", {"pane": {"agent": "claude", "agent_status": "done"}})
 PANE_AT_SHELL = wrapped("pane:get", {"pane": {"agent_status": "unknown"}})
@@ -123,7 +123,7 @@ def test_a_blocked_turn_is_reported_not_raised(runner: AgentRunner, happy: FakeP
 
 
 def test_a_turn_timeout_is_reported_not_raised(runner: AgentRunner, happy: FakeProc) -> None:
-    happy.expect("herdr agent prompt", Reply(stdout=error("agent:prompt", "timeout", "timed out")))
+    happy.expect("herdr agent prompt", failed("agent:prompt", "timeout", "timed out"))
     happy.expect("herdr agent get", Reply(stdout=wrapped("agent:get", {"agent": {}})))
 
     result = runner.run_turn("x", iteration=1)
@@ -134,9 +134,7 @@ def test_a_turn_timeout_is_reported_not_raised(runner: AgentRunner, happy: FakeP
 
 def test_a_failed_start_is_reported_as_an_error(runner: AgentRunner, fake_proc: FakeProc) -> None:
     fake_proc.expect("herdr pane get", Reply(stdout=PANE_AT_SHELL))
-    fake_proc.expect(
-        "herdr agent start", Reply(stdout=error("agent:start", "agent_not_detected", "no agent"))
-    )
+    fake_proc.expect("herdr agent start", failed("agent:start", "agent_not_detected", "no agent"))
 
     result = runner.run_turn("x", iteration=1)
 
@@ -202,7 +200,7 @@ def test_exiting_is_a_no_op_when_no_agent_is_running(
 def test_an_unreplaceable_pane_is_an_agent_error(runner: AgentRunner, fake_proc: FakeProc) -> None:
     fake_proc.expect("herdr pane get", Reply(stdout=PANE_WITH_AGENT))
     fake_proc.expect("herdr pane send-keys", Reply(stdout=""))
-    fake_proc.expect("herdr pane split", Reply(stdout=error("pane:split", "no_space", "too small")))
+    fake_proc.expect("herdr pane split", failed("pane:split", "no_space", "too small"))
 
     runner.config.agent.exit_keys = ["ctrl+c"]
 

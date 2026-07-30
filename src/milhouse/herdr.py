@@ -7,9 +7,11 @@ the socket API later is one file rather than a refactor
 Three things about the CLI shape the code:
 
 - Responses are wrapped: ``{"id": "cli:agent:start", "result": {...}}``.
-- **Errors come back with exit status 0** as ``{"error": {"code", "message"}}``,
-  so every call has to inspect the payload rather than trust the exit status.
-  :func:`HerdrClient._call` is the one place that does.
+- **An error is an envelope on stderr, with a non-zero exit status**:
+  ``{"id": ..., "error": {"code", "message"}}``. So a failure is only readable
+  if the envelope is looked for on both streams whatever the status, which is
+  what :func:`HerdrClient._call` does — trusting the exit status leaves every
+  herdr failure surfacing as a subprocess error quoting raw JSON.
 - **One identifier herdr takes is validated, and the labels are not.** An agent
   name has a grammar (:data:`AGENT_NAME`), checked here before the call, so a
   name milhouse built badly is refused before anything is created. A workspace,
@@ -19,6 +21,7 @@ Three things about the CLI shape the code:
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -750,6 +753,16 @@ class HerdrClient:
     ) -> dict[str, Any]:
         """Run a herdr command and unwrap its response.
 
+        The envelope is read before the exit status is judged, and from either
+        stream, because that is the only order in which a herdr error is legible.
+        Against 0.7.5 a result comes back on stdout with status 0 and an error
+        comes back on **stderr** with status 1, so a call that let
+        :func:`~milhouse.proc.run_json` raise on the status never saw the error
+        object at all: the code and message arrived quoted inside a subprocess
+        failure instead of as a sentence. Reading the envelope first is also what
+        keeps this working if a herdr writes one somewhere else, which matters
+        because milhouse pins no herdr version.
+
         Args:
             args: herdr arguments, without the executable.
             timeout: Seconds before the subprocess is killed.
@@ -760,26 +773,70 @@ class HerdrClient:
             The ``result`` object, or ``{}`` for a command that printed nothing.
 
         Raises:
-            HerdrError: The command failed, or herdr reported an error object.
+            HerdrError: herdr reported an error object, could not be run, or
+                answered with something that is not a herdr response.
         """
         argv = self._argv(args)
+        label = f"herdr {' '.join(args[:2])}"
         try:
-            payload = proc.run_json(argv, cwd=self.cwd, timeout=timeout, allow_empty=True)
+            completed = proc.run(argv, cwd=self.cwd, timeout=timeout, check=False)
         except MilhouseError as exc:
-            raise HerdrError(f"herdr {' '.join(args[:2])} failed: {exc}") from exc
+            # Not on PATH, or killed at the timeout: there is no envelope to read.
+            raise HerdrError(f"{label} failed: {exc}") from exc
+        payload = _envelope(completed)
+        if isinstance(payload, dict) and "error" in payload:
+            error = payload["error"] or {}
+            code = str(error.get("code") or "error")
+            raise HerdrError(f"{label}: {code}: {error.get('message', '')}", code=code)
+        if not completed.ok:
+            # No envelope to quote: an argv herdr rejects itself (status 2), or
+            # a herdr that fell over before it could answer.
+            raise HerdrError(f"{label} exited {completed.returncode}: {_said(completed)}")
         if payload is None:
+            said = _said(completed)
+            if said:
+                raise HerdrError(f"{label} produced unreadable output: {said}")
             if expect_json:
-                raise HerdrError(f"herdr {' '.join(args[:2])} produced no output")
+                raise HerdrError(f"{label} produced no output")
             return {}
         if not isinstance(payload, dict):
             raise HerdrError(f"unexpected herdr output: {payload!r}")
-        if "error" in payload:
-            error = payload["error"] or {}
-            code = error.get("code", "error")
-            message = error.get("message", "")
-            raise HerdrError(f"herdr {' '.join(args[:2])}: {code}: {message}")
         result = payload.get("result")
         return result if isinstance(result, dict) else {}
+
+
+def _envelope(completed: proc.ProcResult) -> Any:
+    """Parse herdr's response envelope from whichever stream carries it.
+
+    Args:
+        completed: The finished ``herdr`` invocation, whatever its exit status.
+
+    Returns:
+        The parsed document, or ``None`` when neither stream holds JSON — a
+        command that printed nothing, or one that failed before herdr's own
+        argument parsing produced an envelope.
+    """
+    for stream in (completed.stdout, completed.stderr):
+        text = stream.strip()
+        if not text:
+            continue
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _said(completed: proc.ProcResult) -> str:
+    """The first non-blank line herdr printed, for output milhouse cannot parse.
+
+    stderr first, because the cases that reach this are failures and that is
+    where herdr puts them. A command that exited zero has nothing there.
+    """
+    for line in (completed.stderr + "\n" + completed.stdout).splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
 
 
 def _dig(result: dict[str, Any], *path: str) -> str:
@@ -813,5 +870,14 @@ def _as_status(value: Any) -> AgentStatus:
 
 
 def _is_timeout(exc: HerdrError) -> bool:
-    """Whether a herdr error was the server's ``timeout`` code."""
-    return "timeout" in str(exc)
+    """Whether a herdr error was the server's ``timeout`` code.
+
+    The code, exactly, rather than the message. ``herdr agent prompt --help``
+    states that a ``--timeout`` shorter than the state-change wait "returns
+    timeout instead", so this is the code that means the turn ran out — while
+    ``invalid_agent_timeout``, an argument herdr refused, contains the same word
+    and means nothing was waited on at all. Matching the message could not tell
+    those apart, and it only worked before because the raw JSON it searched
+    happened to have the code in it.
+    """
+    return exc.code == "timeout"

@@ -65,10 +65,28 @@ class HerdrError(MilhouseError):
 
     Exit code ``5``. Run ``milhouse doctor`` to check the server is running and
     protocol-compatible with the client.
+
+    Attributes:
+        code: herdr's own error code — ``agent_not_found``, ``timeout``,
+            ``invalid_agent_name`` — when the failure arrived as a herdr error
+            payload, and ``""`` when it did not: a herdr that could not be run at
+            all, or a check milhouse made before calling one. Anything branching
+            on *which* failure this is reads this rather than the message, since
+            the message is prose and several codes contain each other's words.
     """
 
     exit_code = 5
     remedy = "Run `milhouse doctor`; start the herdr server if it is not running."
+
+    def __init__(self, message: str, *, code: str = "") -> None:
+        """Record herdr's error code alongside the human-readable message.
+
+        Args:
+            message: What went wrong, in one line.
+            code: herdr's error code, or ``""`` when the failure carried none.
+        """
+        super().__init__(message)
+        self.code = code
 
 
 class TurnTimeoutError(HerdrError):

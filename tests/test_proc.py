@@ -61,9 +61,10 @@ def test_run_json_rejects_empty_output_by_default(fake_proc: FakeProc) -> None:
 
 
 def test_run_json_allows_empty_output_when_asked(fake_proc: FakeProc) -> None:
-    fake_proc.expect("herdr pane run", Reply(stdout=""))
+    """`bd` prints nothing for some commands that succeeded."""
+    fake_proc.expect("bd audit record", Reply(stdout=""))
 
-    assert proc.run_json(["herdr", "pane", "run"], allow_empty=True) is None
+    assert proc.run_json(["bd", "audit", "record"], allow_empty=True) is None
 
 
 def test_missing_executable_is_reported_as_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
