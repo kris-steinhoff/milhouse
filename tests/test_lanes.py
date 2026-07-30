@@ -7,6 +7,10 @@ what these check, plus the refusal when the dependency graph gives two answers.
 
 from __future__ import annotations
 
+import os
+import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +25,13 @@ from milhouse.models import Issue
 from .doubles import FakeClient
 
 SOURCE = "wG"
+
+HERDR_AGENT_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+"""herdr's agent-name grammar, spelled out here rather than imported.
+
+Asking milhouse what a valid name is would get milhouse's own answer back,
+whatever that answer happened to be, which is how an invalid one got this far.
+"""
 
 
 def issue(issue_id: str, *, blocked_by: list[str] | None = None) -> Issue:
@@ -224,17 +235,91 @@ def test_the_exclude_entry_is_written_once(client: FakeClient, config: Config) -
 # -- the agent name ------------------------------------------------------------
 
 
-def test_the_agent_name_survives_a_bead_id(lanes: Lanes) -> None:
-    """Bead ids carry dots, and the name is handed to `herdr agent start`."""
+def agent_name_in_a_subprocess(key: str, *, hash_seed: str) -> str:
+    """What a fresh interpreter, started with ``hash_seed``, calls ``key``'s agent.
+
+    The seed is the whole point. ``PYTHONHASHSEED`` is what makes :func:`hash`
+    differ between processes, so pinning it to two values turns a name built from
+    a salted digest into a certain failure rather than an occasional one.
+    """
+    source = (
+        "import sys; from pathlib import Path; from milhouse.lanes import Lane; "
+        "print(Lane(key=sys.argv[1], path=Path('.'), branch='b', workspace_id='w').agent_name)"
+    )
+    finished = subprocess.run(
+        [sys.executable, "-c", source, key],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, "PYTHONHASHSEED": hash_seed},
+    )
+    return finished.stdout.strip()
+
+
+def test_a_bead_id_s_dot_becomes_an_underscore(lanes: Lanes) -> None:
+    """A dot is outside herdr's character set, and `_` carries it without collapsing it."""
     lane = open_lane(lanes, issue("milhouse-6or.4"))
 
-    assert lane.agent_name == "milhouse-milhouse-6or.4"
+    assert lane.agent_name == "milhouse-milhouse-6or_4"
 
 
 def test_the_agent_name_drops_anything_odd(lanes: Lanes) -> None:
     lane = open_lane(lanes, issue("bd e/1"))
 
     assert lane.agent_name == "milhouse-bd-e-1"
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "bd-e",
+        "milhouse-6or.4",
+        "MILHOUSE-6OR.4",
+        "bd e/1",
+        "excalidraw-desktop-xyz.4",
+        "a-repository-with-a-very-long-prefix-9zz.12",
+    ],
+    ids=["plain", "dotted", "uppercase", "space-and-slash", "just-over", "far-over"],
+)
+def test_every_key_produces_a_name_herdr_would_accept(lanes: Lanes, key: str) -> None:
+    """The name goes to `herdr agent start`, which enforces this and nothing less."""
+    lane = open_lane(lanes, issue(key))
+
+    assert HERDR_AGENT_NAME.fullmatch(lane.agent_name), lane.agent_name
+
+
+def test_a_dot_and_a_dash_are_not_the_same_agent(lanes: Lanes) -> None:
+    """Collapsing both to `-` would have milhouse drive somebody else's agent."""
+    dotted = open_lane(lanes, issue("bd-e.2"))
+    dashed = open_lane(lanes, issue("bd-e-2"))
+
+    assert dotted.agent_name != dashed.agent_name
+
+
+def test_a_shortened_name_still_says_which_key_it_is_for(lanes: Lanes) -> None:
+    """Whoever reads `herdr agent list` has to recognise the lane in the name."""
+    lane = open_lane(lanes, issue("excalidraw-desktop-xyz.4"))
+
+    assert lane.agent_name.startswith("milhouse-excalidraw-deskt-")
+    assert len(lane.agent_name) == 32
+
+
+def test_two_keys_that_shorten_to_the_same_stem_get_different_names(lanes: Lanes) -> None:
+    """Truncation alone collides, so the digest covers the whole key."""
+    first = open_lane(lanes, issue("excalidraw-desktop-xyz.4"))
+    second = open_lane(lanes, issue("excalidraw-desktop-xyz.5"))
+
+    assert first.agent_name != second.agent_name
+
+
+def test_the_agent_name_is_the_same_in_another_process(lanes: Lanes) -> None:
+    """`milhouse reap` recomputes it elsewhere, so a salted `hash()` will not do."""
+    key = "excalidraw-desktop-xyz.4"
+    here = open_lane(lanes, issue(key)).agent_name
+
+    elsewhere = {agent_name_in_a_subprocess(key, hash_seed=seed) for seed in ("1", "2")}
+
+    assert elsewhere == {here}
 
 
 def test_a_pane_the_caller_owns_is_never_taken(lanes: Lanes, config: Config) -> None:

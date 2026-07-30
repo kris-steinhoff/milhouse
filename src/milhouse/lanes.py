@@ -36,6 +36,7 @@ than guessing, and names both lanes so a person can.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass, replace
@@ -59,7 +60,37 @@ that git could see would appear as untracked files in every other lane's
 ``is_dirty()`` check, and that is too quiet a failure to leave to a default.
 """
 
-_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
+_PREFIX = "milhouse-"
+"""What every agent milhouse starts is named after.
+
+herdr's registry carries no other marker for whose agent an agent is, so this is
+how ``herdr agent list`` shows milhouse's. It spends nine of the thirty-two
+characters a name has, and buying some of them back by shortening it would
+orphan every agent already running under the longer form.
+"""
+
+_MAX_NAME = 32
+"""Characters herdr allows in an agent name, prefix included.
+
+Its grammar is ``^[a-z][a-z0-9_-]{0,31}$``. The leading-letter rule is satisfied
+by :data:`_PREFIX`, so the length and the character set are what a key has to be
+made to fit.
+"""
+
+_DIGEST_BYTES = 3
+"""Digest bytes, so six hex characters, ending a name that had to be shortened.
+
+Enough to keep the handful of lanes one repository holds apart, and short enough
+to leave sixteen characters of the key legible to whoever reads the name.
+"""
+
+_UNSAFE = re.compile(r"[^a-z0-9_-]+")
+"""What herdr's character set does not allow, once the key is lowercased.
+
+The dot is handled before this runs. It is the one excluded character that
+carries meaning (beads suffixes every child issue with ``.N``), so collapsing it
+along with spaces and slashes would throw that away.
+"""
 
 
 @dataclass(frozen=True)
@@ -89,8 +120,38 @@ class Lane:
 
     @property
     def agent_name(self) -> str:
-        """The herdr agent name for this lane's turns, e.g. ``milhouse-bd-e.1``."""
-        return f"milhouse-{_UNSAFE.sub('-', self.key)}"
+        """The herdr agent name for this lane's turns, e.g. ``milhouse-bd-e_1``.
+
+        A key is not a name herdr will take. Its grammar is
+        ``^[a-z][a-z0-9_-]{0,31}$``, and beads suffixes every child issue with
+        ``.N``, an id can arrive in any case, and ``milhouse-`` in front of a
+        long repository prefix reaches thirty-two characters on its own. So the
+        key is lowercased, its dots become underscores, anything else outside the
+        character set collapses to ``-``, and a name that would overflow keeps
+        the front of the key and ends in a digest of the whole of it.
+
+        Two properties of that transform are load-bearing, because this name is
+        milhouse's handle on the agent for the rest of the turn:
+        :mod:`milhouse.runner` prompts it, polls it and exits it by name, and
+        ``milhouse reap`` recomputes it in a later process.
+
+        - **Distinct keys keep distinct names.** Hence ``_`` for the dot rather
+          than ``-``: ``-`` would make ``a.2`` and ``a-2`` one agent, and
+          milhouse would drive an agent working somebody else's issue. Plain
+          truncation collides the same way, which is what the digest answers.
+        - **The name is the same in every process.** The digest comes from
+          :mod:`hashlib` rather than from :func:`hash`, which is salted per
+          process and would have ``reap`` address an agent that does not exist.
+
+        Returns:
+            A name inside herdr's grammar, for any key.
+        """
+        safe = _UNSAFE.sub("-", self.key.lower().replace(".", "_"))
+        if len(_PREFIX) + len(safe) <= _MAX_NAME:
+            return f"{_PREFIX}{safe}"
+        digest = hashlib.blake2b(self.key.encode("utf-8"), digest_size=_DIGEST_BYTES).hexdigest()
+        stem = safe[: _MAX_NAME - len(_PREFIX) - len(digest) - 1].rstrip("-_")
+        return f"{_PREFIX}{stem}-{digest}"
 
 
 class Lanes:

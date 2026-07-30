@@ -340,7 +340,7 @@ def test_a_turn_runs_in_the_issue_s_own_lane(config: Config, decomposed: FakeTra
         runner = opened.runner_for(decomposed.issues[0])
 
     assert runner.workdir != config.repo_root
-    assert runner.agent_name == "milhouse-bd-e.1"
+    assert runner.agent_name == "milhouse-bd-e_1"
     assert client.workspaces[runner.pane_id.split(":")[0]] == "bd-e.1"
 
 
