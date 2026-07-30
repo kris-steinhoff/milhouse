@@ -312,6 +312,12 @@ class Lanes:
 
         Same checkout, same branch, fresh agent. Branching from the predecessor
         instead would fork work that is meant to be one line of it.
+
+        The tab label is the issue id unchanged. herdr does not constrain a label
+        (:meth:`~milhouse.herdr.HerdrClient.create_tab`), and :meth:`locate` finds it
+        by matching it exactly, so sanitizing it would only lose the tab. An agent
+        name is the one identifier that cannot be the raw id, which is what
+        :attr:`Lane.agent_name` is for.
         """
         pane_id = self.client.create_tab(
             predecessor.workspace_id, predecessor.path, issue.id, focus=focus
@@ -325,7 +331,20 @@ class Lanes:
         )
 
     def _new_lane(self, key: str, *, source_workspace: str, base: str, focus: bool) -> Lane:
-        """Open a worktree labelled ``key``, re-using the checkout if one survived."""
+        """Open a worktree labelled ``key``, re-using the checkout if one survived.
+
+        Both identifiers this derives from ``key`` take it as it is, unlike
+        :attr:`Lane.agent_name`:
+
+        - The **workspace label** is the key itself. Unconstrained by herdr, and
+          required to be untouched, because :meth:`locate` matches it exactly.
+        - The **branch** is :attr:`~milhouse.config.LaneConfig.branch_prefix` plus
+          the key, and git is what constrains it. A bead id passes whole:
+          ``milhouse/bd-e.1`` is a legal ref name, since git only objects to a dot
+          leading a component, a doubled one, or a ``.lock`` ending. The rule that
+          bites first is not git's but herdr's checkout path, which flattens the
+          dot (see :attr:`~milhouse.herdr.Worktree.path`).
+        """
         branch = f"{self.config.lane.branch_prefix}{key}"
         sleeping = self.dormant(branch)
         if sleeping is not None:

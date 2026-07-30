@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from milhouse.errors import HerdrError, TurnTimeoutError
-from milhouse.herdr import HerdrClient
+from milhouse.herdr import AGENT_NAME_RULE, HerdrClient
 
 from .fakes import FakeProc, Reply
 
@@ -126,6 +126,54 @@ def test_starting_an_agent_passes_kind_pane_and_args(
     assert argv[argv.index("--kind") + 1] == "claude"
     assert argv[argv.index("--pane") + 1] == "wG:p1"
     assert argv[argv.index("--") + 1] == "--dangerously-skip-permissions"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["milhouse-bd-e.1", "milhouse-BD-E", "1milhouse", "milhouse-" + "x" * 24, ""],
+    ids=["dot", "uppercase", "leading-digit", "thirty-three", "empty"],
+)
+def test_a_name_herdr_would_refuse_never_reaches_herdr(
+    client: HerdrClient, fake_proc: FakeProc, name: str
+) -> None:
+    """These arrived as CLI JSON, after the lane was opened and the issue claimed.
+
+    The empty `calls` is the assertion: `fake_proc` is strict, so dropping the
+    check turns this into an unmatched-command failure rather than a pass.
+    """
+    with pytest.raises(HerdrError, match="invalid herdr agent name"):
+        client.start_agent(name, kind="claude", pane_id="wG:p1")
+
+    assert fake_proc.calls == []
+
+
+def test_the_refusal_names_the_name_and_the_rule(client: HerdrClient, fake_proc: FakeProc) -> None:
+    """Nothing else will: herdr, which would have said it, was never asked."""
+    with pytest.raises(HerdrError) as caught:
+        client.start_agent("milhouse-bd-e.1", kind="claude", pane_id="wG:p1")
+
+    assert "milhouse-bd-e.1" in str(caught.value)
+    assert AGENT_NAME_RULE in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["milhouse-bd_e_1", "milhouse-bd-e-", "m" * 32],
+    ids=["underscores", "trailing-hyphen", "thirty-two"],
+)
+def test_a_name_herdr_takes_is_not_refused_here(
+    client: HerdrClient, fake_proc: FakeProc, name: str
+) -> None:
+    """Refusing one of these would be the same bug facing the other way.
+
+    A lane that cannot start an agent, for a reason herdr does not hold. All three
+    reached pane resolution on the live 0.7.5 server, so all three are herdr's.
+    """
+    fake_proc.expect("herdr agent start", Reply(stdout=AGENT_STARTED))
+
+    client.start_agent(name, kind="claude", pane_id="wG:p1")
+
+    assert fake_proc.calls[0][:4] == ("herdr", "agent", "start", name)
 
 
 def test_prompt_waits_for_the_settled_states_including_done(
@@ -452,10 +500,10 @@ def test_the_agents_own_pane_is_reported(fake_proc: FakeProc) -> None:
         Reply(stdout=wrapped("agent:get", {"agent": {"pane_id": "wL1:p3"}})),
     )
 
-    assert HerdrClient().agent_pane("milhouse-bd-e.1") == "wL1:p3"
+    assert HerdrClient().agent_pane("milhouse-bd-e_1") == "wL1:p3"
 
 
 def test_an_agent_herdr_has_lost_has_no_pane(fake_proc: FakeProc) -> None:
     fake_proc.expect("herdr agent get", Reply(stdout=error("agent:get", "agent_not_found", "gone")))
 
-    assert HerdrClient().agent_pane("milhouse-bd-e.1") is None
+    assert HerdrClient().agent_pane("milhouse-bd-e_1") is None

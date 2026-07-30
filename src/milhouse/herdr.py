@@ -4,16 +4,22 @@ Everything milhouse knows about herdr's argv lives here, so swapping the CLI for
 the socket API later is one file rather than a refactor
 (:doc:`ADR 0001 <../../docs/decisions/0001-shell-out-to-bd-and-herdr>`).
 
-Two things about the CLI shape the code:
+Three things about the CLI shape the code:
 
 - Responses are wrapped: ``{"id": "cli:agent:start", "result": {...}}``.
 - **Errors come back with exit status 0** as ``{"error": {"code", "message"}}``,
   so every call has to inspect the payload rather than trust the exit status.
   :func:`HerdrClient._call` is the one place that does.
+- **One identifier herdr takes is validated, and the labels are not.** An agent
+  name has a grammar (:data:`AGENT_NAME`), checked here before the call, so a
+  name milhouse built badly is refused before anything is created. A workspace,
+  worktree or tab label is free text that herdr stores verbatim, so an issue id
+  goes into one whole, which is what milhouse then finds the lane again by.
 """
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +38,32 @@ SETTLED: tuple[AgentStatus, ...] = ("idle", "done", "blocked")
 
 TIMEOUT = 120.0
 """Seconds a non-blocking herdr call may take, as a backstop against a wedged server."""
+
+AGENT_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+"""herdr's grammar for an agent name, which is herdr's rule and so lives here.
+
+The grammar is written ``^[a-z][a-z0-9_-]{0,31}$`` where herdr states it, and
+kept unanchored here because every use is a :meth:`~re.Pattern.fullmatch`.
+:attr:`~milhouse.lanes.Lane.agent_name` is built to satisfy it, and
+:meth:`HerdrClient.start_agent` is where that is checked rather than assumed: a
+name outside it used to come back as raw CLI JSON, after the lane had been
+opened and the issue claimed.
+
+Confirmed by probing herdr 0.7.5 rather than read out of its source. Refused: 33
+characters, a leading digit, uppercase, an empty name. Taken: 32 characters,
+underscores, a trailing hyphen. Nothing pins the herdr version milhouse talks to,
+so whether an older server enforced this is unknown.
+"""
+
+AGENT_NAME_RULE = (
+    "must start with a lowercase letter and contain only lowercase letters, "
+    "digits, '-' or '_' (1-32 characters)"
+)
+"""herdr's own words for :data:`AGENT_NAME`, quoted so both refusals read alike.
+
+A name refused here never reaches herdr, so this is the only place the sentence
+can come from, and keeping herdr's wording means one search finds either failure.
+"""
 
 
 @dataclass(frozen=True)
@@ -60,7 +92,13 @@ class Worktree:
 
     Attributes:
         path: The checkout on disk. herdr puts linked worktrees under
-            ``~/.herdr/worktrees/<repo>/<branch>``, outside the repository.
+            ``~/.herdr/worktrees/<repo>/<branch>``, outside the repository, with
+            ``/`` and ``.`` in the branch flattened to ``-``:
+            ``milhouse/bd-e.1`` becomes ``milhouse-bd-e-1``. So two branches
+            differing only in ``.`` against ``-`` want the one directory, and the
+            second :meth:`HerdrClient.create_worktree` fails with
+            ``worktree_create_failed``. Distinct bead ids do not collide there in
+            practice, and the failure is loud when they do.
         branch: The branch checked out there.
         workspace_id: The workspace holding it, or ``""`` when nothing has it
             open — a worktree that outlived the workspace it was created in.
@@ -108,7 +146,10 @@ class HerdrClient:
 
         Args:
             cwd: Working directory the pane opens in — the repository root.
-            label: Workspace label, e.g. ``milhouse:hello``.
+            label: Workspace label, e.g. ``milhouse:hello``. Unconstrained: herdr
+                stores a label verbatim, which is why the colon is free. Probed
+                against 0.7.5 with dots, spaces, uppercase, two hundred
+                characters and the empty string, all of which came back unchanged.
             focus: Bring the workspace to the front. ``False`` keeps an
                 unattended run from stealing the user's screen.
 
@@ -331,7 +372,11 @@ class HerdrClient:
             base: Ref to branch from.
             label: Label for the new workspace. milhouse uses the issue id, which
                 is what :meth:`worktrees` plus :meth:`workspace_labels` then finds
-                it again by.
+                it again by. Unconstrained, as in :meth:`create_workspace`, so the
+                ``.N`` on a child issue survives and the id can go in whole. That
+                is a requirement rather than a convenience: the lookup matches the
+                label exactly, so an id sanitized on the way in is a lane nothing
+                finds on the way out.
             focus: Bring the new workspace to the front.
 
         Returns:
@@ -375,7 +420,8 @@ class HerdrClient:
         Args:
             source_workspace: The workspace of the primary checkout.
             path: The existing checkout.
-            label: Label for the workspace, namely the issue id.
+            label: Label for the workspace, namely the issue id. Unconstrained and
+                matched exactly, as in :meth:`create_worktree`.
             focus: Bring it to the front.
 
         Returns:
@@ -411,7 +457,11 @@ class HerdrClient:
         Args:
             workspace_id: The lane's workspace.
             cwd: Working directory for the tab, namely the lane's checkout.
-            label: Label for the tab, namely the issue id.
+            label: Label for the tab, namely the issue id. Unconstrained like a
+                workspace label (probed against 0.7.5 with the same dots, spaces
+                and lengths), and matched exactly by the lane lookup, so the id
+                goes in unchanged. herdr labels a tab nobody named with its
+                number, so ``1`` is a label a lane can hold without meaning one.
             focus: Bring it to the front.
 
         Returns:
@@ -527,8 +577,16 @@ class HerdrClient:
         it has detected the expected agent, so this is a checkable step rather
         than a sleep.
 
+        This is the only call that *introduces* a name, so it is the only one that
+        checks it against :data:`AGENT_NAME`. Everything after it addresses an
+        agent herdr already accepted, and an unknown name there is
+        ``agent_not_found``, which says what it is. Refusing early is what keeps
+        a name milhouse built badly from being discovered as CLI JSON in the
+        middle of an iteration, with the lane opened and the issue claimed.
+
         Args:
-            name: Agent name, used to address it afterwards.
+            name: Agent name, used to address it afterwards. Must match
+                :data:`AGENT_NAME`.
             kind: A ``herdr agent start --kind`` value, e.g. ``claude``.
             pane_id: The pane to start it in.
             args: Extra arguments for the agent binary, passed after ``--``.
@@ -538,9 +596,12 @@ class HerdrClient:
             The started agent.
 
         Raises:
-            HerdrError: The pane was not at a shell prompt, or the agent was not
-                detected in time.
+            HerdrError: The name is outside herdr's grammar, in which case nothing
+                was started at all. Or the pane was not at a shell prompt, or the
+                agent was not detected in time.
         """
+        if not AGENT_NAME.fullmatch(name):
+            raise HerdrError(f"invalid herdr agent name {name!r}: an agent name {AGENT_NAME_RULE}")
         argv = [
             "agent",
             "start",

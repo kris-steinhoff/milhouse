@@ -293,7 +293,16 @@ class Session:
 
     @property
     def workspace_label(self) -> str:
-        """The label milhouse gives this repository's workspace."""
+        """The label milhouse gives this repository's workspace.
+
+        Unconstrained: herdr stores a label verbatim
+        (:meth:`~milhouse.herdr.HerdrClient.create_workspace`), so the colon costs
+        nothing and a directory name goes in whatever shape it has. What it does
+        have to be is derived the same way twice, because
+        :meth:`~milhouse.herdr.HerdrClient.find_workspace` matches it exactly and
+        that is how a later run rejoins this workspace instead of opening a second
+        one.
+        """
         return f"milhouse:{self.config.repo_root.name}"
 
     def open_workspace(self) -> None:
