@@ -798,8 +798,68 @@ def test_the_run_report_says_what_landed_on_the_integration_branch(
     assert "not merged (1)" in output
     assert "src/a.py" in output
     assert "Land it by hand." in output
-    # Two issues closed, one of them on the branch. The summary says both.
-    assert "bd-e: 2 issue(s) closed, 1 merged —" in output
+    # Two issues closed, one of them on the branch and one of them not. The
+    # summary says all three numbers, because "2 closed, 1 merged" leaves the
+    # reader to notice the missing one.
+    assert "bd-e: 2 issue(s) closed, 1 merged, 1 not merged —" in output
+
+
+def test_the_run_report_tells_the_two_kinds_of_unlanded_branch_apart(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The fifth watched run's report: four closed issues, one of them on the branch.
+
+    One conflict stopped the run, and the two turns the drain finished were
+    never merged. A reader has to be able to tell which is which and what to do
+    about each (ADR 0024).
+    """
+    conflicted = MergeRecord(
+        source="milhouse/bd-e--bd-e.2",
+        target="milhouse/bd-e",
+        conflicts=["src/a.py", "src/b.py", "tests/t.py"],
+    )
+    result = RunResult(
+        target=Issue(id="bd-e", title="Add a hello command", status="open"),
+        halt=Halt("conflict", "bd-e.2 is closed but its work is not on milhouse/bd-e"),
+        iterations=[
+            merged_turn(
+                1,
+                "bd-e.1",
+                MergeRecord(
+                    source="milhouse/bd-e--bd-e.1",
+                    target="milhouse/bd-e",
+                    sha="a" * 40,
+                    fast_forwarded=True,
+                ),
+            ),
+            merged_turn(2, "bd-e.2", conflicted),
+            *[
+                merged_turn(
+                    number,
+                    f"bd-e.{number}",
+                    MergeRecord(
+                        source=f"milhouse/bd-e--bd-e.{number}",
+                        target="milhouse/bd-e",
+                        skipped="milhouse/bd-e--bd-e.2 did not land in milhouse/bd-e",
+                    ),
+                )
+                for number in (3, 4)
+            ],
+        ],
+    )
+
+    cli._print_run(result, lane=None)
+
+    output = capsys.readouterr().out
+    assert "merged (1)" in output
+    assert "not merged (3)" in output
+    # The one git refused says so, and names every file.
+    assert "bd-e.2  milhouse/bd-e--bd-e.2 conflicts with milhouse/bd-e in 3 file(s)" in output
+    # The two nobody attempted say which branch has to be landed first.
+    assert "bd-e.3  milhouse/bd-e--bd-e.3 was not merged into milhouse/bd-e" in output
+    assert output.count("because milhouse/bd-e--bd-e.2 did not land") == 2
+    assert "Land them by hand in the order above" in output
+    assert "bd-e: 4 issue(s) closed, 1 merged, 3 not merged —" in output
 
 
 def test_the_run_report_says_which_merge_made_the_branch_red(

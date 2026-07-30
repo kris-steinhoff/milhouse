@@ -14,6 +14,7 @@ import pytest
 
 from milhouse import parallel
 from milhouse.config import Config
+from milhouse.gitrepo import Merge
 from milhouse.herdr import Worktree
 from milhouse.models import Issue
 from milhouse.parallel import Parallel
@@ -407,6 +408,103 @@ def test_a_drained_body_starts_nothing_more(config: Config, decomposed: FakeTrac
         assert running(opened, POLICY) is None
 
     assert len(runner.turns) == started
+
+
+def with_worker_lanes(target: str, *issue_ids: str) -> FakeClient:
+    """A herdr client holding a worker lane per issue, branched under ``target``.
+
+    What `--count N` above one leaves standing: each lane labelled with its
+    issue and on a branch of its own, which is what `reap` reads back and what a
+    merge into the integration branch names (ADR 0024).
+    """
+    client = FakeClient()
+    for number, issue_id in enumerate(issue_ids):
+        branch = f"milhouse/{target}--{issue_id}"
+        workspace_id = f"wW{number}"
+        client.workspaces[workspace_id] = issue_id
+        client.checkouts.append(
+            Worktree(
+                path=Path("/worktrees") / branch.replace("/", "-"),
+                branch=branch,
+                workspace_id=workspace_id,
+            )
+        )
+    return client
+
+
+def test_a_drain_merges_nothing_into_a_branch_that_has_already_refused_one(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """The fifth watched run, as a regression: four turns, one landed, three not.
+
+    ADR 0024's `--count 4` run over four issues that all touched the same lines.
+    The first turn fast-forwarded, the second conflicted and halted the run, and
+    the two still in flight were reaped, verified, merged, and conflicted in the
+    same three files. Each is a closed issue on a live branch, and the run ended
+    saying `4 issue(s) closed, 1 merged`.
+    """
+    decomposed.issues = decomposed.issues[:4]
+    ids = [issue.id for issue in decomposed.issues]
+    repo = FakeRepo()
+    attempts: list[Merge] = [
+        Merge(sha="f" * 40, fast_forwarded=True),
+        Merge(sha=None, fast_forwarded=False, conflicts=("src/a.py", "src/b.py", "tests/t.py")),
+    ]
+
+    def merge(branch: str, *, message: str = "") -> Merge:
+        repo.merged.append((repo.scope, branch))
+        # A third call would be the bug: git is asked to combine a branch with
+        # one it has just refused to combine with.
+        return attempts.pop(0)
+
+    repo.merge = merge  # ty: ignore[invalid-assignment]
+    session, runner = build(
+        config,
+        tracker=decomposed,
+        script=["close"] * 4,
+        repo=repo,
+        client=with_worker_lanes("bd-e", *ids),
+        lane_key="bd-e",
+        worker_lanes=True,
+    )
+    finish = FakeRunner.finish_turn
+
+    def one_at_a_time(iteration: int, *, issue_id: str | None = None) -> TurnResult:
+        # One turn settles per poll, so the halt fires with two still working.
+        runner.working = True
+        return finish(runner, iteration, issue_id=issue_id)
+
+    runner.finish_turn = one_at_a_time  # ty: ignore[invalid-assignment]
+
+    def wake(seconds: float) -> None:
+        runner.working = False
+
+    running = Parallel(count=4, max_iterations=50, poll_ms=250, sleep=wake)
+    lines: list[str] = []
+    session.report = lines.append
+
+    with session as opened:
+        result = run(opened, TARGET, policy=POLICY, max_iterations=50, body=running)
+
+    assert result.halt.reason == "conflict"
+    # Two turns were still working when it fired, and the drain says what it is
+    # about to do with them rather than promising a merge it will not make.
+    assert any("draining 2 turn(s) already in flight" in line for line in lines)
+    assert any("nothing more is merged into milhouse/bd-e" in line for line in lines)
+    # Every turn was finished and settled: that is what the drain is for.
+    assert [item.issue_id for item in result.iterations] == ids
+    assert all(issue.is_closed for issue in decomposed.issues)
+    assert result.still_running == []
+    # And exactly two merges were attempted, not four.
+    assert [branch for _, branch in repo.merged] == [
+        "milhouse/bd-e--bd-e.1",
+        "milhouse/bd-e--bd-e.2",
+    ]
+    assert [item.issue_id for item in result.merged()] == ["bd-e.1"]
+    assert [item.issue_id for item in result.unmerged()] == ["bd-e.2", "bd-e.3", "bd-e.4"]
+    drained = [item.merge for item in result.unmerged()[1:]]
+    assert all(item is not None and item.skipped for item in drained)
+    assert all(item is not None and "bd-e--bd-e.2" in item.skipped for item in drained)
 
 
 def test_a_run_names_a_turn_it_could_not_collect(config: Config, decomposed: FakeTracker) -> None:

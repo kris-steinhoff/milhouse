@@ -815,6 +815,72 @@ def test_a_reaped_worker_turn_lands_the_branch_herdr_says_it_ran_on(
     assert repo.merged == [(INTEGRATION_PATH, WORKER_BRANCH)]
 
 
+SECOND_BRANCH = "milhouse/bd-e--bd-e.2"
+"""The worker branch of a turn that settles after one has already conflicted."""
+
+
+def two_lanes() -> FakeClient:
+    """Herdr holding a worker lane per issue, which is what `--count 2` leaves."""
+    client = with_lane(FakeClient(), "bd-e.1", branch=WORKER_BRANCH)
+    return with_lane(client, "bd-e.2", branch=SECOND_BRANCH)
+
+
+def test_nothing_is_merged_into_a_branch_that_has_already_refused_a_merge(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """The integration branch is no longer a prefix of the merge order (ADR 0024)."""
+    session, runner, repo = landing(config, decomposed, ["close", "close"], client=two_lanes())
+    repo.merge_result = Merge(sha=None, fast_forwarded=False, conflicts=("src/a.py",))
+    runner.working = True
+    with session as opened:
+        dispatch(opened, limit=2)
+
+    runner.working = False
+    lines: list[str] = []
+    session.report = lines.append
+    with session as opened:
+        results = reap(opened)
+
+    # Both turns settled in the same reap pass, which is how the second one was
+    # merged in the watched run before `run()` had been told about the first.
+    assert [result.iteration.issue_id for result in results] == ["bd-e.1", "bd-e.2"]
+    assert repo.merged == [(INTEGRATION_PATH, WORKER_BRANCH)]
+    first, second = (result.iteration.merge for result in results)
+    assert first is not None and second is not None
+    assert first.conflicts == ["src/a.py"]
+    assert not second.landed
+    assert second.sha is None
+    assert second.skipped == f"{WORKER_BRANCH} did not land in milhouse/bd-e"
+    assert session.refused_merge is first
+    # And the branch that has to be landed first is named where somebody sees it.
+    named = [line for line in lines if f"{SECOND_BRANCH} was not merged" in line]
+    assert named and all(WORKER_BRANCH in line for line in named)
+
+
+def test_a_turn_whose_branch_is_not_merged_is_still_finished(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """A drain exists so in-flight work is not abandoned; only the merge stops."""
+    session, runner, repo = landing(config, decomposed, ["close", "close"], client=two_lanes())
+    repo.merge_result = Merge(sha=None, fast_forwarded=False, conflicts=("src/a.py",))
+    runner.working = True
+    with session as opened:
+        dispatch(opened, limit=2)
+
+    runner.working = False
+    with session as opened:
+        results = reap(opened)
+
+    assert [result.iteration.outcome for result in results] == ["success", "success"]
+    # Closed, recorded, settled, and its commits are on its own branch either way.
+    assert all(issue.is_closed for issue in decomposed.issues)
+    assert decomposed.released == []
+    assert [item.issue_id for item in session.audit.iterations()] == ["bd-e.1", "bd-e.2"]
+    recorded = session.audit.iterations()[1].merge
+    assert recorded is not None
+    assert recorded.skipped and not recorded.landed
+
+
 def test_a_step_with_no_integration_lane_merges_nothing(
     config: Config, decomposed: FakeTracker
 ) -> None:
@@ -933,6 +999,29 @@ def test_a_repository_with_no_gate_pays_for_no_extra_runs(
     assert fake_proc.calls == []
     assert result.iteration.verified is None
     assert result.iteration.integration_verified is None
+
+
+def test_a_merge_nobody_attempted_costs_no_gate_run_on_the_integration_branch(
+    config: Config, decomposed: FakeTracker, fake_proc: FakeProc
+) -> None:
+    """The turn's own gate still decides its outcome; the integration branch is untouched."""
+    config.verify.command = ["make", "check"]
+    fake_proc.expect("make check", Reply(stdout="ok"))
+    session, runner, repo = landing(config, decomposed, ["close", "close"], client=two_lanes())
+    repo.merge_result = Merge(sha=None, fast_forwarded=False, conflicts=("src/a.py",))
+    runner.working = True
+    with session as opened:
+        dispatch(opened, limit=2)
+
+    runner.working = False
+    with session as opened:
+        results = reap(opened)
+
+    # Once per turn, in the lane the work happened in, and never on the branch
+    # nothing was merged into.
+    assert fake_proc.where("make", "check") == [WORKER_PATH, WORKER_PATH]
+    assert [result.iteration.verified for result in results] == [True, True]
+    assert [result.iteration.integration_verified for result in results] == [None, None]
 
 
 def test_a_turn_that_landed_nothing_verifies_no_integration_branch(

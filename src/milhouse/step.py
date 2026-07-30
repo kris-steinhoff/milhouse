@@ -442,6 +442,16 @@ def _land(session: Session, pending: Dispatched, outcome: Outcome) -> MergeRecor
     closed, and the record names both branches for whoever lands it by hand
     (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
 
+    **It is also the last merge into that branch.** A merge that did not land
+    closes the integration branch for the rest of the session, so every turn
+    after it gets a record saying its branch was not merged and why, rather than
+    a second failure. The integration branch has stopped being a prefix of the
+    merge order: landing a later branch on it would move the target out from
+    under the resolution the report just asked somebody to do, and the run's one
+    merge order is what makes a failure reproducible from the report. The turn
+    itself is unaffected. It is reaped, verified, recorded and settled like any
+    other, because that part is what the drain exists for.
+
     Args:
         session: The open session, which owns the integration lane.
         pending: The turn that has just ended, carrying the lane it ran in.
@@ -459,6 +469,14 @@ def _land(session: Session, pending: Dispatched, outcome: Outcome) -> MergeRecor
         return None
 
     target = integration.branch
+    refused = session.refused_merge
+    if refused is not None:
+        skipped = MergeRecord(
+            source=source, target=target, skipped=f"{refused.source} did not land in {target}"
+        )
+        session.report(about(pending.issue.id, f"→ {merge_line(skipped)}"))
+        return skipped
+
     session.report(about(pending.issue.id, f"merging {source} into {target} in {integration.path}"))
     try:
         merged = session.repo.at(integration.path).merge(
@@ -475,6 +493,8 @@ def _land(session: Session, pending: Dispatched, outcome: Outcome) -> MergeRecor
             conflicts=list(merged.conflicts),
         )
     session.report(about(pending.issue.id, f"→ {merge_line(record)}"))
+    if not record.landed:
+        session.refused_merge = record
     return record
 
 
@@ -485,10 +505,19 @@ def merge_line(record: MergeRecord) -> str:
     could not: a closed issue, a live branch, and an integration branch without
     its work. That line therefore names both branches and every path.
 
+    A merge nobody attempted says which branch has to be landed first, because
+    that is the whole of its recovery: the branches land by hand in the order
+    the run reports them, and the first of them is the one that stopped it.
+
     Public because a merge that did not land halts the run, and the halt's
     detail and the run's report should say the same thing the turn said as it
     happened rather than three wordings of it (:mod:`milhouse.run`).
     """
+    if record.skipped:
+        return (
+            f"{record.source} was not merged into {record.target}, because "
+            f"{record.skipped}. Land that branch first, then this one."
+        )
     if record.conflicts:
         return (
             f"{record.source} conflicts with {record.target} in "
@@ -540,7 +569,9 @@ def _verify_integration(
     A fast-forward leaves the integration branch with the tree the worker lane
     was already verified against, so a second run would test nothing new, and
     skipping it is what keeps a serial-shaped run from paying twice. A merge that
-    did not land halts the run on its own and has nothing to verify.
+    did not land halts the run on its own and has nothing to verify, and neither
+    has one :func:`_land` never attempted, which is why closing the integration
+    branch to further merges costs no gate run to enforce.
 
     A red result **reverts nothing**. The merge stays, the issue stays closed,
     and the failing output goes on the issue as a note, where somebody will look.

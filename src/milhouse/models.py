@@ -277,14 +277,28 @@ class MergeRecord(BaseModel):
     losing it to report the merge failure would be the worse trade.
     """
 
+    skipped: str = ""
+    """Why git was never asked, when it was not.
+
+    Set for every merge after the first one that did not land: the integration
+    branch is closed to further merges for the rest of the run, because it has
+    stopped being a prefix of the merge order and a later branch landing on it
+    would change the resolution a person has to do
+    (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+    The turn itself is finished, recorded and settled exactly as any other, so
+    this says only what became of its branch.
+    """
+
     @property
     def landed(self) -> bool:
         """Whether the integration branch now contains :attr:`source`.
 
         True for a fast-forward, for a merge commit, and for a branch that was
-        already contained. False is the mess a serial run could not leave.
+        already contained. False is the mess a serial run could not leave, and
+        it covers a merge nobody attempted as well as one git refused: the
+        consequence is the same closed issue on the same live branch.
         """
-        return not self.conflicts and not self.error
+        return not self.conflicts and not self.error and not self.skipped
 
     @property
     def joined(self) -> bool:

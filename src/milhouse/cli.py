@@ -776,6 +776,8 @@ def _print_run(result: RunResult, *, lane: Lane | None) -> None:
     merged, unmerged = result.merged(), result.unmerged()
     if merged or unmerged:
         parts.append(f"{len(merged)} merged")
+    if unmerged:
+        parts.append(f"{len(unmerged)} not merged")
     if result.still_running:
         parts.append(f"{len(result.still_running)} still running")
     summary = f"{result.target.id}: {', '.join(parts)} — {result.halt.detail}"
@@ -789,6 +791,14 @@ def _print_merges(result: RunResult) -> None:
     merges nothing into it. A branch that did not land gets its own block rather
     than a line in this one: it is why the run stopped, the issue is closed
     anyway, and landing it is somebody's next job.
+
+    That block can hold more than one branch, and then the order is the
+    instruction. The first line is the merge that stopped the run, and the ones
+    under it are turns that finished during the drain and were never merged,
+    because the integration branch was closed to further merges by then
+    (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+    :func:`milhouse.step.merge_line` says which is which per branch, so the
+    block does not need splitting in two.
 
     A merge that landed and then failed the gate on the integration branch gets
     a block too, because the line above it says the merge succeeded and that is
@@ -816,7 +826,13 @@ def _print_merges(result: RunResult) -> None:
         typer.secho(f"not merged ({len(unmerged)})", fg=typer.colors.RED)
         for line in _merge_lines(unmerged):
             typer.echo(line)
-        typer.echo("  The issue is closed and the work is on its branch. Land it by hand.")
+        typer.echo("  Each issue is closed and its work is on its branch.")
+        if len(unmerged) > 1:
+            typer.echo("  The first of these stopped the run, and nothing was merged after it.")
+            typer.echo("  Land them by hand in the order above, which is the order this run")
+            typer.echo("  would have merged them.")
+        else:
+            typer.echo("  Land it by hand.")
 
 
 def _merge_lines(items: list[Iteration]) -> list[str]:

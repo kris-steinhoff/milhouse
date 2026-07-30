@@ -70,6 +70,7 @@ milhouse run <target> [--count N]
         should_halt()     → blocked agent, milhouse error, dirty tree, a merge
                             that did not land, a red integration branch, ceiling
         halting?          → drain: start nothing more, finish what is in flight
+                            (and merge none of it, once a merge has not landed)
         otherwise         → go again
 ```
 
@@ -161,13 +162,14 @@ What the two cost is worth recording, because it is where the layering was not f
 | `Lanes.open_worker`, `worker_branch`, `WORKER_SEPARATOR` | Resources | 0024 | A worker lane's branch is namespaced under the target so two runs cannot collide, and git refused the first spelling of that name |
 | `step._land`, `step._verify_integration`, `step.merge_line` | Work | 0024 | Landing a turn is part of finishing it, and a merge that joined two histories leaves a tree the gate has never been run against |
 | `MergeRecord`, `Iteration.merge`, `Iteration.integration_verified` | values | 0024 | A pure halt table cannot ask git what a merge did, so what it did has to arrive on the value it is handed — the same shape as `Iteration.attempt` |
+| `Session.refused_merge`, `MergeRecord.skipped` | Resources, values | 0024 | A merge that did not land is the last merge of the run, and the state that says so belongs to the integration branch rather than to the drain, because turns settling in one reap pass are all merged before the loop is told about the first |
 | `--count`, `cli._body`, `[run] max_parallel`, `[run] poll_ms` | surface | 0024 | The width is a flag and a config key, and `cli._body` is the one place that turns it into a body |
 
 **The 0022 rows are not repetition leaking downwards.** Each is a thing that was underspecified while a person was in the loop, and had to be decided once nobody was.
 
 **The 0024 prediction did not hold, and it is worth being exact about how.** The prediction was that a `--count N` run would replace `run.py`'s loop body and nothing else. What actually shipped added `parallel.py` and changed `run.py`, `session.py`, `step.py`, `lanes.py`, `models.py`, `config.py`, and `cli.py`.
 
-What did **not** leak is the count. Nothing below the Repetition layer learned how many turns are coming: `worker_lanes` is a mode rather than a number, `step._land` merges one turn without knowing whether another exists, `outcome.py` and `policy.py` were not touched at all, and N itself lives in `parallel.py`, the config key it arrives from, and the one line of `cli.py` that turns one into the other. The original test survived the thing it was written for.
+What did **not** leak is the count. Nothing below the Repetition layer learned how many turns are coming: `worker_lanes` is a mode rather than a number, `step._land` merges one turn without knowing whether another exists (what it reads besides the turn is what the integration branch has already done, which is not a count either), `outcome.py` and `policy.py` were not touched at all, and N itself lives in `parallel.py`, the config key it arrives from, and the one line of `cli.py` that turns one into the other. The original test survived the thing it was written for.
 
 What leaked instead is **simultaneity**, which is a different fact about a run than its width. Two turns at once means two branches where there was one, so every layer that touches a branch had to learn the difference between the branch a turn commits to and the branch a person reviews: `lanes.py` to name it, `session.py` to open and lock it, `step.py` to merge into it and verify it, `models.py` to carry what the merge did, and `run.py` to have an opinion when it fails. The leak went sideways rather than downwards.
 

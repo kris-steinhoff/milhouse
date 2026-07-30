@@ -76,6 +76,15 @@ def test_a_conflicted_or_refused_merge_did_not_land() -> None:
     assert (conflicted.source, conflicted.target) == ("milhouse/bd-e--bd-e.1", "milhouse/bd-e")
 
 
+def test_a_merge_nobody_attempted_did_not_land_either() -> None:
+    """Same consequence as a conflict: a closed issue on a branch only a person can land."""
+    skipped = merge(skipped="milhouse/bd-e--bd-e.1 did not land in milhouse/bd-e")
+
+    assert not skipped.landed
+    # And nothing was combined, so there is no integration branch to re-verify.
+    assert not skipped.joined
+
+
 # -- the dependency graph ------------------------------------------------------
 
 

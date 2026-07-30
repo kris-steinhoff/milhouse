@@ -180,6 +180,18 @@ class FakeClient:
             return f"{workspace_id}:p2"
         return f"{workspace_id}:p1"
 
+    def _fresh_workspace(self) -> str:
+        """A workspace id nothing is using, since herdr never hands one out twice.
+
+        A test that stands lanes up by hand names them itself, so a counter that
+        only counted what this fake created would relabel one of them the moment
+        a second lane existed.
+        """
+        self._next += 1
+        while f"wL{self._next}" in self.workspaces:
+            self._next += 1
+        return f"wL{self._next}"
+
     # -- worktrees and tabs -----------------------------------------------
 
     def worktrees(self, repo_root: Path) -> list[Worktree]:
@@ -200,8 +212,7 @@ class FakeClient:
         label: str,
         focus: bool = False,
     ) -> Worktree:
-        self._next += 1
-        workspace_id = f"wL{self._next}"
+        workspace_id = self._fresh_workspace()
         worktree = Worktree(
             path=Path("/worktrees") / branch.replace("/", "-"),
             branch=branch,
@@ -217,8 +228,7 @@ class FakeClient:
     def open_worktree(
         self, *, source_workspace: str, path: Path, label: str, focus: bool = False
     ) -> Worktree:
-        self._next += 1
-        workspace_id = f"wL{self._next}"
+        workspace_id = self._fresh_workspace()
         dormant = next(item for item in self.checkouts if item.path == path)
         reopened = Worktree(
             path=path,

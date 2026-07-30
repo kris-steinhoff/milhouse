@@ -60,6 +60,15 @@ def refused() -> MergeRecord:
     return MergeRecord(source=WORKER, target=INTEGRATION, error="the index is locked")
 
 
+def skipped() -> MergeRecord:
+    """A merge milhouse did not ask for, the branch having already refused one."""
+    return MergeRecord(
+        source="milhouse/bd-e--bd-e.2",
+        target=INTEGRATION,
+        skipped=f"{WORKER} did not land in {INTEGRATION}",
+    )
+
+
 class FakeBody:
     """A loop body with turns of its own, which is what a concurrent one is.
 
@@ -539,6 +548,52 @@ def test_a_second_halt_reason_during_the_drain_does_not_change_the_outcome(
     assert len(result.iterations) == 3
     # And the conflict is still reported, because somebody has to land it.
     assert [item.issue_id for item in result.unmerged()] == ["bd-e.2"]
+
+
+def test_the_drain_promises_a_merge_only_while_one_is_still_possible(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """The watched run was told a successful turn is still merged, and none was."""
+    body = FakeBody(
+        hands_back=[settled("success", merge=conflicted())],
+        drains=[settled("success", issue_id="bd-e.2", merge=skipped())],
+    )
+    session, _ = build(config, tracker=decomposed, script=[])
+    lines: list[str] = []
+
+    with session as opened:
+        opened.report = lines.append
+        # What `step._land` sets on the session when a merge does not land.
+        opened.refused_merge = conflicted()
+        result = go(opened, body=body)
+
+    assert result.halt.reason == "conflict"
+    announced = next(line for line in lines if "draining" in line)
+    assert "not abandoned" in announced
+    assert f"nothing more is merged into {INTEGRATION}" in announced
+    assert WORKER in announced
+    # Both branches are still reported, because both have to be landed by hand.
+    assert [item.issue_id for item in result.unmerged()] == ["bd-e.1", "bd-e.2"]
+
+
+def test_the_drain_still_promises_a_merge_when_the_branch_is_open(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """A halt for any other reason leaves the integration branch mergeable."""
+    body = FakeBody(
+        hands_back=[settled("blocked")],
+        drains=[settled("success", issue_id="bd-e.2", merge=landed())],
+    )
+    session, _ = build(config, tracker=decomposed, script=[])
+    lines: list[str] = []
+
+    with session as opened:
+        opened.report = lines.append
+        result = go(opened, body=body)
+
+    assert result.halt.reason == "blocked"
+    assert any("a successful one is still merged" in line for line in lines)
+    assert [item.issue_id for item in result.merged()] == ["bd-e.2"]
 
 
 def test_an_issue_the_drain_gave_up_on_is_deferred_in_the_report(

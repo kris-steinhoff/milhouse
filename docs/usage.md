@@ -334,7 +334,9 @@ Re-running the same target finds those lanes again and carries on where it left 
 | The gate failed on the integration branch  | `9`  | `integration`, the merge stands and the output is on the issue                                                  |
 | `--max-iterations` reached                 | `9`  | the ceiling                                                                                                     |
 
-The two merge rows only fire above `--count 1`, where there is something to merge. A halt **stops starting work rather than abandoning work already started**: the run reports `draining N turn(s) already in flight`, waits for them, and merges any that succeed, because dropping them would leave claimed issues with live agents and branches nobody merges. Whatever settles during the drain is in the report, and none of it changes why the run stopped.
+The two merge rows only fire above `--count 1`, where there is something to merge. A halt **stops starting work rather than abandoning work already started**: the run reports `draining N turn(s) already in flight` and waits for them, because dropping them would leave claimed issues with live agents and branches nobody merges. Whatever settles during the drain is in the report, and none of it changes why the run stopped.
+
+Whether those turns are also **merged** depends on why the run stopped. After anything but a failed merge they are, and the line says so. After a `conflict` they are not: the first merge that does not land is the last merge of the run, so the drained turns are finished, verified, recorded and settled, and their branches are left where they are. The line says that instead (`nothing more is merged into milhouse/bd-e, which has already refused milhouse/bd-e--bd-e.2`), and the report names every unlanded branch in the order it has to be landed ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)).
 
 An issue that fails `--max-attempts` times does **not** stop the run. It is deferred with the reason on it, and the run moves to the next ready issue. A deferred issue is hidden from `bd ready` and still listed by `bd list`, so it still counts as unfinished — which is why a run that deferred anything exits `9` rather than claiming success. `bd undefer <id>` puts one back.
 
@@ -415,9 +417,9 @@ merged (2)
 
 not merged (1)
   bd-e.3  milhouse/bd-e--bd-e.3 conflicts with milhouse/bd-e in 2 file(s): src/hello.py, tests/test_hello.py. Both branches are intact; land milhouse/bd-e--bd-e.3 by hand.
-  The issue is closed and the work is on its branch. Land it by hand.
+  Each issue is closed and its work is on its branch. Land it by hand.
 
-bd-e: 3 issue(s) closed, 2 merged — bd-e.3 is closed but its work is not on milhouse/bd-e: …
+bd-e: 3 issue(s) closed, 2 merged, 1 not merged — bd-e.3 is closed but its work is not on milhouse/bd-e: …
 ```
 
 Nothing was lost and nothing is half-done. milhouse ran `git merge --abort` before reporting, so the integration lane is exactly where it was, the worker branch is intact, and the issue stays closed. Redo the merge by hand in the integration lane, which is the checkout `milhouse status` names:
@@ -431,14 +433,28 @@ milhouse run bd-e --count 4         # carry on: the run resumes on the same bran
 
 Merging into your own checkout instead works too. Doing it in the integration lane is only so that the next run finds the branch where it expects it.
 
+**A wide run can leave more than one branch here, and the order is the instruction.** The turns already in flight when the conflict fired are still finished and still closed, but nothing is merged after a merge that failed, so each of them appears under `not merged` saying which branch has to be landed first:
+
+```console
+not merged (3)
+  bd-e.2  milhouse/bd-e--bd-e.2 conflicts with milhouse/bd-e in 3 file(s): … Both branches are intact; land milhouse/bd-e--bd-e.2 by hand.
+  bd-e.3  milhouse/bd-e--bd-e.3 was not merged into milhouse/bd-e, because milhouse/bd-e--bd-e.2 did not land in milhouse/bd-e. Land that branch first, then this one.
+  bd-e.4  milhouse/bd-e--bd-e.4 was not merged into milhouse/bd-e, because milhouse/bd-e--bd-e.2 did not land in milhouse/bd-e. Land that branch first, then this one.
+  Each issue is closed and its work is on its branch.
+  The first of these stopped the run, and nothing was merged after it.
+  Land them by hand in the order above, which is the order this run
+  would have merged them.
+```
+
+Land them top to bottom. That is the order the run would have merged them in, and the only one whose conflicts the report describes. The next `milhouse run` on the same target picks up from wherever you leave the integration branch.
+
 Two conflicts are worth expecting rather than being surprised by. Agents told to "add it at the end" of a file all pick the same end, and the first turn to settle is the one that lands. Of the eight merges in the watched runs recorded in [ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md#what-the-first-concurrent-runs-taught), three fast-forwarded, four conflicted, and one produced a merge commit.
 
-#### Two rough edges to know about
+#### A rough edge to know about
 
-Both are open, both are reachable today, and neither is fixed:
+Open, reachable today, and not fixed:
 
 - **A turn can settle seconds after it starts, having done nothing.** herdr can report an agent as not working while its prompt is still sitting unsubmitted in the pane, and the poll believes it. The symptom is a `stalled` outcome about ten seconds after the turn was dispatched, often with `agent did not exit from key presses; replacing pane` in the same turn. It costs attempts rather than time: an issue can burn its whole retry ladder in under a minute while its siblings are still on their first turn. `milhouse step` cannot reach this, because the waiting happens inside `herdr agent prompt --wait`; `dispatch` and `reap` have always had it.
-- **A drain keeps merging into a branch that has just refused a merge.** After a `conflict` halt the run still finishes the turns already in flight and still tries to merge each success, so a run can end with more than one branch under `not merged` — and each attempt pays for a full gate run in its worker lane first.
 
 ### Reading the report
 

@@ -25,6 +25,12 @@ collects a turn but does not land it. So a body that has turns to finish is
 asked to :meth:`~Draining.drain` them before the run reports, and whatever they
 produce joins the report. The first halt is still why the run stopped: nothing
 that settles during the drain is put back through :func:`should_halt`.
+
+What a drain finishes is the *turn*, and after a ``conflict`` that is all it
+finishes. The integration branch is closed to further merges once a merge into
+it has not landed (:func:`milhouse.step._land`), so a turn draining after one is
+reaped, verified, recorded and settled, and its branch is left where it is. The
+report says so per branch, because that is the recovery instruction.
 """
 
 from __future__ import annotations
@@ -185,14 +191,18 @@ def should_halt(iteration: Iteration, *, used: int, max_iterations: int) -> Halt
     would change that. Only a person can land the branch
     (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
 
-    That row is one row and not two. ``MergeRecord.landed`` is false both for a
-    conflict and for a merge git refused outright, and those are different
-    causes with the same consequence: a closed issue, a live worker branch, an
-    integration branch without the work, and a recovery that is entirely by
-    hand. Splitting them would double the table without doubling the response,
-    so the reason is one word and the detail is the one that says which happened
-    — which is also why the detail is :func:`milhouse.step.merge_line`, the same
-    sentence the run printed when the merge failed.
+    That row is one row and not two. ``MergeRecord.landed`` is false for a
+    conflict, for a merge git refused outright, and for one nobody attempted
+    because an earlier merge had already closed the integration branch. Those
+    are three causes with the same consequence: a closed issue, a live worker
+    branch, an integration branch without the work, and a recovery that is
+    entirely by hand. Splitting them would triple the table without changing the
+    response, so the reason is one word and the detail is the one that says
+    which happened — which is also why the detail is
+    :func:`milhouse.step.merge_line`, the same sentence the run printed when the
+    merge failed. Only the first two reach this function in practice, since the
+    third exists only after a merge that has already halted the run and a drain
+    puts nothing back through the table.
 
     A **red integration gate** is the row after it, and it is a halt for a
     different reason: nothing is broken about the merge, the branch is simply
@@ -331,10 +341,27 @@ def _drain(body: Body, session: Session, policy: Policy) -> list[StepResult]:
         return []
     if body.in_flight:
         session.report(
-            f"draining {len(body.in_flight)} turn(s) already in flight; "
-            "they are not abandoned, and a successful one is still merged"
+            f"draining {len(body.in_flight)} turn(s) already in flight; {_promise(session)}"
         )
     return body.drain(session, policy)
+
+
+def _promise(session: Session) -> str:
+    """What the drain is about to do with the turns it finishes.
+
+    Two sentences rather than one, because the honest answer depends on whether
+    the integration branch is still open to merges. After a ``conflict`` it is
+    not, and printing "a successful one is still merged" there is how a watched
+    run was told the opposite of what happened
+    (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+    """
+    refused = session.refused_merge
+    if refused is None:
+        return "they are not abandoned, and a successful one is still merged"
+    return (
+        "they are not abandoned, but nothing more is merged into "
+        f"{refused.target}, which has already refused {refused.source}"
+    )
 
 
 def _still_running(body: Body) -> list[str]:

@@ -148,9 +148,16 @@ class Parallel:
         working: their issues are claimed, their branches are unmerged, and
         ``milhouse reap`` would collect them later without landing any of them.
 
-        So this keeps polling and reaping, which merges each success exactly as
-        an unhalted run would, and hands back everything that settles. Nothing
-        new is dispatched, here or in any later call: a drained body is done.
+        So this keeps polling and reaping, and hands back everything that
+        settles. Nothing new is dispatched, here or in any later call: a drained
+        body is done.
+
+        Whether a success is also *merged* is not this object's question and
+        never was. :func:`milhouse.step.reap` lands what it reaps, and it stops
+        doing so once a merge into the integration branch has not landed
+        (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`),
+        which is why a drain after a ``conflict`` halt finishes every turn and
+        merges none of them without this method knowing anything about it.
 
         It terminates because :func:`milhouse.step.reap` collects a turn past
         ``[agent] turn_timeout_ms`` rather than waiting on it, and because

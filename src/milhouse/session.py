@@ -39,7 +39,7 @@ from .errors import MilhouseError, UserAbortError
 from .gitrepo import GitRepo
 from .herdr import HerdrClient, Workspace
 from .lanes import Lane, Lanes
-from .models import Issue, Iteration
+from .models import Issue, Iteration, MergeRecord
 from .policy import Decision
 from .rundir import LOCK_FILENAME, RunLock
 from .runner import AgentRunner, Runner
@@ -182,6 +182,22 @@ class Session:
         self.workspace: Workspace | None = None
         self.in_flight: list[str] = []
         """Issues this process claimed and has neither settled nor handed off."""
+
+        self.refused_merge: MergeRecord | None = None
+        """The first merge into this run's integration branch that did not land.
+
+        Once there is one, nothing else is merged into that branch for the rest
+        of the session: the turns still in flight are still reaped, still
+        recorded and still settled, but their branches are left where they are
+        (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+        This is the record that says which merge closed it, so the ones after it
+        can name the branch that has to be landed first.
+
+        It lives on the session because the integration branch does. A run halts
+        on the first refused merge, but turns that settled in the same reap pass
+        are merged before ``run()`` is ever handed the one that halted it, so a
+        rule that only the drain observed would not have covered them.
+        """
 
         self._locks: dict[str, RunLock] = {}
         self._integration: Lane | None = None
