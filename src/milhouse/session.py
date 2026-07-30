@@ -681,6 +681,20 @@ class Session:
         except MilhouseError as exc:
             log.warning("could not defer %s: %s", issue_id, exc)
 
+    def note(self, issue_id: str, text: str) -> None:
+        """Append a note to an issue, tolerating a bd hiccup.
+
+        The same channel :meth:`release_claim` puts a policy's note on, used for
+        the one note that does not accompany a change of status: a merge that
+        made the integration branch red leaves the issue closed and says why on
+        it anyway
+        (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+        """
+        try:
+            self.tracker.note(issue_id, text)
+        except MilhouseError as exc:
+            log.warning("could not note %s: %s", issue_id, exc)
+
     def record(self, iteration: Iteration) -> None:
         """Record an iteration in the beads audit log."""
         self.audit.record(iteration)

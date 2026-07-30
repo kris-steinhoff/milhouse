@@ -73,7 +73,11 @@ How milhouse checks an issue the agent says it finished. See [ADR 0016](decision
 
 A non-zero exit re-opens the issue with the outcome `rejected` and appends the tail of the output as a `bd` note, so the next agent sees why the last one's work was turned down.
 
-Empty by default, so out of the box milhouse takes the agent at its word. There is no safe guess about a given repository's gate, and a wrong one fails every iteration. Point it at the fast suite rather than the full matrix: it runs once per closed issue.
+Empty by default, so out of the box milhouse takes the agent at its word. There is no safe guess about a given repository's gate, and a wrong one fails every iteration. Point it at the fast suite rather than the full matrix: it runs at least once per closed issue.
+
+**A concurrent run pays for this twice per merged issue.** Once in the worker lane the turn happened in, and once on the integration branch after that lane is merged into it, because a lane that is green against its own base can be red combined with another one and the merged tree is the only place that shows up ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)). A merge that fast-forwarded is skipped, since it leaves the tree the lane was already verified against, so a run working one issue at a time pays exactly what it paid before. Cost the gate accordingly: a five-minute suite on a ten-issue epic worked concurrently is up to a hundred minutes of verification, not fifty. With no command configured there are no runs at all, neither the first nor the second.
+
+A red integration branch stops the run and reverts nothing. The merge stays, the issue stays closed, and the tail of the output is appended to that issue as a note, because the work was genuinely done and it is the combination that is red.
 
 No shell is involved, so this is argv rather than a command line. `MILHOUSE_VERIFY_COMMAND` is split with `shlex`, so quoting works the way it does in a shell.
 

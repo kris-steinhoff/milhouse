@@ -32,6 +32,7 @@ def iteration(
     dirty_after: bool = False,
     merge: MergeRecord | None = None,
     issue_id: str = "bd-e.1",
+    integration_verified: bool | None = None,
 ) -> Iteration:
     return Iteration(
         number=1,
@@ -40,6 +41,7 @@ def iteration(
         detail="because",
         dirty_after=dirty_after,
         merge=merge,
+        integration_verified=integration_verified,
     )
 
 
@@ -100,10 +102,13 @@ def settled(
     issue_id: str = "bd-e.1",
     merge: MergeRecord | None = None,
     decision: Decision | None = None,
+    integration_verified: bool | None = None,
 ) -> StepResult:
     """One finished turn, as a body hands it back."""
     return StepResult(
-        iteration=iteration(outcome, issue_id=issue_id, merge=merge),
+        iteration=iteration(
+            outcome, issue_id=issue_id, merge=merge, integration_verified=integration_verified
+        ),
         decision=decision or Decision(issue="release"),
     )
 
@@ -220,6 +225,43 @@ def test_a_branch_that_landed_does_not_stop_the_run() -> None:
 def test_a_conflict_outranks_the_ceiling() -> None:
     """Same argument as a blocked agent: the ceiling is not why the run is over."""
     halt = should_halt(iteration("success", merge=conflicted()), used=7, max_iterations=7)
+
+    assert halt is not None
+    assert halt.reason == "conflict"
+
+
+def test_a_red_integration_branch_stops_the_run() -> None:
+    """Two branches that were green apart are red together, and nothing is undone."""
+    halt = should_halt(
+        iteration("success", merge=landed(), integration_verified=False),
+        used=1,
+        max_iterations=50,
+    )
+
+    assert halt is not None
+    assert halt.reason == "integration"
+    assert not halt.finished
+    assert INTEGRATION in halt.detail
+    # The report has to say that the close and the merge both stand.
+    assert "stays closed" in halt.detail
+
+
+def test_a_green_integration_branch_does_not_stop_the_run() -> None:
+    """The second gate run is only interesting when it fails."""
+    halt = should_halt(
+        iteration("success", merge=landed(), integration_verified=True), used=1, max_iterations=50
+    )
+
+    assert halt is None
+
+
+def test_a_conflict_outranks_a_red_integration_branch() -> None:
+    """A branch that never landed cannot also have been verified where it landed."""
+    halt = should_halt(
+        iteration("success", merge=conflicted(), integration_verified=False),
+        used=1,
+        max_iterations=50,
+    )
 
     assert halt is not None
     assert halt.reason == "conflict"
@@ -428,6 +470,28 @@ def test_the_result_names_what_landed_and_what_did_not(
     assert result.halt.reason == "conflict"
     assert [item.issue_id for item in result.merged()] == ["bd-e.1"]
     assert [item.issue_id for item in result.unmerged()] == ["bd-e.2"]
+
+
+def test_a_run_stops_when_a_merge_makes_the_integration_branch_red(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """And the merge is still reported as landed, because it is: nothing was reverted."""
+    body = FakeBody(
+        hands_back=[
+            settled("success", issue_id="bd-e.1", merge=landed(), integration_verified=False),
+            settled("success", issue_id="bd-e.2", merge=landed()),
+        ]
+    )
+    session, _ = build(config, tracker=decomposed, script=[])
+
+    with session as opened:
+        result = go(opened, body=body)
+
+    assert result.halt.reason == "integration"
+    assert not result.finished
+    assert body.calls == 1
+    assert [item.issue_id for item in result.merged()] == ["bd-e.1"]
+    assert result.unmerged() == []
 
 
 # -- draining ------------------------------------------------------------------

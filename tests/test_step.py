@@ -786,3 +786,109 @@ def test_a_run_without_worker_lanes_merges_nothing(config: Config, decomposed: F
     assert result.iteration.outcome == "success"
     assert result.iteration.merge is None
     assert repo.merged == []
+
+
+# -- verifying the integration branch ------------------------------------------
+
+
+def test_a_merge_that_joined_two_histories_is_verified_on_the_integration_branch(
+    config: Config, decomposed: FakeTracker, fake_proc: FakeProc
+) -> None:
+    """The merged tree is the only place two green branches can be seen to be red."""
+    config.verify.command = ["make", "check"]
+    fake_proc.expect("make check", Reply(stdout="ok"))
+    session, _, _ = landing(config, decomposed, ["close"])
+
+    with session as opened:
+        result = step(opened)
+
+    assert result is not None
+    assert result.iteration.outcome == "success"
+    # Once where the work happened, then again where it landed.
+    assert fake_proc.where("make", "check") == [WORKER_PATH, INTEGRATION_PATH]
+    assert result.iteration.verified is True
+    assert result.iteration.integration_verified is True
+
+
+def test_a_fast_forward_is_not_verified_a_second_time(
+    config: Config, decomposed: FakeTracker, fake_proc: FakeProc
+) -> None:
+    """It left the tree the lane was verified against, and paying twice for that is waste."""
+    config.verify.command = ["make", "check"]
+    fake_proc.expect("make check", Reply(stdout="ok"))
+    session, _, repo = landing(config, decomposed, ["close"])
+    repo.merge_result = Merge(sha="shaW", fast_forwarded=True)
+
+    with session as opened:
+        result = step(opened)
+
+    assert result is not None
+    assert fake_proc.where("make", "check") == [WORKER_PATH]
+    assert result.iteration.integration_verified is None
+
+
+def test_a_red_integration_branch_notes_the_issue_and_reverts_nothing(
+    config: Config, decomposed: FakeTracker, fake_proc: FakeProc
+) -> None:
+    """The work was done; it is the combination that is red, and somebody has to see it."""
+    config.verify.command = ["make", "check"]
+    fake_proc.expect(
+        "make check",
+        [Reply(stdout="ok"), Reply(stdout="FAILED tests/test_together.py", returncode=1)],
+    )
+    session, _, repo = landing(config, decomposed, ["close"])
+
+    with session as opened:
+        result = step(opened)
+
+    assert result is not None
+    # Nothing is undone: the issue stays closed and the merge stays merged.
+    assert result.iteration.outcome == "success"
+    assert decomposed.issues[0].is_closed
+    assert decomposed.released == []
+    assert repo.merged == [(INTEGRATION_PATH, WORKER_BRANCH)]
+    assert result.iteration.merge is not None
+    assert result.iteration.merge.landed
+    # And the failure is on the issue, where somebody will look for it.
+    assert result.iteration.integration_verified is False
+    assert "FAILED tests/test_together.py" in result.iteration.integration_output
+    issue_id, note = decomposed.notes[0]
+    assert issue_id == "bd-e.1"
+    assert "FAILED tests/test_together.py" in note
+    assert "milhouse/bd-e" in note
+    # The verdict reaches the audit log; the unbounded output stays off it.
+    recorded = session.audit.iterations()[0]
+    assert recorded.integration_verified is False
+    assert recorded.integration_output == ""
+
+
+def test_a_repository_with_no_gate_pays_for_no_extra_runs(
+    config: Config, decomposed: FakeTracker, fake_proc: FakeProc
+) -> None:
+    """No configured gate means no verification at all, merge or no merge."""
+    session, _, repo = landing(config, decomposed, ["close"])
+
+    with session as opened:
+        result = step(opened)
+
+    assert result is not None
+    assert repo.merged == [(INTEGRATION_PATH, WORKER_BRANCH)]
+    assert fake_proc.calls == []
+    assert result.iteration.verified is None
+    assert result.iteration.integration_verified is None
+
+
+def test_a_turn_that_landed_nothing_verifies_no_integration_branch(
+    config: Config, decomposed: FakeTracker, fake_proc: FakeProc
+) -> None:
+    """`step` has no integration lane, so the gate runs once, in the lane it worked."""
+    config.verify.command = ["make", "check"]
+    fake_proc.expect("make check", Reply(stdout="ok"))
+    session, _ = build(config, tracker=decomposed, script=["close"])
+
+    with session as opened:
+        result = step(opened)
+
+    assert result is not None
+    assert fake_proc.where("make", "check") == [config.repo_root]
+    assert result.iteration.integration_verified is None

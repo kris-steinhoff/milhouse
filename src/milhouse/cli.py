@@ -665,6 +665,11 @@ def _print_merges(result: RunResult) -> None:
     merges nothing into it. A branch that did not land gets its own block rather
     than a line in this one: it is why the run stopped, the issue is closed
     anyway, and landing it is somebody's next job.
+
+    A merge that landed and then failed the gate on the integration branch gets
+    a block too, because the line above it says the merge succeeded and that is
+    true and not the whole story
+    (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
     """
     merged, unmerged = result.merged(), result.unmerged()
     if merged:
@@ -672,6 +677,15 @@ def _print_merges(result: RunResult) -> None:
         typer.echo(f"merged ({len(merged)})")
         for line in _merge_lines(merged):
             typer.echo(line)
+
+    red = [item for item in merged if item.integration_verified is False]
+    if red:
+        typer.echo("")
+        typer.secho(f"integration gate failed ({len(red)})", fg=typer.colors.RED)
+        for item in red:
+            typer.echo(f"  {item.issue_id}  the gate failed once this merge was on the branch")
+        typer.echo("  Nothing was reverted: the issues are closed and the merges stand.")
+        typer.echo("  Each failure is on its issue as a note.")
 
     if unmerged:
         typer.echo("")

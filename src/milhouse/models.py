@@ -370,6 +370,26 @@ class Iteration(BaseModel):
     verified: bool | None = None
     """Whether the verification command passed. ``None`` when it was not run."""
 
+    integration_verified: bool | None = None
+    """Whether the gate passed on the integration branch after this turn landed.
+
+    ``None`` when it was not run, which is most turns: no gate is configured, or
+    nothing was merged, or the merge fast-forwarded and so left the tree the
+    worker lane was already verified against
+    (:attr:`MergeRecord.joined`). ``False`` is the case this whole second run
+    exists to find — two branches that were green apart and are red together —
+    and it stops the run without undoing anything
+    (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+    """
+
+    integration_output: str = ""
+    """Tail of the gate's output from the integration branch, kept only when red.
+
+    Left out of the audit entry for the reason :attr:`verification_output` is:
+    it is unbounded, and it already has a home on the issue's notes, where the
+    person who comes to look for it will be.
+    """
+
     verification_output: str = ""
     """Tail of the verification command's output, kept only when it failed.
 

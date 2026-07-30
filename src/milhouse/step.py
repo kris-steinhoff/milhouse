@@ -9,6 +9,8 @@ A turn that succeeded in a **worker lane** is also landed: its branch is merged
 into the run's integration branch, in the integration lane, because that is part
 of finishing one turn rather than part of deciding whether there is another
 (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+A merge that joined two histories then has the gate run a second time, on the
+integration branch, because that tree is one nothing has tested.
 
 **The turn has a seam in it**, because waiting is what stops several running at
 once (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`):
@@ -306,7 +308,8 @@ def _finish(
 
     The order is the argument. Verification has its say first, because a turn
     that closed an issue the gate rejects is not a success and there is nothing
-    to land. Only then is the branch merged, and only then is the iteration
+    to land. Only then is the branch merged, then the integration branch is
+    verified if the merge joined anything, and only then is the iteration
     recorded, so one audit entry carries both what the turn achieved and what
     became of it.
     """
@@ -335,6 +338,7 @@ def _finish(
         verification=checked,
     )
     merge = _land(session, pending, verdict.outcome)
+    integration = _verify_integration(session, pending, merge)
 
     iteration = Iteration(
         number=pending.number,
@@ -352,6 +356,8 @@ def _finish(
         merge=merge,
         verified=checked.ok if checked else None,
         verification_output=checked.output if checked and not checked.ok else "",
+        integration_verified=integration.ok if integration else None,
+        integration_output=integration.output if integration and not integration.ok else "",
         started_at=pending.started_at,
         ended_at=now(),
         prompt_path=session.relative(turn.prompt_path if turn else None) or pending.prompt_path,
@@ -518,3 +524,63 @@ def _verify(
         return None
     session.report(f"  verifying in {cwd}: {' '.join(command)}")
     return verify(session.config, cwd=cwd)
+
+
+def _verify_integration(
+    session: Session, pending: Dispatched, merge: MergeRecord | None
+) -> Verification | None:
+    """Run the gate again on the integration branch, if the merge joined anything.
+
+    ``[verify] command`` runs where the work happened, which under concurrency
+    is the wrong tree: two worker lanes can each be green against their own base
+    and red once both are on the integration branch. This is the only place that
+    combination is ever looked at.
+
+    It runs after a merge that produced a merge commit, and after nothing else.
+    A fast-forward leaves the integration branch with the tree the worker lane
+    was already verified against, so a second run would test nothing new, and
+    skipping it is what keeps a serial-shaped run from paying twice. A merge that
+    did not land halts the run on its own and has nothing to verify.
+
+    A red result **reverts nothing**. The merge stays, the issue stays closed,
+    and the failing output goes on the issue as a note, where somebody will look.
+    Reverting would hide work that was genuinely done, and re-opening the issue
+    would ask the next agent to fix a combination rather than its own work, which
+    is not what its acceptance criteria describe
+    (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+    Stopping the run is :func:`milhouse.run.should_halt`'s job, off the field
+    this returns.
+
+    Args:
+        session: The open session, which owns the integration lane.
+        pending: The turn whose branch was just landed.
+        merge: What the merge did, or ``None`` when there was nothing to land.
+
+    Returns:
+        What the gate reported on the integration branch, or ``None`` when it was
+        not run — which includes every session with no gate configured, so a
+        repository without one pays for no extra runs at all.
+    """
+    command = session.config.verify.command
+    if not command or merge is None or not merge.joined:
+        return None
+    integration = session.integration_lane()
+    if integration is None:
+        return None
+
+    session.report(f"  verifying {merge.target} in {integration.path}: {' '.join(command)}")
+    checked = verify(session.config, cwd=integration.path)
+    if checked is None or checked.ok:
+        return checked
+    session.report(f"  → {merge.target} is red with {pending.issue.id} merged into it")
+    session.note(
+        pending.issue.id,
+        f"milhouse merged {merge.source} into {merge.target} in iteration "
+        f"{pending.number}, and `{checked.command}` then failed on "
+        f"{merge.target}.\n\n"
+        "This issue stays closed and the merge stands: the work is done, and it "
+        "is the combination that is red. The run stopped so that somebody can "
+        f"look at {merge.target}.\n\n"
+        f"{checked.output}",
+    )
+    return checked

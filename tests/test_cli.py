@@ -433,7 +433,13 @@ def test_run_exits_nine_when_work_is_left(worked_repo: Path, fake_proc: FakeProc
     assert "unfinished" in result.output
 
 
-def merged_turn(number: int, issue_id: str, merge: MergeRecord) -> Iteration:
+def merged_turn(
+    number: int,
+    issue_id: str,
+    merge: MergeRecord,
+    *,
+    integration_verified: bool | None = None,
+) -> Iteration:
     """One successful turn of a concurrent run, with what became of its branch."""
     return Iteration(
         number=number,
@@ -441,6 +447,7 @@ def merged_turn(number: int, issue_id: str, merge: MergeRecord) -> Iteration:
         outcome="success",
         detail="closed and verified",
         merge=merge,
+        integration_verified=integration_verified,
     )
 
 
@@ -479,6 +486,32 @@ def test_the_run_report_says_what_landed_on_the_integration_branch(
     assert "Land it by hand." in output
     # Two issues closed, one of them on the branch. The summary says both.
     assert "bd-e: 2 issue(s) closed, 1 merged —" in output
+
+
+def test_the_run_report_says_which_merge_made_the_branch_red(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The line above says the merge succeeded, which is true and not the whole story."""
+    result = RunResult(
+        target=Issue(id="bd-e", title="Add a hello command", status="open"),
+        halt=Halt("integration", "the gate failed on milhouse/bd-e once bd-e.1 was merged"),
+        iterations=[
+            merged_turn(
+                1,
+                "bd-e.1",
+                MergeRecord(source="milhouse/bd-e/bd-e.1", target="milhouse/bd-e", sha="a" * 40),
+                integration_verified=False,
+            )
+        ],
+    )
+
+    cli._print_run(result, lane=None)
+
+    output = capsys.readouterr().out
+    assert "merged (1)" in output
+    assert "integration gate failed (1)" in output
+    assert "bd-e.1  the gate failed once this merge was on the branch" in output
+    assert "Nothing was reverted" in output
 
 
 def test_the_run_report_names_the_agents_that_were_still_working(

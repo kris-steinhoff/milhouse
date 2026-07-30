@@ -54,6 +54,14 @@ class FakeProc:
     place a test can see what was written.
     """
 
+    cwds: list[Any] = field(default_factory=list)
+    """Where each call was run, positionally matching :attr:`calls`.
+
+    Which tree a command ran in is part of what it did for the verification
+    gate: it runs in the lane the work happened in, and again on the integration
+    branch after a merge that joined anything.
+    """
+
     strict: bool = True
     """Raise on an unmatched command instead of returning empty success."""
 
@@ -88,6 +96,7 @@ class FakeProc:
         """Stand in for :func:`milhouse.proc._execute`."""
         self.calls.append(argv)
         self.stdins.append(stdin)
+        self.cwds.append(cwd)
         reply = self._match(argv)
         if reply is None:
             if self.strict:
@@ -135,6 +144,22 @@ class FakeProc:
     def ran(self, *prefix: str) -> bool:
         """Whether any recorded call starts with ``prefix``."""
         return any(True for _ in self.commands(*prefix))
+
+    def where(self, *prefix: str) -> list[Any]:
+        """The directory each call starting with ``prefix`` was run in, in call order.
+
+        Args:
+            *prefix: argv words to match at the start of a call.
+
+        Returns:
+            One cwd per matching call, so a command run twice in two trees reads
+            as the two trees in the order they were used.
+        """
+        return [
+            cwd
+            for call, cwd in zip(self.calls, self.cwds, strict=True)
+            if call[: len(prefix)] == prefix
+        ]
 
 
 def install(monkeypatch: Any, fake: FakeProc | None = None) -> FakeProc:

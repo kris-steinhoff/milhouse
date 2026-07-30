@@ -41,7 +41,9 @@ from .step import StepResult, merge_line, nothing_ready, step
 
 __all__ = ["Body", "Draining", "Halt", "RunResult", "run", "should_halt"]
 
-StopReason = Literal["finished", "deadlocked", "blocked", "error", "dirty", "conflict", "ceiling"]
+StopReason = Literal[
+    "finished", "deadlocked", "blocked", "error", "dirty", "conflict", "integration", "ceiling"
+]
 """Why a run stopped. Only ``finished`` means the target is done."""
 
 Body = Callable[[Session, Policy], StepResult | None]
@@ -165,6 +167,8 @@ def should_halt(iteration: Iteration, *, used: int, max_iterations: int) -> Halt
                                         agent
     ``success`` that left a dirty tree  ``dirty``, the next turn would inherit it
     a merge that did not land           ``conflict``, only a person can land it
+    a red integration gate              ``integration``, two green branches are
+                                        red together
     ``used`` reached ``max_iterations`` ``ceiling``
     anything else                       none, keep going
     ==================================  ===========================================
@@ -189,6 +193,16 @@ def should_halt(iteration: Iteration, *, used: int, max_iterations: int) -> Halt
     so the reason is one word and the detail is the one that says which happened
     — which is also why the detail is :func:`milhouse.step.merge_line`, the same
     sentence the run printed when the merge failed.
+
+    A **red integration gate** is the row after it, and it is a halt for a
+    different reason: nothing is broken about the merge, the branch is simply
+    red now that two histories are on it. The run stops and undoes nothing. The
+    merge stays, the issue stays closed, and the failing output is already on the
+    issue as a note by the time this is asked
+    (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+    ``integration_verified`` is a tri-state, and only ``False`` fires: ``None``
+    is the gate not having run, which is every turn in a run with no gate
+    configured and every merge that fast-forwarded.
 
     Args:
         iteration: The turn that just ended, already classified.
@@ -217,6 +231,13 @@ def should_halt(iteration: Iteration, *, used: int, max_iterations: int) -> Halt
             "conflict",
             f"{iteration.issue_id} is closed but its work is not on "
             f"{iteration.merge.target}: {merge_line(iteration.merge)}",
+        )
+    if iteration.integration_verified is False:
+        target = iteration.merge.target if iteration.merge else "the integration branch"
+        return Halt(
+            "integration",
+            f"the gate failed on {target} once {iteration.issue_id} was merged into it; "
+            "the merge stands, the issue stays closed, and the output is on the issue",
         )
     if used >= max_iterations:
         return Halt("ceiling", f"the run hit its ceiling of {max_iterations} iteration(s)")

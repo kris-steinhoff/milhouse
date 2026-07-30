@@ -91,6 +91,7 @@ _RECORDED = (
     "dirty_after",
     "merge",
     "verified",
+    "integration_verified",
     "started_at",
     "ended_at",
     "prompt_path",
@@ -102,7 +103,8 @@ _RECORDED = (
 the one bd itself indexes on. ``verification_output`` is absent for a different
 reason: it is a tail of test output, it is the one field with no bound, and it
 already has two homes — the ``bd`` note carrying the failure to the next agent,
-and the transcript on disk.
+and the transcript on disk. ``integration_output`` is absent on the same
+argument, and for the same pair of homes.
 """
 
 
