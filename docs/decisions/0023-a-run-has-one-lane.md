@@ -1,6 +1,6 @@
 # 0023 — A run has one lane, keyed by its target
 
-**Status:** accepted. Amends [ADR 0020](0020-a-lane-is-a-herdr-worktree.md).
+**Status:** accepted. Amends [ADR 0020](0020-a-lane-is-a-herdr-worktree.md). Amended by [ADR 0024](0024-an-integration-lane-and-worker-lanes.md), which adds a worker lane per concurrently dispatched issue above `--count 1`. The lane below is that run's integration lane, and everything here still describes a run at `--count 1`.
 
 ## Context
 
@@ -48,4 +48,4 @@ It also converts the join question from a landmine into a known gap, which is wo
 - **Two lanes can exist for the same issue**, one opened by `dispatch` and labelled with the issue, one opened by a run and labelled with the target. Nothing detects it, and nothing needs to: the lock is what stops two processes driving the same pane, and the two lanes are separate checkouts on separate branches. It is confusing to look at in `milhouse status`, which is why the lane listing names what each lane is keyed by.
 - **A crashed run leaves its worktree and re-opens its claim.** `Lanes.locate` looks a lane up by issue id and a run's lane carries the target, so reconciliation finds no live lane for the in-flight issue and re-opens it, which is the wanted behaviour. The surviving worktree is what makes the next run resume on the same branch.
 - **The branch name is a target id**, so `milhouse/<epic-id>` rather than `milhouse/<issue-id>`. Anything reading branch names to find the issue is now wrong, and the audit log is where that mapping actually lives.
-- **`--count N` will have to revisit this.** A concurrent run wants several lanes again, and the key it wants is not obviously either the issue or the target. This ADR does not decide it.
+- **`--count N` will have to revisit this.** A concurrent run wants several lanes again, and the key it wants is not obviously either the issue or the target. This ADR does not decide it. [ADR 0024](0024-an-integration-lane-and-worker-lanes.md) does: both keys, at two levels.
