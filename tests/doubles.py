@@ -21,6 +21,7 @@ from typing import Any
 from milhouse.audit import AuditLog
 from milhouse.config import Config
 from milhouse.errors import MilhouseError
+from milhouse.gitrepo import Merge
 from milhouse.herdr import AgentStatus, Workspace, Worktree
 from milhouse.models import Graph, Issue
 from milhouse.runner import TurnResult
@@ -257,16 +258,39 @@ class FakeRepo:
     scoped_to: list[Path] = field(default_factory=list)
     """Every path this repo was asked to scope itself to, in call order."""
 
+    branches: dict[Path, str] = field(default_factory=dict)
+    """Which branch each checkout is on, for a test with more than one open.
+
+    A worker lane and the integration lane it lands in are two worktrees on two
+    branches, and the branch is what a merge names.
+    """
+
+    merged: list[tuple[Path | None, str]] = field(default_factory=list)
+    """Every merge asked for, as ``(where it ran, what was merged in)``."""
+
+    merge_result: Merge = field(default_factory=lambda: Merge(sha="shaM", fast_forwarded=False))
+    """What :meth:`merge` reports. What git really does is tested against git."""
+
+    scope: Path | None = None
+    """The checkout :meth:`at` last scoped to, since there is one fake tree."""
+
     def at(self, path: Path) -> FakeRepo:
         """Record the scoping and keep answering, since there is one fake tree."""
         self.scoped_to.append(path)
+        self.scope = path
         return self
 
     def head(self) -> str | None:
         return f"sha{self.commits}"
 
     def current_branch(self) -> str | None:
+        if self.scope is not None and self.scope in self.branches:
+            return self.branches[self.scope]
         return self.branch
+
+    def merge(self, branch: str, *, message: str = "") -> Merge:
+        self.merged.append((self.scope, branch))
+        return self.merge_result
 
     def ensure_branch(self, name: str) -> str:
         self.branch = name
@@ -375,8 +399,16 @@ def build(
     script: list[str],
     repo: FakeRepo | None = None,
     client: FakeClient | None = None,
+    lane_key: str | None = None,
+    worker_lanes: bool = False,
 ) -> tuple[Session, FakeRunner]:
-    """Wire a session with fakes and a scripted runner already installed."""
+    """Wire a session with fakes and a scripted runner already installed.
+
+    ``lane_key`` and ``worker_lanes`` are what ``milhouse run`` passes: the
+    target its integration lane is labelled with, and whether each issue gets a
+    worker lane of its own to be landed back into it
+    (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+    """
     repo = repo or FakeRepo()
     runner = FakeRunner(tracker=tracker, repo=repo, script=script, workdir=config.repo_root)
     session = Session(
@@ -386,5 +418,7 @@ def build(
         repo=repo,  # ty: ignore[invalid-argument-type]
         audit=FakeAudit(config.repo_root),
         runner=runner,
+        lane_key=lane_key,
+        worker_lanes=worker_lanes,
     )
     return session, runner

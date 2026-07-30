@@ -64,6 +64,15 @@ A prolific turn must not be the line that exceeds ``PIPE_BUF`` and tears. The
 count is recorded separately, so a truncated list still reports honestly.
 """
 
+MAX_CONFLICTS = 10
+"""Conflicted paths an entry may carry, bounded for the same reason.
+
+A merge conflicts in as many files as the two branches both touched, which is a
+list with no ceiling on it, and a path is a good deal longer than a sha. The
+count goes in beside the paths, the run's own report names every one of them,
+and ``git merge`` says the rest whenever somebody goes to land the branch.
+"""
+
 TIMEOUT = 120.0
 """Seconds a single ``bd audit`` call may take. Matches the tracker's."""
 
@@ -80,6 +89,7 @@ _RECORDED = (
     "head_after",
     "attributed",
     "dirty_after",
+    "merge",
     "verified",
     "started_at",
     "ended_at",
@@ -252,6 +262,9 @@ def _extra(iteration: Iteration) -> dict[str, Any]:
     payload = json.loads(iteration.model_dump_json(include=set(_RECORDED)))
     payload["commits"] = iteration.commits[:MAX_COMMITS]
     payload["commit_count"] = len(iteration.commits)
+    if iteration.merge is not None:
+        payload["merge"]["conflicts"] = iteration.merge.conflicts[:MAX_CONFLICTS]
+        payload["merge"]["conflict_count"] = len(iteration.merge.conflicts)
     return payload
 
 

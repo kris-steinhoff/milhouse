@@ -6,7 +6,7 @@ is settled here, against graphs written out by hand and without a subprocess.
 
 from __future__ import annotations
 
-from milhouse.models import Graph, Issue, Iteration
+from milhouse.models import Graph, Issue, Iteration, MergeRecord
 
 
 def graph(statuses: dict[str, str], *edges: tuple[str, str], epics: tuple[str, ...] = ()) -> Graph:
@@ -41,6 +41,39 @@ def test_iteration_detects_a_commit() -> None:
 
     assert committed.made_commit
     assert not still.made_commit
+
+
+# -- what became of a worker lane ----------------------------------------------
+
+
+def merge(**fields: object) -> MergeRecord:
+    """A merge of one run's worker lane into its integration branch."""
+    return MergeRecord(source="milhouse/bd-e/bd-e.1", target="milhouse/bd-e", **fields)  # ty: ignore[invalid-argument-type]
+
+
+def test_only_a_real_merge_commit_joined_two_histories() -> None:
+    """The signal ADR 0024 keeps by not forcing `--no-ff`, and what re-verifies."""
+    assert merge(sha="c" * 40).joined
+    assert not merge(sha="c" * 40, fast_forwarded=True).joined
+    assert not merge().joined
+
+
+def test_a_branch_that_was_already_contained_still_landed() -> None:
+    """Nothing moved because there was nothing to move, which is not a failure."""
+    assert merge().landed
+    assert merge(sha="c" * 40).landed
+    assert merge(sha="c" * 40, fast_forwarded=True).landed
+
+
+def test_a_conflicted_or_refused_merge_did_not_land() -> None:
+    """A closed issue, a live branch, and an integration branch without its work."""
+    conflicted = merge(conflicts=["src/a.py"])
+    refused = merge(error="could not merge: the index is locked")
+
+    assert not conflicted.landed
+    assert not refused.landed
+    # Both branches are on the record, because the recovery is by hand.
+    assert (conflicted.source, conflicted.target) == ("milhouse/bd-e/bd-e.1", "milhouse/bd-e")
 
 
 # -- the dependency graph ------------------------------------------------------

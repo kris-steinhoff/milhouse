@@ -1,8 +1,9 @@
 """The data milhouse passes between its modules.
 
-Three types carry everything: an :class:`Issue` is one unit of work in beads, an
-:class:`Iteration` is one turn of the agent, and a :class:`Graph` is a scope of
-issues with the ``blocks`` edges between them.
+Four types carry everything: an :class:`Issue` is one unit of work in beads, an
+:class:`Iteration` is one turn of the agent, a :class:`MergeRecord` is what
+became of the branch that turn wrote, and a :class:`Graph` is a scope of issues
+with the ``blocks`` edges between them.
 
 Beads and git remain the source of truth for the work itself. Everything here is
 derived from them. Persisting it is :mod:`milhouse.audit`'s job, not this
@@ -20,6 +21,7 @@ __all__ = [
     "Graph",
     "Issue",
     "Iteration",
+    "MergeRecord",
     "Outcome",
     "now",
 ]
@@ -233,6 +235,69 @@ class Graph(BaseModel):
         return dependents
 
 
+class MergeRecord(BaseModel):
+    """What became of a worker lane when the run tried to land it.
+
+    A concurrent run merges each successful turn's branch into its integration
+    branch, one at a time
+    (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+    This is that merge as a value, so the report and the audit log carry it.
+
+    It is the only place a **conflict** is named, and the naming is the whole
+    point: the issue is closed, the worker branch is still there, the integration
+    branch is exactly where it was, and only a person can land it from here. Both
+    branch names are on the record for that reason, rather than being derivable
+    from somewhere else.
+    """
+
+    source: str
+    """The worker branch that was merged, which is where the work still is."""
+
+    target: str
+    """The integration branch it was merged into."""
+
+    sha: str | None = None
+    """Full sha the integration branch ended on, or ``None`` when nothing moved.
+
+    ``None`` covers three cases, which :attr:`landed` tells apart: the branch was
+    already contained, the merge conflicted, or git refused it outright.
+    """
+
+    fast_forwarded: bool = False
+    """Whether the integration branch simply moved to :attr:`source`."""
+
+    conflicts: list[str] = Field(default_factory=list)
+    """Paths git could not merge. The merge was aborted, so nothing is half-done."""
+
+    error: str = ""
+    """Why a merge that did not conflict could not be run at all.
+
+    Recorded rather than raised, for the reason the audit log tolerates a failed
+    write: the turn it describes has already happened and cannot be re-run, so
+    losing it to report the merge failure would be the worse trade.
+    """
+
+    @property
+    def landed(self) -> bool:
+        """Whether the integration branch now contains :attr:`source`.
+
+        True for a fast-forward, for a merge commit, and for a branch that was
+        already contained. False is the mess a serial run could not leave.
+        """
+        return not self.conflicts and not self.error
+
+    @property
+    def joined(self) -> bool:
+        """Whether this merge combined two histories nobody has tested together.
+
+        The signal ADR 0024 keeps by not passing ``--no-ff``, carried through to
+        the record: a fast-forward leaves the tree the worker lane was already
+        verified against, and only a real merge commit produces one that nothing
+        has run a gate over.
+        """
+        return self.sha is not None and not self.fast_forwarded
+
+
 class Iteration(BaseModel):
     """The record of one turn: one issue, one fresh agent, one classification.
 
@@ -289,6 +354,17 @@ class Iteration(BaseModel):
 
     An agent that edits without committing hands the mess to the next agent,
     which did not make it and cannot explain it.
+    """
+
+    merge: MergeRecord | None = None
+    """What happened when this turn's branch was landed in the integration branch.
+
+    ``None`` when there was nothing to land: an unsuccessful turn, whose commits
+    stay on its worker branch for the next attempt, or a session with no worker
+    lanes at all. That last is ``step``, ``dispatch``, ``reap``, and a
+    ``--count 1`` run, which is
+    :doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>` exactly and
+    has one branch to merge into and nothing to merge into it.
     """
 
     verified: bool | None = None

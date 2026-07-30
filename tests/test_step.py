@@ -8,10 +8,12 @@ import pytest
 
 from milhouse.config import Config
 from milhouse.errors import MilhouseError
+from milhouse.gitrepo import Merge
 from milhouse.herdr import Worktree
 from milhouse.models import Issue
 from milhouse.policy import Decision
 from milhouse.runner import TurnResult
+from milhouse.session import Session
 from milhouse.step import dispatch, nothing_ready, reap, step
 
 from .doubles import FakeClient, FakeRepo, FakeRunner, FakeTracker, build
@@ -384,17 +386,19 @@ def test_an_epic_nobody_closed_is_not_unfinished_work(
 # -- dispatch and reap ---------------------------------------------------------
 
 
-def with_lane(client: FakeClient, issue_id: str) -> FakeClient:
+def with_lane(client: FakeClient, issue_id: str, *, branch: str = "") -> FakeClient:
     """Stand a lane up under `issue_id`, the way a real dispatch would have.
 
     The tests inject a runner, so `Session.runner_for` never opens one itself.
+    `branch` overrides the branch it commits to, which is how a run's worker lane
+    differs from a `dispatch` lane carrying the same label (ADR 0024).
     """
     workspace_id = f"wL{len(client.workspaces)}"
     client.workspaces[workspace_id] = issue_id
     client.checkouts.append(
         Worktree(
             path=Path("/worktrees") / issue_id,
-            branch=f"milhouse/{issue_id}",
+            branch=branch or f"milhouse/{issue_id}",
             workspace_id=workspace_id,
         )
     )
@@ -580,3 +584,205 @@ def test_reconcile_reopens_a_claim_whose_lane_is_gone(
         pass
 
     assert decomposed.released == ["bd-e.1"]
+
+
+# -- landing a worker lane in the integration branch ---------------------------
+
+WORKER_PATH = Path("/worktrees/milhouse-bd-e-bd-e.1")
+"""Where a run of `bd-e` checks out the worker lane for `bd-e.1`."""
+
+WORKER_BRANCH = "milhouse/bd-e/bd-e.1"
+"""What that lane commits to, namespaced under the target (ADR 0024)."""
+
+INTEGRATION_PATH = Path("/worktrees/milhouse-bd-e")
+"""Where the same run checks out the one branch a person reviews."""
+
+
+def landing(
+    config: Config,
+    tracker: FakeTracker,
+    script: list[str],
+    *,
+    client: FakeClient | None = None,
+) -> tuple[Session, FakeRunner, FakeRepo]:
+    """A run of `bd-e` whose turn happens in `bd-e.1`'s worker lane.
+
+    Which is what `--count N` above one assembles. The runner is still injected,
+    so no agent is started, but it works in a second checkout on a branch of its
+    own, and a branch of its own is the whole reason there is anything to merge.
+    """
+    repo = FakeRepo(branches={WORKER_PATH: WORKER_BRANCH})
+    session, runner = build(
+        config,
+        tracker=tracker,
+        script=script,
+        repo=repo,
+        client=client,
+        lane_key="bd-e",
+        worker_lanes=True,
+    )
+    runner.workdir = WORKER_PATH
+    return session, runner, repo
+
+
+def test_a_successful_worker_turn_lands_on_the_integration_branch(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """The work has to reach the branch under review, or nobody will see it."""
+    session, _, repo = landing(config, decomposed, ["close"])
+
+    with session as opened:
+        result = step(opened)
+
+    assert result is not None
+    assert result.iteration.outcome == "success"
+    assert repo.merged == [(INTEGRATION_PATH, WORKER_BRANCH)]
+    merge = result.iteration.merge
+    assert merge is not None
+    assert (merge.source, merge.target) == (WORKER_BRANCH, "milhouse/bd-e")
+    assert merge.sha == "shaM"
+    assert merge.landed
+    # And it survives the round trip through the audit log, which is where a
+    # later process reads what a run did.
+    recorded = session.audit.iterations()[0].merge
+    assert recorded is not None
+    assert (recorded.sha, recorded.source, recorded.target) == (
+        merge.sha,
+        merge.source,
+        merge.target,
+    )
+
+
+def test_a_merge_that_joined_two_histories_says_so_and_a_fast_forward_does_not(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """Whether git had to join anything is what decides a second gate run."""
+    session, _, repo = landing(config, decomposed, ["close"])
+    repo.merge_result = Merge(sha="shaW", fast_forwarded=True)
+
+    with session as opened:
+        result = step(opened)
+
+    assert result is not None
+    assert result.iteration.merge is not None
+    assert result.iteration.merge.fast_forwarded
+    assert not result.iteration.merge.joined
+    assert result.iteration.merge.landed
+
+
+def test_a_conflict_names_both_branches_and_loses_nothing(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """A closed issue, a live branch, and an integration branch without its work."""
+    lines: list[str] = []
+    session, _, repo = landing(config, decomposed, ["close"])
+    repo.merge_result = Merge(sha=None, fast_forwarded=False, conflicts=("src/a.py", "src/b.py"))
+    session.report = lines.append
+
+    with session as opened:
+        result = step(opened)
+
+    assert result is not None
+    # The turn still succeeded: the agent did the work and closed the issue.
+    assert result.iteration.outcome == "success"
+    assert decomposed.issues[0].is_closed
+    assert decomposed.released == []
+    merge = result.iteration.merge
+    assert merge is not None
+    assert not merge.landed
+    assert merge.conflicts == ["src/a.py", "src/b.py"]
+    assert merge.sha is None
+    # Both branches are named, because the recovery is entirely by hand.
+    reported = " ".join(lines)
+    assert WORKER_BRANCH in reported
+    assert "milhouse/bd-e" in reported
+    assert "src/a.py" in reported
+
+
+def test_a_turn_that_did_not_succeed_is_not_merged(config: Config, decomposed: FakeTracker) -> None:
+    """Its commits stay on its worker branch, where the next attempt finds them."""
+    session, _, repo = landing(config, decomposed, ["commit"])
+
+    with session as opened:
+        result = step(opened)
+
+    assert result is not None
+    assert result.iteration.outcome == "partial"
+    assert result.iteration.commits == ["sha1"]
+    assert result.iteration.merge is None
+    assert repo.merged == []
+    # Back in the queue, and back to the same lane, which is where its work is.
+    assert decomposed.released == ["bd-e.1"]
+
+
+def test_a_merge_git_refuses_still_records_the_turn(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """The turn has already happened; losing it to report the merge would be worse."""
+    session, _, repo = landing(config, decomposed, ["close"])
+
+    def explode(branch: str, *, message: str = "") -> Merge:
+        raise MilhouseError("could not merge: the index is locked")
+
+    repo.merge = explode  # ty: ignore[invalid-assignment]
+
+    with session as opened:
+        result = step(opened)
+
+    assert result is not None
+    assert result.iteration.outcome == "success"
+    merge = result.iteration.merge
+    assert merge is not None
+    assert not merge.landed
+    assert "the index is locked" in merge.error
+    assert [item.outcome for item in session.audit.iterations()] == ["success"]
+
+
+def test_a_reaped_worker_turn_lands_the_branch_herdr_says_it_ran_on(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """A concurrent run dispatches and reaps, so that is the path that merges."""
+    client = with_lane(FakeClient(), "bd-e.1", branch=WORKER_BRANCH)
+    session, runner, repo = landing(config, decomposed, ["close"], client=client)
+    runner.working = True
+    with session as opened:
+        dispatch(opened)
+
+    assert repo.merged == []
+
+    runner.working = False
+    with session as opened:
+        results = reap(opened)
+
+    assert [result.iteration.outcome for result in results] == ["success"]
+    assert repo.merged == [(INTEGRATION_PATH, WORKER_BRANCH)]
+
+
+def test_a_step_with_no_integration_lane_merges_nothing(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """`step`, `dispatch` and `reap` have no branch to land anything in."""
+    repo = FakeRepo()
+    session, _ = build(config, tracker=decomposed, script=["close"], repo=repo)
+
+    with session as opened:
+        result = step(opened)
+
+    assert result is not None
+    assert result.iteration.outcome == "success"
+    assert result.iteration.merge is None
+    assert repo.merged == []
+
+
+def test_a_run_without_worker_lanes_merges_nothing(config: Config, decomposed: FakeTracker) -> None:
+    """At `--count 1` the turn happens in the integration lane: ADR 0023 exactly."""
+    repo = FakeRepo()
+    session, _ = build(config, tracker=decomposed, script=["close"], repo=repo, lane_key="bd-e")
+
+    with session as opened:
+        result = step(opened)
+
+    assert result is not None
+    assert result.iteration.outcome == "success"
+    assert result.iteration.merge is None
+    assert repo.merged == []

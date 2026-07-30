@@ -14,8 +14,8 @@ from typing import Any
 
 import pytest
 
-from milhouse.audit import MAX_COMMITS, AuditLog
-from milhouse.models import Iteration
+from milhouse.audit import MAX_COMMITS, MAX_CONFLICTS, AuditLog
+from milhouse.models import Iteration, MergeRecord
 
 from .fakes import FakeProc, Reply
 
@@ -92,6 +92,61 @@ def test_a_prolific_turn_does_not_make_a_long_entry(audit: AuditLog, fake_proc: 
     extra = written(fake_proc)["extra"]
     assert len(extra["commits"]) == MAX_COMMITS
     assert extra["commit_count"] == 200
+
+
+def test_a_conflict_in_many_files_does_not_make_a_long_entry(
+    audit: AuditLog, fake_proc: FakeProc
+) -> None:
+    """A path is longer than a sha, and there is no bound on how many conflict."""
+    fake_proc.expect("bd", Reply(stdout="int-abc\n"))
+
+    audit.record(
+        iteration(
+            merge=MergeRecord(
+                source="milhouse/bd-e/bd-e.1",
+                target="milhouse/bd-e",
+                conflicts=[f"src/milhouse/module_{n:03d}.py" for n in range(200)],
+            )
+        )
+    )
+
+    extra = written(fake_proc)["extra"]
+    assert len(extra["merge"]["conflicts"]) == MAX_CONFLICTS
+    assert extra["merge"]["conflict_count"] == 200
+    assert len(fake_proc.stdins[-1] or "") < SAFE_ENTRY_BYTES
+
+
+def test_a_merge_survives_the_round_trip(audit: AuditLog) -> None:
+    """What .8 reads to decide whether the integration branch needs verifying."""
+    audit.path.write_text(
+        json.dumps(
+            {
+                "kind": "iteration",
+                "issue_id": "bd-e.1",
+                "extra": {
+                    "number": 1,
+                    "outcome": "success",
+                    "merge": {
+                        "source": "milhouse/bd-e/bd-e.1",
+                        "target": "milhouse/bd-e",
+                        "sha": "c" * 40,
+                        "fast_forwarded": False,
+                        "conflicts": [],
+                        "conflict_count": 0,
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    merge = audit.iterations()[0].merge
+
+    assert merge is not None
+    assert merge.joined
+    assert merge.landed
+    assert merge.source == "milhouse/bd-e/bd-e.1"
 
 
 def test_an_entry_stays_small_enough_to_append_atomically(

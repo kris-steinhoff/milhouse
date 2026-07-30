@@ -5,6 +5,11 @@ back what changed, classify it, and decide what becomes of the issue. The middle
 part is the only one that costs money, and the last two are pure functions over
 what it produced.
 
+A turn that succeeded in a **worker lane** is also landed: its branch is merged
+into the run's integration branch, in the integration lane, because that is part
+of finishing one turn rather than part of deciding whether there is another
+(:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+
 **The turn has a seam in it**, because waiting is what stops several running at
 once (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`):
 
@@ -31,13 +36,29 @@ from . import outcome as outcome_module
 from . import prompts
 from .errors import AgentError, HerdrError, MilhouseError
 from .lanes import Lane
-from .models import Issue, Iteration, now
+from .models import Issue, Iteration, MergeRecord, Outcome, now
 from .policy import Decision, Policy, decide
 from .runner import Runner, TurnResult
 from .session import Session
 from .verify import Verification, verify
 
-__all__ = ["Dispatched", "StepResult", "dispatch", "nothing_ready", "reap", "step"]
+__all__ = [
+    "MERGE_ERROR_CHARS",
+    "Dispatched",
+    "StepResult",
+    "dispatch",
+    "nothing_ready",
+    "reap",
+    "step",
+]
+
+MERGE_ERROR_CHARS = 500
+"""Characters kept from a merge git refused outright.
+
+git lists the files it is unhappy about, so the message has no ceiling on it and
+this record goes in the audit log, where a long line can tear
+(:doc:`ADR 0021 <../../docs/decisions/0021-iteration-history-goes-in-the-beads-audit-log>`).
+"""
 
 
 @dataclass(frozen=True)
@@ -280,7 +301,14 @@ def _finish(
     error: str | None,
     policy: Policy,
 ) -> StepResult:
-    """Classify a turn that is over, record it, and settle its issue."""
+    """Classify a turn that is over, land it, record it, and settle its issue.
+
+    The order is the argument. Verification has its say first, because a turn
+    that closed an issue the gate rejects is not a success and there is nothing
+    to land. Only then is the branch merged, and only then is the iteration
+    recorded, so one audit entry carries both what the turn achieved and what
+    became of it.
+    """
     issue = pending.issue
     repo = session.repo.at(runner.workdir)
     head_after = repo.head()
@@ -305,6 +333,7 @@ def _finish(
         error=error,
         verification=checked,
     )
+    merge = _land(session, pending, verdict.outcome)
 
     iteration = Iteration(
         number=pending.number,
@@ -319,6 +348,7 @@ def _finish(
         commits=commits,
         attributed=attributed,
         dirty_after=dirty_after,
+        merge=merge,
         verified=checked.ok if checked else None,
         verification_output=checked.output if checked and not checked.ok else "",
         started_at=pending.started_at,
@@ -381,6 +411,86 @@ def _overdue(session: Session, pending: Dispatched) -> bool:
     """
     elapsed = (now() - pending.started_at).total_seconds()
     return elapsed > session.config.agent.turn_timeout_ms / 1000
+
+
+def _land(session: Session, pending: Dispatched, outcome: Outcome) -> MergeRecord | None:
+    """Merge a successful worker lane into the integration branch, in that lane.
+
+    Landing is I/O, and it is part of finishing one turn rather than part of
+    deciding whether there is another, so it belongs here: nothing in it needs
+    to know how many turns are coming, which is the test ``docs/architecture.md``
+    applies to every addition.
+
+    Three sessions do nothing at all. ``step``, ``dispatch`` and ``reap`` have no
+    integration lane to land anything in. Neither has a ``--count 1`` run, which
+    works in the integration lane itself and so has nothing to merge into it
+    (:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`).
+
+    A turn that did not succeed is not merged either. Its commits stay on its
+    worker branch, where the next attempt at the same issue finds them, which is
+    what returning an issue to its existing lane is for.
+
+    A conflict is reported rather than raised, and loses nothing: the merge is
+    aborted before it gets here, so the worker branch is intact, the issue stays
+    closed, and the record names both branches for whoever lands it by hand
+    (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+
+    Args:
+        session: The open session, which owns the integration lane.
+        pending: The turn that has just ended, carrying the lane it ran in.
+        outcome: What the turn was classified as, once verification has had its
+            say.
+
+    Returns:
+        What the merge did, or ``None`` when there was nothing to land.
+    """
+    if outcome != "success" or not session.worker_lanes:
+        return None
+    integration = session.integration_lane()
+    source = pending.lane.branch
+    if integration is None or not source or source == integration.branch:
+        return None
+
+    target = integration.branch
+    session.report(f"  merging {source} into {target} in {integration.path}")
+    try:
+        merged = session.repo.at(integration.path).merge(
+            source, message=f"Merge {source} into {target} ({pending.issue.id})"
+        )
+    except MilhouseError as exc:
+        record = MergeRecord(source=source, target=target, error=str(exc)[:MERGE_ERROR_CHARS])
+    else:
+        record = MergeRecord(
+            source=source,
+            target=target,
+            sha=merged.sha,
+            fast_forwarded=merged.fast_forwarded,
+            conflicts=list(merged.conflicts),
+        )
+    session.report(f"  → {_merge_line(record)}")
+    return record
+
+
+def _merge_line(record: MergeRecord) -> str:
+    """One line saying what the merge did, precise enough to act on.
+
+    A conflict is the one mess a concurrent run can leave that a serial one
+    could not: a closed issue, a live branch, and an integration branch without
+    its work. That line therefore names both branches and every path.
+    """
+    if record.conflicts:
+        return (
+            f"{record.source} conflicts with {record.target} in "
+            f"{len(record.conflicts)} file(s): {', '.join(record.conflicts)}. "
+            f"Both branches are intact; land {record.source} by hand."
+        )
+    if record.error:
+        return f"could not merge {record.source} into {record.target}: {record.error}"
+    if record.sha is None:
+        return f"{record.target} already contained {record.source}"
+    if record.fast_forwarded:
+        return f"{record.target} fast-forwarded to {record.sha[:12]}"
+    return f"merged {record.source} into {record.target} as {record.sha[:12]}"
 
 
 def _verify(
