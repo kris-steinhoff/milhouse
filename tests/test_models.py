@@ -48,7 +48,7 @@ def test_iteration_detects_a_commit() -> None:
 
 def merge(**fields: object) -> MergeRecord:
     """A merge of one run's worker lane into its integration branch."""
-    return MergeRecord(source="milhouse/bd-e/bd-e.1", target="milhouse/bd-e", **fields)  # ty: ignore[invalid-argument-type]
+    return MergeRecord(source="milhouse/bd-e--bd-e.1", target="milhouse/bd-e", **fields)  # ty: ignore[invalid-argument-type]
 
 
 def test_only_a_real_merge_commit_joined_two_histories() -> None:
@@ -73,7 +73,7 @@ def test_a_conflicted_or_refused_merge_did_not_land() -> None:
     assert not conflicted.landed
     assert not refused.landed
     # Both branches are on the record, because the recovery is by hand.
-    assert (conflicted.source, conflicted.target) == ("milhouse/bd-e/bd-e.1", "milhouse/bd-e")
+    assert (conflicted.source, conflicted.target) == ("milhouse/bd-e--bd-e.1", "milhouse/bd-e")
 
 
 # -- the dependency graph ------------------------------------------------------

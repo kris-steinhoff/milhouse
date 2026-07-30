@@ -22,7 +22,7 @@ from .doubles import FakeRepo, FakeRunner, FakeTracker, build
 
 TARGET = Issue(id="bd-e", title="Add a hello command", status="open", issue_type="epic")
 
-WORKER = "milhouse/bd-e/bd-e.1"
+WORKER = "milhouse/bd-e--bd-e.1"
 INTEGRATION = "milhouse/bd-e"
 
 

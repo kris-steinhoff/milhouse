@@ -205,8 +205,8 @@ def test_a_worker_lane_branches_off_the_integration_branch(
     assert integration.branch == "milhouse/bd-e"
     assert first.workdir != second.workdir
     assert first.workdir != integration.path
-    assert client.bases["milhouse/bd-e/bd-e.1"] == "milhouse/bd-e"
-    assert client.bases["milhouse/bd-e/bd-e.2"] == "milhouse/bd-e"
+    assert client.bases["milhouse/bd-e--bd-e.1"] == "milhouse/bd-e"
+    assert client.bases["milhouse/bd-e--bd-e.2"] == "milhouse/bd-e"
 
 
 def test_a_second_attempt_in_a_run_returns_to_the_issue_s_worker_lane(
@@ -222,7 +222,7 @@ def test_a_second_attempt_in_a_run_returns_to_the_issue_s_worker_lane(
 
     assert again.workdir == first.workdir
     assert again.agent_name == first.agent_name
-    assert list(client.bases) == ["milhouse/bd-e", "milhouse/bd-e/bd-e.1"]
+    assert list(client.bases) == ["milhouse/bd-e", "milhouse/bd-e--bd-e.1"]
 
 
 def test_a_run_with_worker_lanes_holds_one_lock_per_lane(
@@ -272,8 +272,8 @@ def test_a_run_with_worker_lanes_names_every_lane_it_left_open(
 
     assert [line for line in lines if "left open" in line] == [
         "lane wL1 is left open (/worktrees/milhouse-bd-e)",
-        "lane wL2 is left open (/worktrees/milhouse-bd-e-bd-e.1)",
-        "lane wL3 is left open (/worktrees/milhouse-bd-e-bd-e.2)",
+        "lane wL2 is left open (/worktrees/milhouse-bd-e--bd-e.1)",
+        "lane wL3 is left open (/worktrees/milhouse-bd-e--bd-e.2)",
     ]
 
 
@@ -287,7 +287,7 @@ def with_worker_lane(config: Config, issue_id: str) -> FakeClient:
         checkouts=[
             Worktree(path=config.repo_root, branch="main", workspace_id="wG"),
             Worktree(
-                path=Path("/worktrees/milhouse-bd-e-bd-e.1"),
+                path=Path("/worktrees/milhouse-bd-e--bd-e.1"),
                 branch=f"milhouse/bd-e/{issue_id}",
                 workspace_id="wL9",
             ),

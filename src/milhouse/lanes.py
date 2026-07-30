@@ -20,8 +20,9 @@ A run working several issues at once needs both keys at two levels
 The lane :meth:`Lanes.open_for` gives it is then its **integration** lane, the
 one branch a person reviews, and :meth:`Lanes.open_worker` gives each issue in
 flight a **worker** lane branched from the integration branch, on
-``{branch_prefix}{target}/{issue}``. At ``--count 1`` there are no worker lanes
-at all, so a serial run is exactly what ADR 0023 describes.
+``{branch_prefix}{target}--{issue}`` (:data:`WORKER_SEPARATOR`). At ``--count 1``
+there are no worker lanes at all, so a serial run is exactly what ADR 0023
+describes.
 
 **herdr is the registry.** ``herdr worktree list`` answers what lanes exist and
 on what branches, and ``herdr workspace list`` answers which issue each one is
@@ -55,9 +56,26 @@ from .errors import MilhouseError
 from .herdr import HerdrClient, Worktree
 from .models import Issue
 
-__all__ = ["Lane", "Lanes"]
+__all__ = ["WORKER_SEPARATOR", "Lane", "Lanes"]
 
 log = logging.getLogger(__name__)
+
+WORKER_SEPARATOR = "--"
+"""What joins a run's target to an issue in a worker lane's branch name.
+
+Not ``/``, which is what
+:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`
+first said and what git refuses. Refs are a directory hierarchy, so a branch
+``milhouse/bd-e`` and a branch ``milhouse/bd-e/bd-e.1`` cannot coexist: the
+second fails with ``cannot lock ref 'refs/heads/milhouse/bd-e/bd-e.1':
+'refs/heads/milhouse/bd-e' exists``. The integration branch is the one a person
+reviews and the one ADR 0023 named, so the worker branch is the one that gives
+way.
+
+Public because :func:`milhouse.cli._nested` recovers which integration lane a
+worker lane belongs to by splitting its branch on this, and two spellings of the
+separator would silently stop grouping lanes rather than fail.
+"""
 
 EXCLUDE_RELPATH = Path(".git/info/exclude")
 """Where a lane inside the repository gets ignored.
@@ -321,12 +339,19 @@ class Lanes:
     def worker_branch(self, target: str, key: str) -> str:
         """The branch a worker lane for ``key`` inside a run of ``target`` commits to.
 
-        ``{branch_prefix}{target}/{key}``, and the namespacing is the whole point
+        ``{branch_prefix}{target}{WORKER_SEPARATOR}{key}``, and qualifying it by
+        the target is the whole point
         (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
         It is what stops two runs of different targets that both reach the same
         issue colliding on a branch name, and it is what lets ``milhouse status``
         tell a run's worker lane from a ``dispatch`` lane by looking at it: the
         two carry the same label, and only the branch says which is which.
+
+        The separator is not ``/``, and that is git's decision rather than
+        milhouse's: refs are a directory hierarchy, so ``milhouse/bd-e`` and
+        ``milhouse/bd-e/bd-e.1`` cannot both exist and the second is refused with
+        ``cannot lock ref``. The integration branch is the one a person reviews
+        and keeps ADR 0023's name, so the worker branch is the one that moves.
 
         Args:
             target: What the run is working towards, which keys its integration
@@ -336,7 +361,7 @@ class Lanes:
         Returns:
             The branch name.
         """
-        return f"{self.config.lane.branch_prefix}{target}/{key}"
+        return f"{self.config.lane.branch_prefix}{target}{WORKER_SEPARATOR}{key}"
 
     def open_worker(
         self,

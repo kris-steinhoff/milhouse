@@ -611,10 +611,10 @@ def test_reconcile_reopens_a_claim_whose_lane_is_gone(
 
 # -- landing a worker lane in the integration branch ---------------------------
 
-WORKER_PATH = Path("/worktrees/milhouse-bd-e-bd-e.1")
+WORKER_PATH = Path("/worktrees/milhouse-bd-e--bd-e.1")
 """Where a run of `bd-e` checks out the worker lane for `bd-e.1`."""
 
-WORKER_BRANCH = "milhouse/bd-e/bd-e.1"
+WORKER_BRANCH = "milhouse/bd-e--bd-e.1"
 """What that lane commits to, namespaced under the target (ADR 0024)."""
 
 INTEGRATION_PATH = Path("/worktrees/milhouse-bd-e")

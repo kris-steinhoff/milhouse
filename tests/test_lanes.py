@@ -424,9 +424,42 @@ def test_a_worker_lane_is_namespaced_under_the_target(lanes: Lanes, client: Fake
 
     worker = open_worker(lanes, "bd-e.1", base=integration.branch)
 
-    assert worker.branch == "milhouse/bd-e/bd-e.1"
-    assert client.bases["milhouse/bd-e/bd-e.1"] == "milhouse/bd-e"
+    assert worker.branch == "milhouse/bd-e--bd-e.1"
+    assert client.bases["milhouse/bd-e--bd-e.1"] == "milhouse/bd-e"
     assert worker.path != integration.path
+
+
+def test_git_will_hold_a_worker_branch_and_its_integration_branch_at_once(
+    lanes: Lanes, tmp_path: Path
+) -> None:
+    """Real git, because a fake herdr accepts any pair of names and git does not.
+
+    Refs are a directory hierarchy, so the first concurrent run died on
+    ``cannot lock ref 'refs/heads/milhouse/bd-e/bd-e.1': 'refs/heads/milhouse/bd-e'
+    exists`` before an agent was started. Nothing with a fake in it could have
+    caught that, so this one asks git.
+    """
+    root = tmp_path / "refs"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    for name, value in (("user.email", "milhouse@example.invalid"), ("user.name", "milhouse")):
+        subprocess.run(["git", "-C", str(root), "config", name, value], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-q", "--allow-empty", "-m", "root"], check=True
+    )
+    integration = open_for(lanes, "bd-e").branch
+    worker = open_worker(lanes, "bd-e.1", base=integration).branch
+
+    for branch in (integration, worker):
+        subprocess.run(["git", "-C", str(root), "branch", branch, "main"], check=True)
+
+    listed = subprocess.run(
+        ["git", "-C", str(root), "branch", "--format=%(refname:short)"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert {integration, worker} <= set(listed.stdout.split())
 
 
 def test_the_branch_prefix_applies_to_a_worker_lane_too(client: FakeClient, config: Config) -> None:
@@ -434,7 +467,7 @@ def test_the_branch_prefix_applies_to_a_worker_lane_too(client: FakeClient, conf
 
     worker = open_worker(Lanes(client, config), "bd-e.1")  # ty: ignore[invalid-argument-type]
 
-    assert worker.branch == "lane/bd-e/bd-e.1"
+    assert worker.branch == "lane/bd-e--bd-e.1"
 
 
 def test_a_worker_lane_is_labelled_with_its_issue(lanes: Lanes, client: FakeClient) -> None:
@@ -467,7 +500,7 @@ def test_two_runs_of_different_targets_do_not_collide_on_a_branch(lanes: Lanes) 
 
     theirs = open_worker(lanes, "bd-e.1", target="bd-f", base="milhouse/bd-f")
 
-    assert theirs.branch == "milhouse/bd-f/bd-e.1"
+    assert theirs.branch == "milhouse/bd-f--bd-e.1"
     assert theirs.branch != mine.branch
     assert theirs.path != mine.path
 
@@ -479,7 +512,7 @@ def test_a_worker_lane_is_not_the_dispatch_lane_for_the_same_issue(lanes: Lanes)
     worker = open_worker(lanes, "bd-e.1")
 
     assert dispatched.branch == "milhouse/bd-e.1"
-    assert worker.branch == "milhouse/bd-e/bd-e.1"
+    assert worker.branch == "milhouse/bd-e--bd-e.1"
     assert worker.path != dispatched.path
 
 

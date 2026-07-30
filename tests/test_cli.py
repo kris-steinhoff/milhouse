@@ -253,13 +253,13 @@ def test_status_lists_a_runs_worker_lanes_under_its_integration_lane(
                             "open_workspace_id": "wI",
                         },
                         {
-                            "path": "/worktrees/milhouse-bd-e-bd-e.1",
-                            "branch": "milhouse/bd-e/bd-e.1",
+                            "path": "/worktrees/milhouse-bd-e--bd-e.1",
+                            "branch": "milhouse/bd-e--bd-e.1",
                             "open_workspace_id": "wW1",
                         },
                         {
-                            "path": "/worktrees/milhouse-bd-e-bd-e.2",
-                            "branch": "milhouse/bd-e/bd-e.2",
+                            "path": "/worktrees/milhouse-bd-e--bd-e.2",
+                            "branch": "milhouse/bd-e--bd-e.2",
                             "open_workspace_id": "wW2",
                         },
                         {
@@ -278,8 +278,8 @@ def test_status_lists_a_runs_worker_lanes_under_its_integration_lane(
 
     assert "lanes (4)" in result.output
     assert lines[0].startswith("  bd-e  milhouse/bd-e ")
-    assert lines[1].startswith("      bd-e.1  milhouse/bd-e/bd-e.1 ")
-    assert lines[2].startswith("      bd-e.2  milhouse/bd-e/bd-e.2 ")
+    assert lines[1].startswith("      bd-e.1  milhouse/bd-e--bd-e.1 ")
+    assert lines[2].startswith("      bd-e.2  milhouse/bd-e--bd-e.2 ")
     # A `dispatch` lane belongs to nobody's run, so it stays at the top level.
     assert lines[3].startswith("  bd-x.9  milhouse/bd-x.9 ")
 
@@ -306,8 +306,8 @@ def test_status_leaves_a_worker_lane_whose_run_is_gone_at_the_top_level(
                     "worktrees": [
                         {"path": str(worked_repo), "branch": "main", "open_workspace_id": "wG"},
                         {
-                            "path": "/worktrees/milhouse-bd-e-bd-e.1",
-                            "branch": "milhouse/bd-e/bd-e.1",
+                            "path": "/worktrees/milhouse-bd-e--bd-e.1",
+                            "branch": "milhouse/bd-e--bd-e.1",
                             "open_workspace_id": "wW1",
                         },
                     ]
@@ -320,7 +320,7 @@ def test_status_leaves_a_worker_lane_whose_run_is_gone_at_the_top_level(
     lines = [line for line in result.output.splitlines() if "milhouse/" in line]
 
     assert "lanes (1)" in result.output
-    assert lines == ["  bd-e.1  milhouse/bd-e/bd-e.1  /worktrees/milhouse-bd-e-bd-e.1"]
+    assert lines == ["  bd-e.1  milhouse/bd-e--bd-e.1  /worktrees/milhouse-bd-e--bd-e.1"]
 
 
 def test_status_flags_a_claim_left_by_an_unfinished_run(
@@ -580,10 +580,10 @@ def test_run_dry_run_names_the_worker_lane_the_next_issue_would_work_in(
 
     assert (
         "lane      milhouse/bd-e  (the integration lane; "
-        "bd-e.1 would work on milhouse/bd-e/bd-e.1)" in result.output
+        "bd-e.1 would work on milhouse/bd-e--bd-e.1)" in result.output
     )
     # And the prompt names the branch the turn would really commit to.
-    assert "milhouse/bd-e/bd-e.1" in result.output.split("would work bd-e.1 and send")[1]
+    assert "milhouse/bd-e--bd-e.1" in result.output.split("would work bd-e.1 and send")[1]
 
 
 def test_run_dry_run_reads_the_width_from_the_config_file(
@@ -776,13 +776,13 @@ def test_the_run_report_says_what_landed_on_the_integration_branch(
             merged_turn(
                 1,
                 "bd-e.1",
-                MergeRecord(source="milhouse/bd-e/bd-e.1", target="milhouse/bd-e", sha="a" * 40),
+                MergeRecord(source="milhouse/bd-e--bd-e.1", target="milhouse/bd-e", sha="a" * 40),
             ),
             merged_turn(
                 2,
                 "bd-e.2",
                 MergeRecord(
-                    source="milhouse/bd-e/bd-e.2",
+                    source="milhouse/bd-e--bd-e.2",
                     target="milhouse/bd-e",
                     conflicts=["src/a.py"],
                 ),
@@ -794,7 +794,7 @@ def test_the_run_report_says_what_landed_on_the_integration_branch(
 
     output = capsys.readouterr().out
     assert "merged (1)" in output
-    assert "bd-e.1  merged milhouse/bd-e/bd-e.1 into milhouse/bd-e" in output
+    assert "bd-e.1  merged milhouse/bd-e--bd-e.1 into milhouse/bd-e" in output
     assert "not merged (1)" in output
     assert "src/a.py" in output
     assert "Land it by hand." in output
@@ -813,7 +813,7 @@ def test_the_run_report_says_which_merge_made_the_branch_red(
             merged_turn(
                 1,
                 "bd-e.1",
-                MergeRecord(source="milhouse/bd-e/bd-e.1", target="milhouse/bd-e", sha="a" * 40),
+                MergeRecord(source="milhouse/bd-e--bd-e.1", target="milhouse/bd-e", sha="a" * 40),
                 integration_verified=False,
             )
         ],

@@ -38,7 +38,7 @@ from .config import Config, load
 from .errors import MilhouseError
 from .gitrepo import GitRepo, find_repo_root
 from .herdr import HerdrClient
-from .lanes import Lane, Lanes
+from .lanes import WORKER_SEPARATOR, Lane, Lanes
 from .models import Graph, Issue, Iteration
 from .parallel import Parallel
 from .policy import unattended
@@ -661,7 +661,7 @@ def _dry_run(config: Config, *, scope: Scope | None = None) -> None:
         # to name (ADR 0024).
         lane_branch = f"{config.lane.branch_prefix}{scope.target.id}"
         if config.run.max_parallel > 1:
-            commits_to = f"{lane_branch}/{next_issue.id}"
+            commits_to = f"{lane_branch}{WORKER_SEPARATOR}{next_issue.id}"
             note = f"the integration lane; {next_issue.id} would work on {commits_to}"
         else:
             note = "one lane for the whole run"
@@ -871,9 +871,9 @@ def _print_lanes(client: HerdrClient, config: Config) -> None:
 
     A run's **worker** lane carries an issue id too, so the branch is what tells
     the two apart: ``milhouse/bd-e.1`` came from ``dispatch``, and
-    ``milhouse/bd-e/bd-e.1`` is that issue inside a run of ``bd-e``
+    ``milhouse/bd-e--bd-e.1`` is that issue inside a run of ``bd-e``
     (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
-    That is what namespacing the branch under the target is for, and it is why
+    That is what qualifying the branch by the target is for, and it is why
     the branch is in the listing rather than only the label. It is also what
     :func:`_nested` reads to print a run's worker lanes under the integration
     lane they land in, rather than as five sibling rows a person has to sort
@@ -902,7 +902,8 @@ def _lane_line(lane: Lane) -> str:
 def _nested(lanes: list[Lane]) -> list[tuple[Lane, list[Lane]]]:
     """Group a run's worker lanes under the integration lane they land in.
 
-    A worker lane's branch is its integration branch plus ``/`` plus the issue
+    A worker lane's branch is its integration branch plus
+    :data:`~milhouse.lanes.WORKER_SEPARATOR` plus the issue
     (:meth:`milhouse.lanes.Lanes.worker_branch`), so the branch names the
     relationship and nothing has to be stored to recover it. Exactly one level,
     because there are exactly two levels of lane.
@@ -922,7 +923,7 @@ def _nested(lanes: list[Lane]) -> list[tuple[Lane, list[Lane]]]:
     workers: dict[str, list[Lane]] = {}
     nested: set[int] = set()
     for index, lane in enumerate(lanes):
-        parent, separator, _ = lane.branch.rpartition("/")
+        parent, separator, _ = lane.branch.rpartition(WORKER_SEPARATOR)
         if separator and parent in branches:
             workers.setdefault(parent, []).append(lane)
             nested.add(index)

@@ -103,7 +103,7 @@ def test_a_conflict_in_many_files_does_not_make_a_long_entry(
     audit.record(
         iteration(
             merge=MergeRecord(
-                source="milhouse/bd-e/bd-e.1",
+                source="milhouse/bd-e--bd-e.1",
                 target="milhouse/bd-e",
                 conflicts=[f"src/milhouse/module_{n:03d}.py" for n in range(200)],
             )
@@ -127,7 +127,7 @@ def test_a_merge_survives_the_round_trip(audit: AuditLog) -> None:
                     "number": 1,
                     "outcome": "success",
                     "merge": {
-                        "source": "milhouse/bd-e/bd-e.1",
+                        "source": "milhouse/bd-e--bd-e.1",
                         "target": "milhouse/bd-e",
                         "sha": "c" * 40,
                         "fast_forwarded": False,
@@ -146,7 +146,7 @@ def test_a_merge_survives_the_round_trip(audit: AuditLog) -> None:
     assert merge is not None
     assert merge.joined
     assert merge.landed
-    assert merge.source == "milhouse/bd-e/bd-e.1"
+    assert merge.source == "milhouse/bd-e--bd-e.1"
 
 
 def test_an_entry_stays_small_enough_to_append_atomically(
