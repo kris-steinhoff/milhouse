@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from milhouse.errors import HerdrError, TurnTimeoutError
-from milhouse.herdr import AGENT_NAME_RULE, HerdrClient
+from milhouse.herdr import AGENT_NAME, AGENT_NAME_RULE, HerdrClient
 
 from .fakes import FakeProc, Reply
 
@@ -491,6 +492,107 @@ def test_the_lane_registry_against_the_live_server(tmp_path: Path) -> None:
             client.close_workspace(lane.workspace_id)
             shutil.rmtree(lane.path, ignore_errors=True)
         client.close_workspace(source.workspace_id)
+
+
+# Names along every edge of the rule herdr states: its character set, its leading
+# character, thirty-two against thirty-three, and no name at all. What each one
+# should do is deliberately not written down here. It is derived from AGENT_NAME,
+# which is the claim on trial.
+AGENT_NAME_PROBES = (
+    "milhouse-bd-e_1",
+    "milhouse-bd-e-",
+    "m" * 32,
+    "m" * 33,
+    "milhouse-bd-e.1",
+    "milhouse-BD-E",
+    "1milhouse",
+    "",
+)
+
+# A pane herdr cannot resolve. herdr checks the name before it looks for the
+# pane, so a name it accepts gets exactly this far, which is what keeps this test
+# from starting an agent or spending a token.
+NO_SUCH_PANE = "wZZZ:pZZZ"
+
+# Any name at all, standing in for AGENT_NAME so that herdr does the refusing.
+ANY_NAME = re.compile(r"(?s).*")
+
+
+def herdr_code(failure: str) -> str:
+    """The herdr error code inside a `HerdrError`, in either shape it arrives in.
+
+    `_call` renders an error payload as `herdr agent start: <code>: <message>`.
+    But 0.7.5 also exits non-zero on these, and `proc` reports a non-zero exit by
+    quoting the raw stdout, so the code comes through inside the JSON instead.
+    Both are the same verdict from herdr, and which one milhouse takes is not what
+    this test is about, so both are read rather than the exit status pinned.
+
+    Falls back to the whole message, so a failure that carries no herdr code at
+    all reads as itself rather than as a mangled code.
+    """
+    for pattern in (r"herdr agent start: (\w+):", r'"code":\s*"(\w+)"'):
+        match = re.search(pattern, failure)
+        if match:
+            return match.group(1)
+    return failure
+
+
+@pytest.mark.herdr
+def test_herdr_refuses_exactly_the_names_milhouse_refuses_against_the_live_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`AGENT_NAME` is the grammar of the herdr that is installed, not one recalled.
+
+    The recorded tests assert what milhouse thinks an agent name is, so they
+    stayed green while the real `herdr agent start` could not start an agent at
+    all. This one submits each probe name to the live server and asserts the
+    verdict `AGENT_NAME` predicts: `invalid_agent_name` for a name outside it,
+    and `agent_pane_not_found` for a name inside it, which is herdr getting past
+    the name and on to the pane. Both directions matter — a name milhouse refuses
+    that herdr would take is the same bug facing the other way — so the
+    expectation is derived from the pattern rather than listed beside it.
+
+    Nothing is started and no tokens are spent: every call names a pane that does
+    not exist, and herdr validates the name first.
+
+    `start_agent` refuses a bad name itself now, so it cannot be the thing that
+    asks herdr. For the calls that guard would block, and only those, the pattern
+    it reads is swapped for one that matches anything. That leaves the production
+    guard exactly as it is, reuses herdr's real argv rather than rebuilding it
+    here, and puts the answer where the test wants it: herdr's, not milhouse's.
+    The `AGENT_NAME` imported at the top of this module keeps pointing at the real
+    pattern, which is what the expectation is still derived from.
+
+    herdr 0.7.5 is what reported this rule and the wording `AGENT_NAME_RULE`
+    quotes. milhouse pins no herdr version, so whether an earlier server enforced
+    it is unknown.
+    """
+    if shutil.which("herdr") is None:
+        pytest.skip("herdr is not installed")
+    client = HerdrClient()
+    try:
+        client.workspace_labels()
+    except HerdrError as exc:
+        pytest.skip(f"herdr server unavailable: {exc}")
+
+    failures = {}
+    for name in AGENT_NAME_PROBES:
+        with monkeypatch.context() as relaxed:
+            if not AGENT_NAME.fullmatch(name):
+                relaxed.setattr("milhouse.herdr.AGENT_NAME", ANY_NAME)
+            with pytest.raises(HerdrError) as caught:
+                client.start_agent(name, kind="claude", pane_id=NO_SUCH_PANE, timeout_ms=1000)
+        failures[name] = str(caught.value)
+
+    expected = {
+        name: "agent_pane_not_found" if AGENT_NAME.fullmatch(name) else "invalid_agent_name"
+        for name in AGENT_NAME_PROBES
+    }
+    assert {name: herdr_code(failure) for name, failure in failures.items()} == expected
+    # AGENT_NAME_RULE claims to be herdr's own sentence, so that milhouse's early
+    # refusal and herdr's own read alike. Only herdr can confirm that.
+    refused = [failures[name] for name, code in expected.items() if code == "invalid_agent_name"]
+    assert all(AGENT_NAME_RULE in failure for failure in refused), refused
 
 
 def test_the_agents_own_pane_is_reported(fake_proc: FakeProc) -> None:
