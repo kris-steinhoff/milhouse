@@ -480,6 +480,40 @@ def test_a_turn_that_will_not_start_is_settled_rather_than_left_claimed(
     assert decomposed.released == ["bd-e.1"]
 
 
+def test_a_prompt_the_agent_never_took_is_never_dispatched_or_reaped(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """milhouse-amd.12: nine of seventeen turns settled having done nothing.
+
+    A prompt swallowed by a just-started agent leaves herdr reporting the same
+    "not working" it reports for an agent that has finished, so `reap` collected
+    the turn about twelve seconds later and `classify` called it `stalled` — the
+    issue was open and nothing was committed, which was true and was not what
+    happened. Three of those spend an issue's whole retry ladder in under a
+    minute, at poll speed rather than agent speed.
+
+    The fix is at the seam: `dispatch` now confirms the prompt was taken, so
+    there is no turn in flight to misread. This asserts the whole arc, because
+    the damage was never in one call — it was a turn recorded as started, then
+    read back by a poller that had nothing true left to read.
+    """
+    client = with_lane(FakeClient(), "bd-e.1")
+    session, _ = build(config, tracker=decomposed, script=["unsubmitted"], client=client)
+
+    with session as opened:
+        assert dispatch(opened) == []
+        # Nothing is in flight, so a poller finds nothing to collect.
+        assert opened.audit.dispatches() == {}
+        assert reap(opened) == []
+
+    outcomes = [item.outcome for item in session.audit.iterations()]
+    assert "stalled" not in outcomes
+    assert outcomes == ["error"]
+    # And it says which agent, and what herdr said about it.
+    assert "did not observe" in session.audit.iterations()[0].detail
+    assert decomposed.released == ["bd-e.1"]
+
+
 def test_a_dispatched_turn_survives_the_session_that_started_it(
     config: Config, decomposed: FakeTracker
 ) -> None:

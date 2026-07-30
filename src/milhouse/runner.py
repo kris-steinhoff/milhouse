@@ -82,11 +82,15 @@ class Runner(Protocol):
         ...
 
     def start_turn(self, prompt: str, *, iteration: int, issue_id: str | None = None) -> TurnResult:
-        """Start an agent, submit the prompt, and return without waiting.
+        """Start an agent, submit the prompt, and return without waiting for the turn.
 
-        The returned result carries the prompt path and any failure to start.
-        Its ``agent_state`` is whatever herdr reports right now, which is not
-        the state the turn will end in.
+        The returned result carries the prompt path and any failure to start or
+        to submit. Its ``agent_state`` is the state herdr observed once the
+        prompt had landed, which is not the state the turn will end in.
+
+        An implementation must not report a turn as started until the prompt is
+        known to have been taken. A turn nobody waits for has no later signal
+        saying it never began.
         """
         ...
 
@@ -181,12 +185,24 @@ class AgentRunner:
         return result
 
     def start_turn(self, prompt: str, *, iteration: int, issue_id: str | None = None) -> TurnResult:
-        """Start an agent, submit the prompt, and return without waiting.
+        """Start an agent, submit the prompt, and return without waiting for the turn.
 
-        The submission is the only difference from :meth:`run_turn`: herdr is
-        not asked to block, so several turns can be in flight at once and a
-        later :func:`milhouse.step.reap` collects them
+        The waiting is the only difference from :meth:`run_turn`: herdr is not
+        asked to block until the turn ends, so several turns can be in flight at
+        once and a later :func:`milhouse.step.reap` collects them
         (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
+
+        It does wait for the **submission**, through
+        :meth:`~milhouse.herdr.HerdrClient.submit`, and that is not a smaller
+        version of waiting for the turn. Returning the instant the prompt was
+        handed over used to mean returning without knowing whether it had been
+        taken, and a prompt swallowed by a just-started agent leaves an agent
+        that reports ``idle`` forever after — indistinguishable from one that
+        finished, so the poller collected a turn that never happened and called
+        it the agent's failure
+        (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+        Confirming here is what stops that state existing, and it costs the
+        fraction of a second herdr needs to see the agent react.
 
         Args:
             prompt: The rendered prompt to send.
@@ -194,17 +210,18 @@ class AgentRunner:
             issue_id: The issue this turn works.
 
         Returns:
-            The prompt path, and any failure to start or submit.
+            The prompt path, the state herdr observed once the prompt landed,
+            and any failure to start or submit.
         """
         result = self._begin(prompt, iteration, issue_id=issue_id)
         if result.error:
             return result
         try:
-            result.agent_state = self.client.prompt(
+            result.agent_state = self.client.submit(
                 self.agent_name,
                 prompt,
-                timeout_ms=self.config.agent.turn_timeout_ms,
-                wait=False,
+                timeout_ms=self.config.agent.submit_timeout_ms,
+                attempts=self.config.agent.submit_attempts,
             )
         except HerdrError as exc:
             result.error = f"could not prompt the agent: {exc}"

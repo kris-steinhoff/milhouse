@@ -55,6 +55,24 @@ class AgentConfig(BaseModel):
     exit_timeout_ms: int = 8_000
     """How long to wait for the pane to return to a shell prompt after exit_keys."""
 
+    submit_timeout_ms: int = 15_000
+    """How long herdr may take to confirm one prompt reached the agent.
+
+    Not the turn timeout: the wait ends as soon as herdr observes the agent
+    react, which is a fraction of a second. herdr answers ``agent_prompt_stalled``
+    at its own five-second floor whatever is set here, so this is a backstop
+    against a wedged server rather than the deadline that normally fires
+    (:data:`milhouse.herdr.SUBMISSION_FLOOR_MS`).
+    """
+
+    submit_attempts: int = 3
+    """How many times to submit a prompt before giving up on the turn.
+
+    A prompt sent to a just-started agent is regularly swallowed, and
+    re-submitting is what fixes it. One disables the retry, which is what a
+    repository whose agent kind never loses a prompt would want.
+    """
+
     turn_timeout_ms: int = 1_800_000
     """Bound on a single ``herdr agent prompt --wait`` turn. Default 30 minutes.
 
@@ -279,6 +297,8 @@ _ENV_MAP: dict[str, tuple[str, str, str]] = {
     "MILHOUSE_AGENT_ARGS": ("agent", "args", "argv"),
     "MILHOUSE_AGENT_START_TIMEOUT_MS": ("agent", "start_timeout_ms", "int"),
     "MILHOUSE_AGENT_EXIT_TIMEOUT_MS": ("agent", "exit_timeout_ms", "int"),
+    "MILHOUSE_AGENT_SUBMIT_TIMEOUT_MS": ("agent", "submit_timeout_ms", "int"),
+    "MILHOUSE_AGENT_SUBMIT_ATTEMPTS": ("agent", "submit_attempts", "int"),
     "MILHOUSE_TURN_TIMEOUT_MS": ("agent", "turn_timeout_ms", "int"),
     "MILHOUSE_RUN_MAX_ITERATIONS": ("run", "max_iterations", "int"),
     "MILHOUSE_RUN_MAX_ATTEMPTS": ("run", "max_attempts", "int"),

@@ -43,8 +43,14 @@ How the interactive agent is started in its herdr pane. See [ADR 0003](decisions
 | `exit_timeout_ms` | int | `8000` | `MILHOUSE_AGENT_EXIT_TIMEOUT_MS` | How long to wait for the pane to return to a shell prompt before replacing it. |
 | `exit_keys` | list\[str] | `["ctrl+c", "ctrl+c", "ctrl+d"]` | — | Key sequence returning the pane from the agent TUI to a shell prompt. Use the `ctrl+` spelling. See [ADR 0011](decisions/0011-exiting-the-agent.md). |
 | `turn_timeout_ms` | int | `1800000` (30 minutes) | `MILHOUSE_TURN_TIMEOUT_MS` | Bound on one `herdr agent prompt --wait` turn, so a wedged agent cannot hang a step forever. |
+| `submit_timeout_ms` | int | `15000` | `MILHOUSE_AGENT_SUBMIT_TIMEOUT_MS` | How long herdr may take to confirm one prompt reached the agent. Not the turn timeout: the wait ends as soon as herdr observes the agent react. |
+| `submit_attempts` | int | `3` | `MILHOUSE_AGENT_SUBMIT_ATTEMPTS` | How many times to submit a prompt before giving up on the turn. `1` disables the retry. |
 
 `--agent` on the CLI overrides `agent.kind`.
+
+`submit_timeout_ms` is a backstop rather than the deadline that normally fires. herdr requires an _observed state change_ within **5000 ms** of a submission made from a non-working state, and answers `agent_prompt_stalled` if it does not see one, whatever timeout milhouse asked for. That five-second floor is herdr's, is not configurable from here, and is why a `submit_timeout_ms` below it changes only the error code (`timeout` instead), not the behaviour.
+
+`submit_attempts` exists because the prompt is what goes missing. A prompt sent to a just-started agent is regularly swallowed — three cold starts in a row against herdr 0.7.5 stalled at the floor, and all three took the prompt on the re-submission in about a third of a second. Re-submitting cannot double-run a turn: herdr's own count of the state changes it has observed is checked either side of the stall, and a count that moved means the prompt landed after all. See [ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md).
 
 ## `[run]`
 
@@ -142,25 +148,27 @@ A reused workspace is not an empty one, which is why `self_pane` exists. Its pan
 
 ## Environment variables at a glance
 
-| Variable                          | Sets                     |
-| --------------------------------- | ------------------------ |
-| `MILHOUSE_AGENT_KIND`             | `agent.kind`             |
-| `MILHOUSE_AGENT_ARGS`             | `agent.args`             |
-| `MILHOUSE_AGENT_START_TIMEOUT_MS` | `agent.start_timeout_ms` |
-| `MILHOUSE_AGENT_EXIT_TIMEOUT_MS`  | `agent.exit_timeout_ms`  |
-| `MILHOUSE_TURN_TIMEOUT_MS`        | `agent.turn_timeout_ms`  |
-| `MILHOUSE_RUN_MAX_ITERATIONS`     | `run.max_iterations`     |
-| `MILHOUSE_RUN_MAX_ATTEMPTS`       | `run.max_attempts`       |
-| `MILHOUSE_RUN_MAX_PARALLEL`       | `run.max_parallel`       |
-| `MILHOUSE_RUN_POLL_MS`            | `run.poll_ms`            |
-| `MILHOUSE_VERIFY_COMMAND`         | `verify.command`         |
-| `MILHOUSE_VERIFY_TIMEOUT_MS`      | `verify.timeout_ms`      |
-| `MILHOUSE_LANE_BRANCH_PREFIX`     | `lane.branch_prefix`     |
-| `MILHOUSE_TRACKER_LABEL`          | `tracker.label`          |
-| `MILHOUSE_TRACKER_PARENT`         | `tracker.parent`         |
-| `MILHOUSE_WORKSPACE`              | `herdr.workspace`        |
-| `HERDR_WORKSPACE_ID`              | `herdr.workspace`        |
-| `HERDR_PANE_ID`                   | `herdr.self_pane`        |
+| Variable                           | Sets                      |
+| ---------------------------------- | ------------------------- |
+| `MILHOUSE_AGENT_KIND`              | `agent.kind`              |
+| `MILHOUSE_AGENT_ARGS`              | `agent.args`              |
+| `MILHOUSE_AGENT_START_TIMEOUT_MS`  | `agent.start_timeout_ms`  |
+| `MILHOUSE_AGENT_EXIT_TIMEOUT_MS`   | `agent.exit_timeout_ms`   |
+| `MILHOUSE_AGENT_SUBMIT_TIMEOUT_MS` | `agent.submit_timeout_ms` |
+| `MILHOUSE_AGENT_SUBMIT_ATTEMPTS`   | `agent.submit_attempts`   |
+| `MILHOUSE_TURN_TIMEOUT_MS`         | `agent.turn_timeout_ms`   |
+| `MILHOUSE_RUN_MAX_ITERATIONS`      | `run.max_iterations`      |
+| `MILHOUSE_RUN_MAX_ATTEMPTS`        | `run.max_attempts`        |
+| `MILHOUSE_RUN_MAX_PARALLEL`        | `run.max_parallel`        |
+| `MILHOUSE_RUN_POLL_MS`             | `run.poll_ms`             |
+| `MILHOUSE_VERIFY_COMMAND`          | `verify.command`          |
+| `MILHOUSE_VERIFY_TIMEOUT_MS`       | `verify.timeout_ms`       |
+| `MILHOUSE_LANE_BRANCH_PREFIX`      | `lane.branch_prefix`      |
+| `MILHOUSE_TRACKER_LABEL`           | `tracker.label`           |
+| `MILHOUSE_TRACKER_PARENT`          | `tracker.parent`          |
+| `MILHOUSE_WORKSPACE`               | `herdr.workspace`         |
+| `HERDR_WORKSPACE_ID`               | `herdr.workspace`         |
+| `HERDR_PANE_ID`                    | `herdr.self_pane`         |
 
 Variables holding an integer must parse as one, or milhouse exits with `ConfigError` (exit code 2). `MILHOUSE_AGENT_ARGS` and `MILHOUSE_VERIFY_COMMAND` are split with `shlex`, so quoting works the way it does in a shell.
 

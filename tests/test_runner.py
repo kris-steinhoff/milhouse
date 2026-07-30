@@ -143,6 +143,82 @@ def test_a_failed_start_is_reported_as_an_error(runner: AgentRunner, fake_proc: 
     assert not fake_proc.ran("herdr", "agent", "prompt")
 
 
+# -- a dispatched turn, which nobody is waiting for ----------------------------
+
+AGENT_IDLE = wrapped("agent:get", {"agent": {"agent_status": "idle", "state_change_seq": 41}})
+TURN_WORKING = wrapped("agent:prompt", {"agent": {"agent_status": "working"}})
+
+
+def test_start_turn_returns_once_the_prompt_has_been_taken(
+    runner: AgentRunner, fake_proc: FakeProc
+) -> None:
+    fake_proc.expect("herdr pane get", Reply(stdout=PANE_AT_SHELL))
+    fake_proc.expect("herdr agent start", Reply(stdout=AGENT_STARTED))
+    fake_proc.expect("herdr agent get", Reply(stdout=AGENT_IDLE))
+    fake_proc.expect("herdr agent prompt", Reply(stdout=TURN_WORKING))
+
+    result = runner.start_turn("do the thing", iteration=1, issue_id="bd-42")
+
+    assert result.error is None
+    assert result.agent_state == "working"
+    # It waited for the submission, not for the turn: the timeout is the small one.
+    argv = next(fake_proc.commands("herdr", "agent", "prompt"))
+    assert argv[argv.index("--timeout") + 1] == str(runner.config.agent.submit_timeout_ms)
+
+
+def test_a_prompt_the_agent_never_took_is_not_reported_as_a_started_turn(
+    runner: AgentRunner, fake_proc: FakeProc
+) -> None:
+    """The failure milhouse-amd.12 records, at the seam that introduced it.
+
+    A prompt swallowed by a just-started agent leaves herdr reporting `idle` with
+    its `state_change_seq` frozen, which is exactly what it reports for an agent
+    that finished. Nobody is waiting on a dispatched turn, so there is no later
+    signal either: the poller sees "not working", collects the turn, and the
+    issue is charged a `stalled` attempt for work no agent ever saw.
+
+    So the turn has to be refused here, while there is still something true to
+    say about it — and this asserts the refusal rather than the state, because a
+    result with no `error` is one `dispatch` writes into the audit log as a turn
+    in flight.
+    """
+    fake_proc.expect("herdr pane get", Reply(stdout=PANE_AT_SHELL))
+    fake_proc.expect("herdr agent start", Reply(stdout=AGENT_STARTED))
+    fake_proc.expect("herdr agent get", Reply(stdout=AGENT_IDLE))
+    fake_proc.expect(
+        "herdr agent prompt", failed("agent:prompt", "agent_prompt_stalled", "no state change")
+    )
+    runner.config.agent.submit_attempts = 2
+
+    result = runner.start_turn("do the thing", iteration=1, issue_id="bd-42")
+
+    assert result.error is not None
+    assert "could not prompt the agent" in result.error
+    assert "agent_prompt_stalled" in result.error
+    assert len(list(fake_proc.commands("herdr", "agent", "prompt"))) == 2
+
+
+def test_a_swallowed_prompt_is_submitted_again_before_the_turn_is_given_up_on(
+    runner: AgentRunner, fake_proc: FakeProc
+) -> None:
+    """Re-submitting is what the observed failure actually responds to."""
+    fake_proc.expect("herdr pane get", Reply(stdout=PANE_AT_SHELL))
+    fake_proc.expect("herdr agent start", Reply(stdout=AGENT_STARTED))
+    fake_proc.expect("herdr agent get", Reply(stdout=AGENT_IDLE))
+    fake_proc.expect(
+        "herdr agent prompt",
+        [
+            failed("agent:prompt", "agent_prompt_stalled", "no state change"),
+            Reply(stdout=TURN_WORKING),
+        ],
+    )
+
+    result = runner.start_turn("do the thing", iteration=1, issue_id="bd-42")
+
+    assert result.error is None
+    assert result.agent_state == "working"
+
+
 def test_a_pane_that_will_not_release_is_replaced(runner: AgentRunner, fake_proc: FakeProc) -> None:
     """Falling back to a fresh pane is unambiguous, if more expensive."""
     fake_proc.expect("herdr pane get", Reply(stdout=PANE_WITH_AGENT))

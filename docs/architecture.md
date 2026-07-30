@@ -33,13 +33,17 @@ Nothing above puts work _into_ the tracker. There is no task definition and no p
 ```
 milhouse dispatch -n 3        milhouse reap
   claim, lane, prompt           for each dispatched turn:
-  ...without --wait               settled? no  → leave it
-  record the dispatch             settled? yes → transcript, verify,
-  hand the claim off                             classify, decide
+  ...waiting for the              settled? no  → leave it
+     submission, not              settled? yes → transcript, verify,
+     for the turn                                classify, decide
+  record the dispatch
+  hand the claim off
   return
 ```
 
 Everything above the prompt and everything below it is shared: `step` is `dispatch`-one plus the wait plus `reap`-that-one, which is why splitting it left `outcome.py` and `policy.py` untouched. The two halves are joined by a `dispatch` entry in the audit log, so the process that reaps a turn need not be the one that started it.
+
+**The half that does not wait still waits for one thing.** herdr requires an observed state change before `--wait` waits on anything, so `dispatch` asks for that much and no more: it returns as soon as the agent is seen to react, which is a fraction of a second, and never waits out a turn. Without it a swallowed prompt left an agent reporting the same `idle` as one that had finished, and the poller collected a turn nothing had ever run ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)).
 
 Neither half is a loop. `dispatch` starts a bounded number of turns once and returns, and nothing in either decides whether there should be more. What went away is the requirement that turns be serial, and with it the repo-wide run lock — the lock is per lane now, and `bd ready --claim` is what makes two dispatchers safe ([ADR 0015](decisions/0015-one-run-at-a-time.md)).
 

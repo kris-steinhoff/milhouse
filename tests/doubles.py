@@ -316,7 +316,12 @@ class FakeRepo:
 
 @dataclass
 class FakeRunner:
-    """A scripted agent: each turn closes an issue, commits, blocks, or stalls."""
+    """A scripted agent: each turn closes an issue, commits, blocks, or stalls.
+
+    ``unsubmitted`` is the odd one out: it is not a turn at all, but a prompt the
+    agent never took, which :meth:`start_turn` reports as a failure to submit
+    rather than as a turn in flight.
+    """
 
     tracker: FakeTracker
     repo: FakeRepo
@@ -381,6 +386,16 @@ class FakeRunner:
             return TurnResult(agent_state="working", timed_out=True)
         if action == "error":
             return TurnResult(agent_state="unknown", error="herdr fell over")
+        if action == "unsubmitted":
+            # The agent was started and the prompt was never taken, so herdr
+            # would not confirm the submission and the turn never began.
+            return TurnResult(
+                agent_state="idle",
+                error=(
+                    "could not prompt the agent: herdr did not observe agent "
+                    "milhouse-hello react to its prompt in 3 attempt(s)"
+                ),
+            )
         return TurnResult(agent_state="done")
 
     def _commit(self, message: str | None = None) -> None:

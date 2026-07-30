@@ -286,6 +286,141 @@ def test_a_non_timeout_prompt_failure_is_not_swallowed(
     assert not isinstance(caught.value, TurnTimeoutError)
 
 
+# -- confirming that a prompt was actually submitted ---------------------------
+
+
+def agent_with(seq: int, *, status: str = "idle") -> Reply:
+    """`herdr agent get` for an agent herdr has observed ``seq`` changes for."""
+    return Reply(
+        stdout=wrapped("agent:get", {"agent": {"agent_status": status, "state_change_seq": seq}})
+    )
+
+
+SUBMISSION_TOOK = Reply(stdout=wrapped("agent:prompt", {"agent": {"agent_status": "working"}}))
+STALLED = failed("agent:prompt", "agent_prompt_stalled", "no state change observed")
+
+
+def test_a_submission_waits_only_for_the_agent_to_react(
+    client: HerdrClient, fake_proc: FakeProc
+) -> None:
+    """`working` in the `--until` set is what keeps this from waiting out the turn.
+
+    herdr requires an observed state change before it matches anything, so a wait
+    over every state it can report ends at the change itself. Dropping `working`
+    would turn a submission check into `milhouse step`.
+    """
+    fake_proc.expect("herdr agent get", agent_with(7))
+    fake_proc.expect("herdr agent prompt", SUBMISSION_TOOK)
+
+    assert client.submit("milhouse-hello", "do the thing", timeout_ms=15_000) == "working"
+
+    argv = next(fake_proc.commands("herdr", "agent", "prompt"))
+    assert [argv[i + 1] for i, word in enumerate(argv) if word == "--until"] == [
+        "working",
+        "idle",
+        "done",
+        "blocked",
+    ]
+    assert "--wait" in argv
+    assert argv[argv.index("--timeout") + 1] == "15000"
+
+
+def test_a_prompt_herdr_never_saw_the_agent_take_is_submitted_again(
+    client: HerdrClient, fake_proc: FakeProc
+) -> None:
+    """The observed failure, and the observed fix.
+
+    Three cold-started claude agents in a row swallowed their first prompt and
+    stalled at herdr's five-second floor. All three took it on the re-submission,
+    in about a third of a second.
+    """
+    fake_proc.expect("herdr agent get", agent_with(7))
+    fake_proc.expect("herdr agent prompt", [STALLED, SUBMISSION_TOOK])
+
+    assert client.submit("milhouse-hello", "do the thing", timeout_ms=15_000) == "working"
+
+    assert len(list(fake_proc.commands("herdr", "agent", "prompt"))) == 2
+
+
+def test_a_submission_herdr_will_not_confirm_is_reported_rather_than_assumed(
+    client: HerdrClient, fake_proc: FakeProc
+) -> None:
+    """The turn is refused at the seam rather than recorded and reaped as stalled."""
+    fake_proc.expect("herdr agent get", agent_with(7))
+    fake_proc.expect("herdr agent prompt", STALLED)
+
+    with pytest.raises(HerdrError) as caught:
+        client.submit("milhouse-hello", "do the thing", timeout_ms=15_000, attempts=3)
+
+    assert "did not observe agent milhouse-hello react" in str(caught.value)
+    assert caught.value.code == "agent_prompt_stalled"
+    assert len(list(fake_proc.commands("herdr", "agent", "prompt"))) == 3
+
+
+def test_a_state_change_herdr_missed_is_not_prompted_a_second_time(
+    client: HerdrClient, fake_proc: FakeProc
+) -> None:
+    """`state_change_seq` is the guard against a retry re-running a live turn.
+
+    herdr reported that it observed nothing, and its own count of what it has
+    observed says otherwise. The count wins: the prompt landed, and submitting it
+    again would give the agent the same work twice.
+    """
+    fake_proc.expect("herdr agent get", [agent_with(7), agent_with(8, status="working")])
+    fake_proc.expect("herdr agent prompt", STALLED)
+
+    assert client.submit("milhouse-hello", "do the thing", timeout_ms=15_000) == "working"
+
+    assert len(list(fake_proc.commands("herdr", "agent", "prompt"))) == 1
+
+
+def test_a_timeout_below_herdrs_floor_is_read_as_the_same_thing(
+    client: HerdrClient, fake_proc: FakeProc
+) -> None:
+    """`herdr agent prompt --help`: a --timeout under 5000ms returns `timeout` instead.
+
+    Same condition, different code, so retrying has to key on both or a short
+    timeout quietly loses the retry.
+    """
+    fake_proc.expect("herdr agent get", agent_with(7))
+    fake_proc.expect(
+        "herdr agent prompt",
+        [failed("agent:prompt", "timeout", "timed out"), SUBMISSION_TOOK],
+    )
+
+    assert client.submit("milhouse-hello", "x", timeout_ms=1_000) == "working"
+
+
+def test_a_prompt_failure_that_is_not_about_observation_is_not_retried(
+    client: HerdrClient, fake_proc: FakeProc
+) -> None:
+    """An agent herdr does not know will not know itself any better next time."""
+    fake_proc.expect("herdr agent get", agent_with(7))
+    fake_proc.expect("herdr agent prompt", failed("agent:prompt", "agent_not_found", "gone"))
+
+    with pytest.raises(HerdrError, match="agent_not_found"):
+        client.submit("milhouse-hello", "x", timeout_ms=15_000)
+
+    assert len(list(fake_proc.commands("herdr", "agent", "prompt"))) == 1
+
+
+def test_the_change_seq_is_read_from_the_agent_herdr_reports(
+    client: HerdrClient, fake_proc: FakeProc
+) -> None:
+    fake_proc.expect("herdr agent get", agent_with(93))
+
+    assert client.change_seq("milhouse-hello") == 93
+
+
+def test_an_agent_herdr_has_lost_has_no_change_seq(
+    client: HerdrClient, fake_proc: FakeProc
+) -> None:
+    """`None` is "no answer", which is what stops the retry guard acting on one."""
+    fake_proc.expect("herdr agent get", failed("agent:get", "agent_not_found", "gone"))
+
+    assert client.change_seq("milhouse-hello") is None
+
+
 def test_send_keys_addresses_the_pane_not_the_agent(
     client: HerdrClient, fake_proc: FakeProc
 ) -> None:
@@ -637,6 +772,47 @@ def test_herdr_refuses_exactly_the_names_milhouse_refuses_against_the_live_serve
         str(failures[name]) for name, code in expected.items() if code == "invalid_agent_name"
     ]
     assert all(AGENT_NAME_RULE in failure for failure in refused), refused
+
+
+@pytest.mark.herdr
+def test_an_agent_that_was_never_prompted_against_the_live_server(tmp_path: Path) -> None:
+    """The premise of the whole submission check, asked of the server that holds it.
+
+    An agent that has been started and never prompted has done nothing at all,
+    and herdr reports it `idle` — the same word it reports for one that has
+    finished a turn. `state_change_seq` is the field that tells them apart, and
+    the recorded tests can only prove milhouse reads it, not that herdr sends it.
+    This asks herdr.
+
+    No prompt is submitted and no tokens are spent: starting an agent launches
+    the binary and nothing else. The agent is exited and its workspace closed on
+    the way out, both created here.
+    """
+    if shutil.which("herdr") is None:
+        pytest.skip("herdr is not installed")
+    if shutil.which("claude") is None:
+        pytest.skip("the claude agent binary is not installed")
+    client = HerdrClient()
+    try:
+        workspace = client.create_workspace(tmp_path, "milhouse:test-change-seq")
+    except HerdrError as exc:
+        pytest.skip(f"herdr server unavailable: {exc}")
+
+    name = "milhouse-test-change-seq"
+    try:
+        started = client.start_agent(name, kind="claude", pane_id=workspace.pane_id)
+        # Idle, having done nothing: the state a finished turn also reports.
+        assert started.status != "working"
+        assert client.agent_status(name) != "working"
+        # And the counter that says which of the two this is.
+        first = client.change_seq(name)
+        assert isinstance(first, int)
+        # Nothing was submitted, so nothing moved it.
+        assert client.change_seq(name) == first
+    finally:
+        client.send_keys(workspace.pane_id, ["ctrl+c", "ctrl+c", "ctrl+d"])
+        client.wait_for_shell(workspace.pane_id, timeout_s=8.0)
+        client.close_workspace(workspace.workspace_id)
 
 
 def test_the_agents_own_pane_is_reported(fake_proc: FakeProc) -> None:

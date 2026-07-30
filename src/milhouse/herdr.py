@@ -22,6 +22,7 @@ Three things about the CLI shape the code:
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass
@@ -33,11 +34,49 @@ from .errors import HerdrError, MilhouseError, TurnTimeoutError
 
 __all__ = ["AgentInfo", "AgentStatus", "HerdrClient", "Workspace", "Worktree"]
 
+log = logging.getLogger(__name__)
+
 AgentStatus = Literal["idle", "working", "blocked", "done", "unknown"]
 """The lifecycle states herdr reports for an agent pane."""
 
 SETTLED: tuple[AgentStatus, ...] = ("idle", "done", "blocked")
 """States that mean a turn is over. ``done`` is the one claude actually reaches."""
+
+SUBMITTED: tuple[AgentStatus, ...] = ("working", "idle", "done", "blocked")
+"""States that end a *submission* wait: every state herdr can observe after one.
+
+:data:`SETTLED` plus ``working``, and the ``working`` is the whole point. herdr
+requires an observed state change before it matches anything at all, so a wait
+over all four ends at the state change itself rather than at the end of the
+turn: an agent that starts working matches in a fraction of a second, and one
+whose entire turn finished before herdr saw it start matches ``done``. That is
+what makes a confirmed submission cheap enough to do on the dispatch path, where
+nobody is waiting for the turn
+(:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+"""
+
+SUBMISSION_FLOOR_MS = 5_000
+"""herdr's own deadline for observing that a submission took, in milliseconds.
+
+Quoted from ``herdr agent prompt --help`` (0.7.5): "When submission starts from a
+non-working state, ``--wait`` first requires an observed state change within
+5000ms; otherwise it returns ``agent_prompt_stalled``. A shorter ``--timeout``
+returns ``timeout`` instead."
+
+So the ``timeout_ms`` milhouse passes is **not** necessarily the deadline that
+fires. Anything above this floor is pre-empted by it, and anything below it turns
+the same condition into a different code. Both codes are :data:`NOT_SUBMITTED`,
+which is what keeps the distinction from mattering to callers.
+"""
+
+NOT_SUBMITTED: frozenset[str] = frozenset({"agent_prompt_stalled", "timeout"})
+"""herdr codes that mean the agent was never seen to react to a prompt.
+
+``agent_prompt_stalled`` is the :data:`SUBMISSION_FLOOR_MS` deadline, and
+``timeout`` is the same condition reported against a shorter ``--timeout``. They
+say nothing about the agent's health: the observed failure is that the keystrokes
+did not take, and re-submitting fixes it.
+"""
 
 TIMEOUT = 120.0
 """Seconds a non-blocking herdr call may take, as a backstop against a wedged server."""
@@ -646,6 +685,11 @@ class HerdrClient:
             text: The rendered prompt.
             timeout_ms: How long the turn may take before milhouse gives up.
                 Ignored when ``wait`` is false, since nothing is being waited on.
+                **It is not always the deadline that fires**: waiting from a
+                non-working state is pre-empted by herdr's own
+                :data:`SUBMISSION_FLOOR_MS`, which answers
+                ``agent_prompt_stalled`` if the agent is not seen to react in
+                five seconds however long milhouse said it would wait.
             until: States that count as settled. Defaults to :data:`SETTLED`,
                 which includes ``done`` — the state claude actually reaches when
                 a turn ends, as opposed to ``idle``.
@@ -669,11 +713,80 @@ class HerdrClient:
         except HerdrError as exc:
             if wait and _is_timeout(exc):
                 raise TurnTimeoutError(
-                    f"agent {name} did not finish its turn within {timeout_ms}ms"
+                    f"agent {name} did not finish its turn within {timeout_ms}ms",
+                    code=exc.code,
                 ) from exc
             raise
         status = result.get("agent", {}).get("agent_status") or self.agent_status(name)
         return _as_status(status)
+
+    def submit(self, name: str, text: str, *, timeout_ms: int, attempts: int = 3) -> AgentStatus:
+        """Submit a prompt and return once herdr has seen the agent react to it.
+
+        The dispatch path's answer to "was the prompt actually submitted?", and
+        the reason it needs one: ``herdr agent prompt`` without ``--wait``
+        reports the state the agent was in *before* the submission and checks
+        nothing afterwards. Against herdr 0.7.5 a prompt sent to a
+        just-started claude is regularly swallowed — the agent stays ``idle``
+        with its :meth:`change_seq` frozen, and there is no later signal saying
+        so, because "not working because it never began" and "not working
+        because it finished" are the same ``idle``. A poller then collects a
+        turn that never happened and classifies it as the agent's failure
+        (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+
+        So this waits — but for the submission, not for the turn. :data:`SUBMITTED`
+        includes ``working``, so the wait ends at the state change herdr requires
+        before it matches anything, which is a fraction of a second for an agent
+        that took the prompt. It cannot wait out a turn.
+
+        A submission herdr will not confirm is **re-submitted**, because that is
+        what the failure responds to: three cold starts in a row stalled at the
+        five-second floor and all three took the prompt on the retry, in about a
+        third of a second.
+
+        :meth:`change_seq` is what keeps a retry from double-running a turn. If
+        herdr's count of observed state changes moved while it was telling us
+        nothing had, the submission did take and the agent is answered for
+        rather than prompted again.
+
+        Args:
+            name: The agent to prompt.
+            text: The rendered prompt.
+            timeout_ms: How long herdr may take to confirm one attempt. Above
+                :data:`SUBMISSION_FLOOR_MS` this is a backstop rather than the
+                deadline, since herdr's own floor fires first.
+            attempts: How many times to submit before giving up. Below one is
+                read as one.
+
+        Returns:
+            The state herdr observed the agent in once the prompt had landed,
+            which is ``working`` unless the whole turn beat the observation.
+
+        Raises:
+            HerdrError: herdr would not confirm the submission in ``attempts``
+                tries, or the prompt failed for a reason that is not about
+                being observed — an agent it does not know, say — which is
+                re-raised unchanged rather than retried.
+        """
+        last: HerdrError | None = None
+        for attempt in range(1, max(attempts, 1) + 1):
+            before = self.change_seq(name)
+            try:
+                return self.prompt(name, text, timeout_ms=timeout_ms, until=SUBMITTED, wait=True)
+            except HerdrError as exc:
+                if exc.code not in NOT_SUBMITTED:
+                    raise
+                after = self.change_seq(name)
+                if before is not None and after is not None and after != before:
+                    # herdr saw the agent react just after its own window shut.
+                    return self.agent_status(name)
+                last = exc
+                log.debug("attempt %d to prompt %s was not observed: %s", attempt, name, exc)
+        raise HerdrError(
+            f"herdr did not observe agent {name} react to its prompt in "
+            f"{max(attempts, 1)} attempt(s): {last}",
+            code=last.code if last else "",
+        )
 
     def agent_status(self, name: str) -> AgentStatus:
         """Current lifecycle state of an agent, or ``unknown`` if it is gone."""
@@ -682,6 +795,29 @@ class HerdrClient:
         except HerdrError:
             return "unknown"
         return _as_status(result.get("agent", {}).get("agent_status"))
+
+    def change_seq(self, name: str) -> int | None:
+        """How many lifecycle changes herdr has observed for an agent, or ``None``.
+
+        The one field that tells "not working because it never began" from "not
+        working because it finished", both of which report ``idle``. herdr sends
+        it as ``state_change_seq`` on every agent object, and it moves when the
+        agent's state does — a swallowed prompt leaves it exactly where it was.
+
+        :meth:`submit` reads it either side of a submission herdr says it did
+        not observe, so a retry cannot re-run a turn that quietly started.
+
+        Returns:
+            The count, or ``None`` for an agent herdr does not know and for a
+            herdr that does not send the field. Both mean the same thing to the
+            caller: no answer, so do not act on one.
+        """
+        try:
+            result = self._call(["agent", "get", name])
+        except HerdrError:
+            return None
+        value = result.get("agent", {}).get("state_change_seq")
+        return value if isinstance(value, int) else None
 
     def agent_pane(self, name: str) -> str | None:
         """The pane an agent occupies, or ``None`` when herdr has lost track of it.
