@@ -41,7 +41,7 @@ from .lanes import Lane
 from .models import Issue, Iteration, MergeRecord, Outcome, now
 from .policy import Decision, Policy, decide
 from .runner import Runner, TurnResult
-from .session import Session
+from .session import Session, about
 from .verify import Verification, verify
 
 __all__ = [
@@ -144,7 +144,7 @@ def step(session: Session, *, policy: Policy = decide) -> StepResult | None:
         error = turn.error
 
     result = _finish(session, pending, runner, turn, error=error, policy=policy)
-    session.report(f"  → {result.iteration.outcome}: {result.iteration.detail}")
+    session.report(about(issue.id, f"→ {result.iteration.outcome}: {result.iteration.detail}"))
     return result
 
 
@@ -181,13 +181,13 @@ def dispatch(session: Session, *, limit: int = 1) -> list[Dispatched]:
         else:
             error = turn.error
         if error:
-            session.report(f"  → could not start: {error}")
+            session.report(about(issue.id, f"→ could not start: {error}"))
             _finish(session, pending, runner, turn, error=error, policy=decide)
             continue
         pending = replace(pending, prompt_path=session.relative(turn.prompt_path if turn else None))
         session.audit.dispatched(issue.id, pending.as_entry())
         session.hand_off(issue.id)
-        session.report(f"  → dispatched to {pending.lane.workspace_id}")
+        session.report(about(issue.id, f"→ dispatched to {pending.lane.workspace_id}"))
         started.append(pending)
     return started
 
@@ -221,7 +221,7 @@ def reap(session: Session, *, policy: Policy = decide) -> list[StepResult]:
         turn = runner.finish_turn(pending.number, issue_id=issue_id)
         turn.timed_out = timed_out
         result = _finish(session, pending, runner, turn, error=None, policy=policy)
-        session.report(f"  → {result.iteration.outcome}: {result.iteration.detail}")
+        session.report(about(issue_id, f"→ {result.iteration.outcome}: {result.iteration.detail}"))
         results.append(result)
     return results
 
@@ -459,7 +459,7 @@ def _land(session: Session, pending: Dispatched, outcome: Outcome) -> MergeRecor
         return None
 
     target = integration.branch
-    session.report(f"  merging {source} into {target} in {integration.path}")
+    session.report(about(pending.issue.id, f"merging {source} into {target} in {integration.path}"))
     try:
         merged = session.repo.at(integration.path).merge(
             source, message=f"Merge {source} into {target} ({pending.issue.id})"
@@ -474,7 +474,7 @@ def _land(session: Session, pending: Dispatched, outcome: Outcome) -> MergeRecor
             fast_forwarded=merged.fast_forwarded,
             conflicts=list(merged.conflicts),
         )
-    session.report(f"  → {merge_line(record)}")
+    session.report(about(pending.issue.id, f"→ {merge_line(record)}"))
     return record
 
 
@@ -522,7 +522,7 @@ def _verify(
     command = session.config.verify.command
     if error or not issue_after.is_closed or not command:
         return None
-    session.report(f"  verifying in {cwd}: {' '.join(command)}")
+    session.report(about(issue_after.id, f"verifying in {cwd}: {' '.join(command)}"))
     return verify(session.config, cwd=cwd)
 
 
@@ -568,11 +568,14 @@ def _verify_integration(
     if integration is None:
         return None
 
-    session.report(f"  verifying {merge.target} in {integration.path}: {' '.join(command)}")
+    issue_id = pending.issue.id
+    session.report(
+        about(issue_id, f"verifying {merge.target} in {integration.path}: {' '.join(command)}")
+    )
     checked = verify(session.config, cwd=integration.path)
     if checked is None or checked.ok:
         return checked
-    session.report(f"  → {merge.target} is red with {pending.issue.id} merged into it")
+    session.report(about(issue_id, f"→ {merge.target} is red with {issue_id} merged into it"))
     session.note(
         pending.issue.id,
         f"milhouse merged {merge.source} into {merge.target} in iteration "

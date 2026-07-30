@@ -39,9 +39,10 @@ from .errors import MilhouseError
 from .gitrepo import GitRepo, find_repo_root
 from .herdr import HerdrClient
 from .lanes import Lane, Lanes
-from .models import Issue, Iteration
+from .models import Graph, Issue, Iteration
+from .parallel import Parallel
 from .policy import unattended
-from .run import RunResult
+from .run import Body, RunResult
 from .run import run as run_loop
 from .rundir import LOCK_FILENAME, RunLock
 from .scope import Scope
@@ -270,6 +271,15 @@ def run(
             help="Attempts one issue gets before it is deferred. Default 3.",
         ),
     ] = None,
+    count: Annotated[
+        int | None,
+        typer.Option(
+            "--count",
+            "-n",
+            min=1,
+            help="Turns to keep in flight at once, overriding `run.max_parallel`. Default 1.",
+        ),
+    ] = None,
     agent: Annotated[
         str | None,
         typer.Option(
@@ -284,7 +294,10 @@ def run(
     ] = None,
     dry_run: Annotated[
         bool,
-        typer.Option("--dry-run", help="Show the scope and the first prompt; start no agent."),
+        typer.Option(
+            "--dry-run",
+            help="Show the scope, the waves, and the first prompt; start no agent.",
+        ),
     ] = False,
     attach: Annotated[
         bool,
@@ -302,11 +315,17 @@ def run(
     """Work one target to completion, a fresh agent per issue, and report.
 
     TARGET is a beads id. An epic means "work everything under it"; a single
-    issue means "work it and whatever it is blocked by". The whole run happens
-    in one lane, so it lands on one branch you can review as a piece.
+    issue means "work it and whatever it is blocked by". The run lands on one
+    branch you can review as a piece: its integration branch.
+
+    `--count N` above 1 keeps N turns in flight, each in a worker lane branched
+    from that integration branch and merged back into it as it settles. At
+    `--count 1` there are no worker lanes and nothing to merge. `--dry-run`
+    says how much concurrency this target can actually use.
 
     It stops when the target is finished, when nothing is ready but work is
-    left, when an agent needs a human, when milhouse itself fails, or at
+    left, when an agent needs a human, when a merge conflicts, when the gate
+    fails on the integration branch, when milhouse itself fails, or at
     `--max-iterations`. An issue that fails `--max-attempts` times is deferred
     with the reason on it and the run carries on.
 
@@ -319,10 +338,15 @@ def run(
         {
             "agent": {"kind": agent},
             "herdr": {"workspace": workspace},
-            "run": {"max_iterations": max_iterations, "max_attempts": max_attempts},
+            "run": {
+                "max_iterations": max_iterations,
+                "max_attempts": max_attempts,
+                "max_parallel": count,
+            },
         },
     )
     scope = resolve_target(target, repo_root=config.repo_root, config=config.tracker)
+    width = config.run.max_parallel
 
     if dry_run:
         _dry_run(config, scope=scope)
@@ -330,13 +354,22 @@ def run(
 
     typer.echo(f"target  {scope.target.id}  {scope.target.title}")
     typer.echo(f"scope   {scope.describe()}")
-    session = _session(config, tracker=scope.tracker, attach=attach, lane_key=scope.target.id)
+    if width > 1:
+        typer.echo(f"count   {width} turns in flight at once, each in a worker lane")
+    session = _session(
+        config,
+        tracker=scope.tracker,
+        attach=attach,
+        lane_key=scope.target.id,
+        worker_lanes=width > 1,
+    )
     with session as opened:
         result = run_loop(
             opened,
             scope.target,
             policy=unattended(max_attempts=config.run.max_attempts),
             max_iterations=config.run.max_iterations,
+            body=_body(config),
         )
         located = opened.lanes.locate(scope.target.id)
 
@@ -543,6 +576,7 @@ def _session(
     tracker: BeadsTracker | None = None,
     attach: bool = False,
     lane_key: str | None = None,
+    worker_lanes: bool = False,
 ) -> Session:
     """Assemble a :class:`~milhouse.session.Session` from resolved configuration."""
     return Session(
@@ -553,14 +587,44 @@ def _session(
         report=typer.echo,
         attach=attach,
         lane_key=lane_key,
+        worker_lanes=worker_lanes,
+    )
+
+
+def _body(config: Config) -> Body:
+    """The loop body ``[run] max_parallel`` asks for: one turn at a time, or N.
+
+    The loop takes its body as an argument, so working several issues at once is
+    a different body rather than a different loop
+    (:doc:`ADR 0022 <../../docs/decisions/0022-the-loop-is-earned>`). This is the
+    one place that chooses between them, and at a width of one it hands back
+    exactly what :func:`milhouse.run.run` defaults to, so a serial run is
+    unchanged rather than re-implemented
+    (:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`).
+
+    Args:
+        config: Resolved configuration, for the width, the ceiling, and the poll
+            interval.
+
+    Returns:
+        A body for :func:`milhouse.run.run`.
+    """
+    if config.run.max_parallel <= 1:
+        return lambda session, policy: run_step(session, policy=policy)
+    return Parallel(
+        count=config.run.max_parallel,
+        max_iterations=config.run.max_iterations,
+        poll_ms=config.run.poll_ms,
     )
 
 
 def _dry_run(config: Config, *, scope: Scope | None = None) -> None:
     """Print what would happen, and the prompt that would be sent, without doing it.
 
-    Shared by ``step`` and ``run``, which differ in two lines: what fences the
-    queue, and which branch the work would land on.
+    Shared by ``step`` and ``run``, which differ in three things: what fences the
+    queue, which branch the work would land on, and whether the dependency graph
+    has anything to say. Only a run has a width to plan, so only a run is shown
+    the waves.
     """
     tracker = scope.tracker if scope else BeadsTracker(config.repo_root, config.tracker)
     repo = GitRepo(config.repo_root)
@@ -578,6 +642,8 @@ def _dry_run(config: Config, *, scope: Scope | None = None) -> None:
         caps = f"{config.run.max_iterations} iterations"
         typer.echo(f"caps      {caps}, {config.run.max_attempts} attempts per issue")
     typer.echo(f"run dir   {config.run_dir()}")
+    if scope is not None:
+        _print_waves(tracker.graph(), config.run.max_parallel)
 
     next_issue = tracker.ready(claim=False)
     if next_issue is None:
@@ -586,18 +652,76 @@ def _dry_run(config: Config, *, scope: Scope | None = None) -> None:
         return
     next_issue = tracker.get(next_issue.id)
     background = tracker.get(next_issue.parent).description if next_issue.parent else ""
+    commits_to = None
     if scope is not None:
         # A run works one lane, named after the target (ADR 0023), so there is
-        # nothing to guess and no need to ask herdr what exists.
+        # nothing to guess and no need to ask herdr what exists. Above a width
+        # of one that lane is the integration lane, and the turn itself happens
+        # in a worker lane branched from it, which is the branch the prompt has
+        # to name (ADR 0024).
         lane_branch = f"{config.lane.branch_prefix}{scope.target.id}"
-        note = "one lane for the whole run"
+        if config.run.max_parallel > 1:
+            commits_to = f"{lane_branch}/{next_issue.id}"
+            note = f"the integration lane; {next_issue.id} would work on {commits_to}"
+        else:
+            note = "one lane for the whole run"
     else:
         lane_branch, note = _lane_branch(config, next_issue)
     typer.echo(f"lane      {lane_branch}  ({note})")
     typer.echo(f"\nthe next iteration would work {next_issue.id} and send:\n")
     typer.echo(
-        _indent(prompts.render_iterate(next_issue, background=background, branch=lane_branch))
+        _indent(
+            prompts.render_iterate(
+                next_issue, background=background, branch=commits_to or lane_branch
+            )
+        )
     )
+
+
+def _print_waves(graph: Graph, count: int) -> None:
+    """The shape of the work, and how much of ``count`` this target can use.
+
+    The one place the dependency graph earns its keep on the run path. The ready
+    queue already supplies the parallelism, so nothing in a run consults this;
+    what it answers is the question a person has before starting one, which is
+    whether ``--count 8`` is worth typing
+    (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+    A chain of eight is one issue per wave, so ``--count 8`` against it is
+    ``--count 1`` with extra words.
+
+    The waves assume every turn succeeds first time. A retry, a deferral, or an
+    issue whose blocker is outside the scope moves the real run off this shape,
+    which is why this is printed by ``--dry-run`` and never by a run.
+
+    Args:
+        graph: The scope's issues and the ``blocks`` edges between them.
+        count: The width the run would use, from ``--count`` or
+            ``[run] max_parallel``.
+    """
+    waves = graph.waves()
+    width = graph.width
+    if not waves:
+        typer.echo("waves     (none — nothing in scope is unfinished)")
+        return
+    issues = sum(len(wave) for wave in waves)
+    typer.echo(f"waves     {issues} unfinished issue(s) in {len(waves)} wave(s), widest {width}")
+    for number, wave in enumerate(waves, start=1):
+        typer.echo(f"  {number:>3}  {', '.join(wave)}")
+    typer.echo(f"count     {_worth(count, width)}")
+
+
+def _worth(count: int, width: int) -> str:
+    """What ``--count`` buys against a target this shape, in one sentence."""
+    if count > width:
+        return (
+            f"{count} requested, but no wave is wider than {width}, "
+            f"so this is --count {width} with extra words"
+        )
+    if count == 1:
+        return "1 turn at a time, in the integration lane, with no worker lanes" + (
+            f"; --count up to {width} would fit this target" if width > 1 else ""
+        )
+    return f"{count} turns at once, and the widest wave is {width}"
 
 
 def _print_run(result: RunResult, *, lane: Lane | None) -> None:
@@ -750,7 +874,10 @@ def _print_lanes(client: HerdrClient, config: Config) -> None:
     ``milhouse/bd-e/bd-e.1`` is that issue inside a run of ``bd-e``
     (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
     That is what namespacing the branch under the target is for, and it is why
-    the branch is in the listing rather than only the label.
+    the branch is in the listing rather than only the label. It is also what
+    :func:`_nested` reads to print a run's worker lanes under the integration
+    lane they land in, rather than as five sibling rows a person has to sort
+    out by eye.
     """
     try:
         lanes = Lanes(client, config).registry()
@@ -761,9 +888,49 @@ def _print_lanes(client: HerdrClient, config: Config) -> None:
         return
     typer.echo("")
     typer.echo(f"lanes ({len(lanes)})  issue or target, branch, checkout")
-    for lane in lanes:
-        held = lane.key or "(no workspace holds it)"
-        typer.echo(f"  {held}  {lane.branch}  {lane.path}")
+    for lane, workers in _nested(lanes):
+        typer.echo(f"  {_lane_line(lane)}")
+        for worker in workers:
+            typer.echo(f"      {_lane_line(worker)}")
+
+
+def _lane_line(lane: Lane) -> str:
+    """One lane as a row: what it is keyed by, its branch, and its checkout."""
+    return f"{lane.key or '(no workspace holds it)'}  {lane.branch}  {lane.path}"
+
+
+def _nested(lanes: list[Lane]) -> list[tuple[Lane, list[Lane]]]:
+    """Group a run's worker lanes under the integration lane they land in.
+
+    A worker lane's branch is its integration branch plus ``/`` plus the issue
+    (:meth:`milhouse.lanes.Lanes.worker_branch`), so the branch names the
+    relationship and nothing has to be stored to recover it. Exactly one level,
+    because there are exactly two levels of lane.
+
+    A worker lane whose integration lane is not open is left at the top level
+    rather than hidden: it is the leftover of a run that stopped, which is
+    precisely what somebody reading ``status`` is looking for.
+
+    Args:
+        lanes: Every lane herdr is holding, in its order.
+
+    Returns:
+        ``(lane, workers)`` for each lane that is not somebody's worker,
+        preserving herdr's order at both levels.
+    """
+    branches = {lane.branch for lane in lanes if lane.branch}
+    workers: dict[str, list[Lane]] = {}
+    nested: set[int] = set()
+    for index, lane in enumerate(lanes):
+        parent, separator, _ = lane.branch.rpartition("/")
+        if separator and parent in branches:
+            workers.setdefault(parent, []).append(lane)
+            nested.add(index)
+    return [
+        (lane, workers.get(lane.branch, []))
+        for index, lane in enumerate(lanes)
+        if index not in nested
+    ]
 
 
 def _print_tree(tracker: BeadsTracker) -> None:

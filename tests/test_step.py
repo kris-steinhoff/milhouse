@@ -54,6 +54,29 @@ def test_a_step_claims_works_and_records_one_issue(config: Config, decomposed: F
     assert decomposed.issues[1].status == "open"
 
 
+def test_every_progress_line_names_the_turn_it_belongs_to(
+    config: Config, decomposed: FakeTracker, fake_proc: FakeProc
+) -> None:
+    """With four turns in flight, an unlabelled `→ success` says nothing (ADR 0024)."""
+    lines: list[str] = []
+    config.verify.command = ["a-gate"]
+    fake_proc.expect("a-gate", Reply())
+    session, _ = build(config, tracker=decomposed, script=["close", "close"])
+    session.report = lines.append
+
+    with session as opened:
+        step(opened)
+        step(opened)
+
+    indented = [line for line in lines if line.startswith("  ")]
+    assert indented, "a turn reports nothing under its header line"
+    for line in indented:
+        assert line.split()[0] in {"bd-e.1", "bd-e.2"}, f"{line!r} does not say whose turn it is"
+    # And each turn's outcome is attributable to it rather than to the run.
+    assert any(line.startswith("  bd-e.1  → success") for line in indented)
+    assert any(line.startswith("  bd-e.2  → success") for line in indented)
+
+
 def test_a_step_returns_nothing_when_no_issue_is_ready(
     config: Config, decomposed: FakeTracker
 ) -> None:

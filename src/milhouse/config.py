@@ -74,10 +74,17 @@ class AgentConfig(BaseModel):
 class RunConfig(BaseModel):
     """What bounds one ``milhouse run``.
 
-    The two guardrails that only mean anything once nobody is watching
+    The guardrails that only mean anything once nobody is watching
     (:doc:`ADR 0022 <../../docs/decisions/0022-the-loop-is-earned>`). The
     section is ``[run]`` rather than the ``[loop]`` that ADR 0017 deleted, so an
     old config file cannot silently start meaning something new.
+
+    A key here says what any run of this repository may not exceed, rather than
+    what one invocation is doing, which is why the width is ``max_parallel`` and
+    the flag that overrides it is ``--count``
+    (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+    They are the one pair in milhouse that do not share a name, so both places
+    that document configuration carry the mapping explicitly.
     """
 
     max_iterations: int = Field(default=50, ge=1)
@@ -94,6 +101,33 @@ class RunConfig(BaseModel):
 
     Counted over the whole audit history rather than over one run, so
     re-running does not hand a hopeless issue three more turns.
+    """
+
+    max_parallel: int = Field(default=1, ge=1)
+    """Turns one run may keep in flight at once. ``--count N`` overrides it.
+
+    One by default, which is the serial run
+    (:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`) exactly:
+    no worker lanes, and nothing to merge. Above one, each issue gets a worker
+    lane branched from the integration branch and merged back into it
+    (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+
+    Zero is rejected for the reason ``max_iterations`` rejects it: a run that
+    may start no turns is a run that does nothing and reports a stop reason
+    sounding like progress. A width above what the dependency graph can use is
+    not rejected, because it is harmless and ``--dry-run`` says so.
+    """
+
+    poll_ms: int = Field(default=5_000, ge=1)
+    """How often a concurrent run checks whether a lane has settled.
+
+    Matches :data:`milhouse.parallel.DEFAULT_POLL_MS`, which is where the
+    reasoning about the value lives. Ignored by a serial run, which waits on
+    each turn and has nothing to poll.
+
+    Not zero: every poll asks herdr about each open lane and re-reads the audit
+    trail, so a run that polled continuously would spend a subprocess per lane
+    per pass against turns that take minutes.
     """
 
 
@@ -248,6 +282,8 @@ _ENV_MAP: dict[str, tuple[str, str, str]] = {
     "MILHOUSE_TURN_TIMEOUT_MS": ("agent", "turn_timeout_ms", "int"),
     "MILHOUSE_RUN_MAX_ITERATIONS": ("run", "max_iterations", "int"),
     "MILHOUSE_RUN_MAX_ATTEMPTS": ("run", "max_attempts", "int"),
+    "MILHOUSE_RUN_MAX_PARALLEL": ("run", "max_parallel", "int"),
+    "MILHOUSE_RUN_POLL_MS": ("run", "poll_ms", "int"),
     "MILHOUSE_VERIFY_COMMAND": ("verify", "command", "argv"),
     "MILHOUSE_VERIFY_TIMEOUT_MS": ("verify", "timeout_ms", "int"),
     "MILHOUSE_LANE_BRANCH_PREFIX": ("lane", "branch_prefix", "str"),

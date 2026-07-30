@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from milhouse import config as config_module
+from milhouse import parallel
 from milhouse.errors import ConfigError
 
 
@@ -159,6 +160,38 @@ def test_the_run_caps_are_layered_like_everything_else(
 @pytest.mark.parametrize("value", [0, -1])
 def test_a_run_cap_below_one_is_refused(repo: Path, key: str, value: int) -> None:
     """A ceiling of zero is a run that does nothing and says it hit the ceiling."""
+    write_config(repo, f"[run]\n{key} = {value}\n")
+
+    with pytest.raises(ConfigError, match=f"run.{key}"):
+        config_module.load(repo)
+
+
+def test_a_run_is_serial_until_it_is_asked_not_to_be(repo: Path) -> None:
+    """`--count 1` is ADR 0023 exactly, so it is what an unconfigured repo gets."""
+    resolved = config_module.load(repo)
+
+    assert resolved.run.max_parallel == 1
+    assert resolved.run.poll_ms == parallel.DEFAULT_POLL_MS
+
+
+def test_the_width_and_the_poll_interval_are_layered_like_everything_else(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--count` and `[run] max_parallel` are the same setting under two names."""
+    write_config(repo, "[run]\nmax_parallel = 2\npoll_ms = 250\n")
+    monkeypatch.setenv("MILHOUSE_RUN_MAX_PARALLEL", "3")
+    monkeypatch.setenv("MILHOUSE_RUN_POLL_MS", "500")
+
+    resolved = config_module.load(repo, overrides={"run": {"max_parallel": 4}})
+
+    assert resolved.run.max_parallel == 4
+    assert resolved.run.poll_ms == 500
+
+
+@pytest.mark.parametrize("key", ["max_parallel", "poll_ms"])
+@pytest.mark.parametrize("value", [0, -1])
+def test_a_width_or_an_interval_below_one_is_refused(repo: Path, key: str, value: int) -> None:
+    """A run that may start no turn does nothing; a poll of zero is a spin."""
     write_config(repo, f"[run]\n{key} = {value}\n")
 
     with pytest.raises(ConfigError, match=f"run.{key}"):

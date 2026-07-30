@@ -45,12 +45,40 @@ from .rundir import LOCK_FILENAME, RunLock
 from .runner import AgentRunner, Runner
 from .tracker.base import Tracker
 
-__all__ = ["Reporter", "Session", "usable_workspace"]
+__all__ = ["Reporter", "Session", "about", "usable_workspace"]
 
 log = logging.getLogger(__name__)
 
 Reporter = Callable[[str], None]
 """Where progress lines go. The CLI passes ``typer.echo``."""
+
+
+def about(issue_id: str, text: str) -> str:
+    """A progress line indented under its turn and labelled with whose turn it is.
+
+    Serially the label is redundant, because the ``iteration N: <issue>`` line
+    above it is the only turn in progress. Concurrently it is the whole line:
+    four turns interleave their progress on one terminal, and an unlabelled
+    ``→ success`` says nothing about which of them succeeded
+    (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+
+    The label is the issue id rather than the lane's workspace or its branch,
+    because it is the one name that is the same in every progress line, in the
+    audit log, and in the report — and in a run with worker lanes it *is* the
+    lane key (:meth:`milhouse.lanes.Lanes.open_worker`).
+
+    Here rather than in :mod:`milhouse.step` because a session reports lines of
+    its own, and :mod:`milhouse.step` imports this module rather than the other
+    way round.
+
+    Args:
+        issue_id: The turn's issue.
+        text: What to say about it.
+
+    Returns:
+        The line to report.
+    """
+    return f"  {issue_id}  {text}"
 
 
 def usable_workspace(
@@ -463,7 +491,10 @@ class Session:
                 # and `runner_for` names it there instead of naming it twice.
                 lane = self._integration
                 self.report(
-                    f"  integration lane {lane.workspace_id} on {lane.branch} ({lane.path})"
+                    about(
+                        self.lane_key,
+                        f"integration lane {lane.workspace_id} on {lane.branch} ({lane.path})",
+                    )
                 )
         return self._integration
 
@@ -511,7 +542,7 @@ class Session:
                 focus=self.attach,
             )
         self._opened[issue.id] = lane
-        self.report(f"  lane {lane.workspace_id} on {lane.branch} ({lane.path})")
+        self.report(about(issue.id, f"lane {lane.workspace_id} on {lane.branch} ({lane.path})"))
         self._active = AgentRunner(
             self.client,
             self.config,

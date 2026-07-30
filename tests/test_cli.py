@@ -9,13 +9,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner, Result
 
 from milhouse import cli, proc
 from milhouse.models import Issue, Iteration, MergeRecord
-from milhouse.run import Halt, RunResult
+from milhouse.parallel import Parallel
+from milhouse.run import Draining, Halt, RunResult
 
 from .doubles import FakeAudit
 from .fakes import FakeProc, Reply
@@ -86,6 +88,7 @@ def test_there_is_no_plan_command() -> None:
             [
                 "--max-iterations",
                 "--max-attempts",
+                "--count",
                 "--agent",
                 "--workspace",
                 "--dry-run",
@@ -208,6 +211,116 @@ def test_status_lists_the_lanes_herdr_is_holding(worked_repo: Path, fake_proc: F
 
     assert "lanes (1)" in result.output
     assert "bd-e.1  milhouse/bd-e.1  /worktrees/milhouse-bd-e.1" in result.output
+
+
+def test_status_lists_a_runs_worker_lanes_under_its_integration_lane(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    """Five sibling rows would leave the reader to sort out which run is which.
+
+    The branch is what says so: a worker lane is namespaced under its
+    integration branch, and a `dispatch` lane carrying the same label is not
+    (ADR 0024).
+    """
+    fake_proc.expect("bd", Reply(stdout="[]"))
+    fake_proc.expect(
+        "herdr workspace list",
+        Reply(
+            stdout=wrapped(
+                "workspace:list",
+                {
+                    "workspaces": [
+                        {"workspace_id": "wI", "label": "bd-e"},
+                        {"workspace_id": "wW1", "label": "bd-e.1"},
+                        {"workspace_id": "wW2", "label": "bd-e.2"},
+                        {"workspace_id": "wD", "label": "bd-x.9"},
+                    ]
+                },
+            )
+        ),
+    )
+    fake_proc.expect(
+        "herdr worktree list",
+        Reply(
+            stdout=wrapped(
+                "worktree:list",
+                {
+                    "worktrees": [
+                        {"path": str(worked_repo), "branch": "main", "open_workspace_id": "wG"},
+                        {
+                            "path": "/worktrees/milhouse-bd-e",
+                            "branch": "milhouse/bd-e",
+                            "open_workspace_id": "wI",
+                        },
+                        {
+                            "path": "/worktrees/milhouse-bd-e-bd-e.1",
+                            "branch": "milhouse/bd-e/bd-e.1",
+                            "open_workspace_id": "wW1",
+                        },
+                        {
+                            "path": "/worktrees/milhouse-bd-e-bd-e.2",
+                            "branch": "milhouse/bd-e/bd-e.2",
+                            "open_workspace_id": "wW2",
+                        },
+                        {
+                            "path": "/worktrees/milhouse-bd-x.9",
+                            "branch": "milhouse/bd-x.9",
+                            "open_workspace_id": "wD",
+                        },
+                    ]
+                },
+            )
+        ),
+    )
+
+    result = invoke("status")
+    lines = [line for line in result.output.splitlines() if "milhouse/" in line]
+
+    assert "lanes (4)" in result.output
+    assert lines[0].startswith("  bd-e  milhouse/bd-e ")
+    assert lines[1].startswith("      bd-e.1  milhouse/bd-e/bd-e.1 ")
+    assert lines[2].startswith("      bd-e.2  milhouse/bd-e/bd-e.2 ")
+    # A `dispatch` lane belongs to nobody's run, so it stays at the top level.
+    assert lines[3].startswith("  bd-x.9  milhouse/bd-x.9 ")
+
+
+def test_status_leaves_a_worker_lane_whose_run_is_gone_at_the_top_level(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    """It is the leftover of a run that stopped, which is what status is read for."""
+    fake_proc.expect("bd", Reply(stdout="[]"))
+    fake_proc.expect(
+        "herdr workspace list",
+        Reply(
+            stdout=wrapped(
+                "workspace:list", {"workspaces": [{"workspace_id": "wW1", "label": "bd-e.1"}]}
+            )
+        ),
+    )
+    fake_proc.expect(
+        "herdr worktree list",
+        Reply(
+            stdout=wrapped(
+                "worktree:list",
+                {
+                    "worktrees": [
+                        {"path": str(worked_repo), "branch": "main", "open_workspace_id": "wG"},
+                        {
+                            "path": "/worktrees/milhouse-bd-e-bd-e.1",
+                            "branch": "milhouse/bd-e/bd-e.1",
+                            "open_workspace_id": "wW1",
+                        },
+                    ]
+                },
+            )
+        ),
+    )
+
+    result = invoke("status")
+    lines = [line for line in result.output.splitlines() if "milhouse/" in line]
+
+    assert "lanes (1)" in result.output
+    assert lines == ["  bd-e.1  milhouse/bd-e/bd-e.1  /worktrees/milhouse-bd-e-bd-e.1"]
 
 
 def test_status_flags_a_claim_left_by_an_unfinished_run(
@@ -389,6 +502,123 @@ def test_run_dry_run_names_the_one_lane_the_whole_run_uses(
     assert "lane      milhouse/bd-e  (one lane for the whole run)" in result.output
 
 
+# -- what the count is worth ---------------------------------------------------
+
+WIDE = [
+    {"id": "bd-e.1", "title": "Left", "status": "open", "parent": "bd-e"},
+    {"id": "bd-e.2", "title": "Right", "status": "open", "parent": "bd-e"},
+    {"id": "bd-e.3", "title": "The join", "status": "open", "parent": "bd-e"},
+]
+JOIN = [
+    {"issue_id": "bd-e.3", "depends_on_id": "bd-e.1", "type": "blocks"},
+    {"issue_id": "bd-e.3", "depends_on_id": "bd-e.2", "type": "blocks"},
+]
+
+
+def bd_has_a_join(argv: tuple[str, ...]) -> Reply:
+    """Two independent issues and one waiting on both: two waves, widest two."""
+    if "show" in argv:
+        target = argv[argv.index("show") + 1]
+        found = EPIC if target == "bd-e" else next(c for c in WIDE if c["id"] == target)
+        return Reply(stdout=json.dumps([found]))
+    if "dep" in argv:
+        return Reply(stdout=json.dumps(JOIN))
+    if "ready" in argv:
+        return Reply(stdout=json.dumps([WIDE[0]]))
+    return Reply(stdout=json.dumps(WIDE))
+
+
+def test_run_dry_run_prints_the_waves_and_the_widest_one(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    """The one place the dependency graph earns its keep on the run path."""
+    fake_proc.expect("bd", bd_has_a_join)
+
+    result = invoke("run", "bd-e", "--dry-run", "--count", "2")
+
+    assert result.exit_code == 0
+    assert "waves     3 unfinished issue(s) in 2 wave(s), widest 2" in result.output
+    assert "  1  bd-e.1, bd-e.2" in result.output
+    assert "  2  bd-e.3" in result.output
+    assert "count     2 turns at once, and the widest wave is 2" in result.output
+    assert not fake_proc.ran("herdr", "agent")
+
+
+def test_run_dry_run_says_a_count_the_target_cannot_use_buys_nothing(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    """`--count 8` against a chain of eight is `--count 1` with extra words."""
+    fake_proc.expect("bd", bd_has_a_join)
+
+    result = invoke("run", "bd-e", "--dry-run", "--count", "8")
+
+    assert "8 requested, but no wave is wider than 2" in result.output
+    assert "--count 2 with extra words" in result.output
+
+
+def test_run_dry_run_at_the_default_count_says_what_the_width_would_be(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    """Serial is the default, so the dry run is where a wider target is noticed."""
+    fake_proc.expect("bd", bd_has_a_join)
+
+    result = invoke("run", "bd-e", "--dry-run")
+
+    assert "count     1 turn at a time, in the integration lane, with no worker lanes" in (
+        result.output
+    )
+    assert "--count up to 2 would fit this target" in result.output
+
+
+def test_run_dry_run_names_the_worker_lane_the_next_issue_would_work_in(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    """Above a width of one the target's lane is the integration lane (ADR 0024)."""
+    fake_proc.expect("bd", bd_has_a_join)
+
+    result = invoke("run", "bd-e", "--dry-run", "--count", "2")
+
+    assert (
+        "lane      milhouse/bd-e  (the integration lane; "
+        "bd-e.1 would work on milhouse/bd-e/bd-e.1)" in result.output
+    )
+    # And the prompt names the branch the turn would really commit to.
+    assert "milhouse/bd-e/bd-e.1" in result.output.split("would work bd-e.1 and send")[1]
+
+
+def test_run_dry_run_reads_the_width_from_the_config_file(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    """`--count` and `[run] max_parallel` are the same setting under two names."""
+    fake_proc.expect("bd", bd_has_a_join)
+    config = worked_repo / ".milhouse"
+    config.mkdir(exist_ok=True)
+    (config / "config.toml").write_text("[run]\nmax_parallel = 2\n", encoding="utf-8")
+
+    result = invoke("run", "bd-e", "--dry-run")
+
+    assert "count     2 turns at once, and the widest wave is 2" in result.output
+
+
+def test_a_step_dry_run_says_nothing_about_waves(worked_repo: Path, fake_proc: FakeProc) -> None:
+    """A step has no width to plan, so the graph has nothing to tell it."""
+    fake_proc.expect("bd", bd_has_a_join)
+
+    result = invoke("step", "--dry-run")
+
+    assert "waves" not in result.output
+
+
+def test_run_dry_run_says_so_when_nothing_in_scope_is_unfinished(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    fake_proc.expect("bd", bd_is_all_closed)
+
+    result = invoke("run", "bd-e", "--dry-run")
+
+    assert "waves     (none — nothing in scope is unfinished)" in result.output
+
+
 def test_run_refuses_a_closed_target(worked_repo: Path, fake_proc: FakeProc) -> None:
     closed = dict(EPIC, status="closed")
     fake_proc.expect("bd", Reply(stdout=json.dumps([closed])))
@@ -431,6 +661,90 @@ def test_run_exits_nine_when_work_is_left(worked_repo: Path, fake_proc: FakeProc
 
     assert result.exit_code == 9
     assert "unfinished" in result.output
+
+
+# -- what --count wires up -----------------------------------------------------
+
+
+class SessionSpy:
+    """A session that opens nothing, so the wiring can be read without a herdr."""
+
+    def __init__(self, **kwargs: object) -> None:
+        """Remember how `milhouse run` asked for a session."""
+        self.kwargs = kwargs
+        self.lanes = self
+
+    def locate(self, key: str) -> None:
+        """No lane, so the report has no branch to name."""
+        return None
+
+    def __enter__(self) -> SessionSpy:
+        """Open nothing: no workspace, no worktree, no lock."""
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        """Close nothing, and swallow nothing."""
+        return False
+
+
+def watch_the_run(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Capture the session and the loop body `milhouse run` assembles."""
+    seen: dict[str, Any] = {}
+
+    def session(config: object, **kwargs: object) -> SessionSpy:
+        seen["session"] = kwargs
+        return SessionSpy(**kwargs)
+
+    def loop(opened: object, target: Issue, **kwargs: Any) -> RunResult:
+        seen.update(kwargs)
+        return RunResult(target=target, halt=Halt("finished", "everything closed", finished=True))
+
+    monkeypatch.setattr(cli, "_session", session)
+    monkeypatch.setattr(cli, "run_loop", loop)
+    return seen
+
+
+def test_a_count_above_one_opens_worker_lanes_and_runs_a_concurrent_body(
+    worked_repo: Path, fake_proc: FakeProc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The width is a mode for the session and a different body for the loop."""
+    fake_proc.expect("bd", bd_reads_the_tree)
+    seen = watch_the_run(monkeypatch)
+
+    result = invoke("run", "bd-e", "--count", "4")
+
+    assert result.exit_code == 0
+    assert seen["session"]["worker_lanes"] is True
+    assert isinstance(seen["body"], Parallel)
+    assert seen["body"].count == 4
+    assert "count   4 turns in flight at once, each in a worker lane" in result.output
+
+
+def test_the_poll_interval_reaches_the_concurrent_body(
+    worked_repo: Path, fake_proc: FakeProc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_proc.expect("bd", bd_reads_the_tree)
+    monkeypatch.setenv("MILHOUSE_RUN_POLL_MS", "250")
+    seen = watch_the_run(monkeypatch)
+
+    invoke("run", "bd-e", "--count", "2")
+
+    assert isinstance(seen["body"], Parallel)
+    assert seen["body"].poll_ms == 250
+
+
+def test_count_one_is_the_serial_run_unchanged(
+    worked_repo: Path, fake_proc: FakeProc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No worker lanes, nothing to drain, and no line about a width (ADR 0023)."""
+    fake_proc.expect("bd", bd_reads_the_tree)
+    seen = watch_the_run(monkeypatch)
+
+    result = invoke("run", "bd-e", "--count", "1")
+
+    assert seen["session"]["worker_lanes"] is False
+    assert not isinstance(seen["body"], Draining)
+    assert "in flight at once" not in result.output
 
 
 def merged_turn(

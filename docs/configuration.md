@@ -22,6 +22,7 @@ args = ["--permission-mode", "acceptEdits"]
 [run]
 max_iterations = 50
 max_attempts = 3
+max_parallel = 1     # --count N overrides this
 
 [verify]
 command = ["uv", "run", "pytest", "-m", "not herdr and not beads"]
@@ -53,8 +54,16 @@ What bounds one `milhouse run`. Nothing here affects `step`, `dispatch`, or `rea
 | ---------------- | ---- | ------- | ----------------------------- | ----------------------------------------------------------------------------- |
 | `max_iterations` | int  | `50`    | `MILHOUSE_RUN_MAX_ITERATIONS` | Turns one run may take before it stops and reports.                           |
 | `max_attempts`   | int  | `3`     | `MILHOUSE_RUN_MAX_ATTEMPTS`   | Attempts one issue gets before the run defers it and works on something else. |
+| `max_parallel`   | int  | `1`     | `MILHOUSE_RUN_MAX_PARALLEL`   | Turns one run may keep in flight at once.                                     |
+| `poll_ms`        | int  | `5000`  | `MILHOUSE_RUN_POLL_MS`        | How often a concurrent run checks whether a lane has settled.                 |
 
-`--max-iterations` and `--max-attempts` override these. Both must be at least 1: zero is rejected rather than silently meaning a run that stops at the ceiling having done nothing, which reports a stop reason that sounds like progress.
+`--max-iterations` and `--max-attempts` override the first two. Every key here must be at least 1: zero is rejected rather than silently meaning a run that stops at the ceiling having done nothing, which reports a stop reason that sounds like progress.
+
+**`max_parallel` is the key `--count` overrides, and the two do not share a name.** They are the one such pair in milhouse, so the mapping is written down rather than inferred ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)): `[run]` is a section of ceilings, and a key in a committed file says what any run of this repository may not exceed, while a flag says what one invocation is doing. `milhouse run <target> --count 4` and `max_parallel = 4` are the same setting.
+
+At `1` a run is exactly what [ADR 0023](decisions/0023-a-run-has-one-lane.md) describes: one lane, one turn at a time, nothing to merge. Above `1` each issue gets a worker lane branched from the run's integration branch and merged back into it as its turn settles, and `max_iterations` then counts turns that have been _started_ rather than finished, so a wide run cannot overshoot its ceiling. A width above what the dependency graph can use is accepted rather than refused, because it is harmless: `milhouse run <target> --count N --dry-run` prints the waves and says how much of `N` the target can actually use.
+
+`poll_ms` is ignored by a serial run, which waits on each turn and has nothing to poll. Every poll asks herdr about each open lane and re-reads the audit trail, against turns that take minutes, so the default is deliberately unhurried.
 
 `max_iterations` bounds turns, not spend, and turns are not the same size. It is the only thing bounding an overnight run ([ADR 0012](decisions/0012-no-cost-controls-in-v1.md)).
 
@@ -138,6 +147,8 @@ A reused workspace is not an empty one, which is why `self_pane` exists. Its pan
 | `MILHOUSE_TURN_TIMEOUT_MS`        | `agent.turn_timeout_ms`  |
 | `MILHOUSE_RUN_MAX_ITERATIONS`     | `run.max_iterations`     |
 | `MILHOUSE_RUN_MAX_ATTEMPTS`       | `run.max_attempts`       |
+| `MILHOUSE_RUN_MAX_PARALLEL`       | `run.max_parallel`       |
+| `MILHOUSE_RUN_POLL_MS`            | `run.poll_ms`            |
 | `MILHOUSE_VERIFY_COMMAND`         | `verify.command`         |
 | `MILHOUSE_VERIFY_TIMEOUT_MS`      | `verify.timeout_ms`      |
 | `MILHOUSE_LANE_BRANCH_PREFIX`     | `lane.branch_prefix`     |
