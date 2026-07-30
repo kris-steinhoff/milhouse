@@ -22,7 +22,7 @@ from milhouse.audit import AuditLog
 from milhouse.config import Config
 from milhouse.errors import MilhouseError
 from milhouse.herdr import AgentStatus, Workspace, Worktree
-from milhouse.models import Issue
+from milhouse.models import Graph, Issue
 from milhouse.runner import TurnResult
 from milhouse.session import Session
 
@@ -77,6 +77,19 @@ class FakeTracker:
 
     def children(self, parent_id: str | None = None) -> list[Issue]:
         return list(self.issues)
+
+    def graph(self) -> Graph:
+        """The issues, with an edge per `blocks` relation on the beads they hold."""
+        nodes = {issue.id: issue for issue in self.issues}
+        return Graph(
+            nodes=nodes,
+            edges=[
+                (blocker, issue.id)
+                for issue in self.issues
+                for blocker in issue.blocked_by
+                if blocker in nodes
+            ],
+        )
 
     def release(self, issue_id: str, *, note: str | None = None) -> None:
         self.released.append(issue_id)

@@ -31,9 +31,36 @@ CHILD_JSON = json.dumps(
 )
 
 
+SCOPE_JSON = json.dumps(
+    [
+        {"id": "bd-4rt.1", "title": "Add it", "status": "open", "issue_type": "task"},
+        {"id": "bd-4rt.2", "title": "Document it", "status": "open", "issue_type": "task"},
+        {"id": "bd-4rt.3", "title": "Announce it", "status": "open", "issue_type": "task"},
+    ]
+)
+
+DEP_JSON = json.dumps(
+    [
+        # `bd dep list --type blocks` answers with relations, not issues, and
+        # names the blocker in `depends_on_id`.
+        {"issue_id": "bd-4rt.2", "depends_on_id": "bd-4rt.1", "type": "blocks"},
+        {"issue_id": "bd-4rt.3", "depends_on_id": "bd-4rt.2", "type": "blocks"},
+        {"issue_id": "bd-4rt.1", "depends_on_id": "bd-elsewhere", "type": "blocks"},
+    ]
+)
+
+
 @pytest.fixture
 def tracker(repo: Path) -> BeadsTracker:
     return BeadsTracker(repo)
+
+
+@pytest.fixture
+def scope(repo: Path, fake_proc: FakeProc) -> FakeProc:
+    """Reply to the two calls `graph()` makes: the listing and the relations."""
+    fake_proc.expect(["bd", "-C", str(repo), "list"], SCOPE_JSON)
+    fake_proc.expect(["bd", "-C", str(repo), "dep", "list"], DEP_JSON)
+    return fake_proc
 
 
 def test_ready_claims_the_next_issue(tracker: BeadsTracker, fake_proc: FakeProc) -> None:
@@ -119,6 +146,59 @@ def test_children_of_an_epic_are_asked_for_by_parent(
     assert argv[argv.index("--parent") + 1] == "bd-4rt"
 
 
+# -- the dependency graph ------------------------------------------------------
+
+
+def test_graph_of_an_epic_scope_pairs_the_children_with_their_edges(
+    repo: Path, scope: FakeProc
+) -> None:
+    graph = BeadsTracker(repo, TrackerConfig(parent="bd-4rt")).graph()
+
+    assert list(graph.nodes) == ["bd-4rt.1", "bd-4rt.2", "bd-4rt.3"]
+    assert graph.edges == [("bd-4rt.1", "bd-4rt.2"), ("bd-4rt.2", "bd-4rt.3")]
+    assert graph.waves() == [["bd-4rt.1"], ["bd-4rt.2"], ["bd-4rt.3"]]
+    listing = next(scope.commands("bd", "-C", str(repo), "list"))
+    assert listing[listing.index("--parent") + 1] == "bd-4rt"
+
+
+def test_the_edges_are_one_call_asking_only_for_blocks(repo: Path, scope: FakeProc) -> None:
+    """Every id at once, and `--type` decides the shape of the answer as well."""
+    BeadsTracker(repo).graph()
+
+    calls = list(scope.commands("bd", "-C", str(repo), "dep", "list"))
+    assert len(calls) == 1
+    assert calls[0][calls[0].index("--type") + 1] == "blocks"
+    assert set(calls[0]) >= {"bd-4rt.1", "bd-4rt.2", "bd-4rt.3"}
+
+
+def test_graph_of_a_closure_scope_keeps_only_its_members(repo: Path, scope: FakeProc) -> None:
+    """The membership fences the nodes, and an edge to anything else is dropped."""
+    tracker = BeadsTracker(repo, members={"bd-4rt.1", "bd-4rt.2"})
+
+    graph = tracker.graph()
+
+    assert list(graph.nodes) == ["bd-4rt.1", "bd-4rt.2"]
+    # `bd-4rt.3` is out of scope, and so is the blocker `bd-4rt.1` carries: the
+    # graph cannot say whether a node it does not hold is closed.
+    assert graph.edges == [("bd-4rt.1", "bd-4rt.2")]
+    assert [issue.id for issue in graph.frontier()] == ["bd-4rt.1"]
+
+
+def test_an_empty_scope_asks_bd_for_no_edges(tracker: BeadsTracker, fake_proc: FakeProc) -> None:
+    fake_proc.expect("bd", Reply(stdout="[]"))
+
+    assert tracker.graph().nodes == {}
+    assert not fake_proc.ran("bd", "-C", str(tracker.repo_root), "dep")
+
+
+def test_unexpected_dep_output_is_rejected(repo: Path, fake_proc: FakeProc) -> None:
+    fake_proc.expect(["bd", "-C", str(repo), "list"], SCOPE_JSON)
+    fake_proc.expect(["bd", "-C", str(repo), "dep", "list"], '["not an object"]')
+
+    with pytest.raises(TrackerError, match="unexpected bd output"):
+        BeadsTracker(repo).graph()
+
+
 def test_release_reopens_and_unassigns(tracker: BeadsTracker, fake_proc: FakeProc) -> None:
     fake_proc.expect("bd", Reply(stdout=""))
 
@@ -174,12 +254,11 @@ def test_unexpected_bd_output_is_rejected(tracker: BeadsTracker, fake_proc: Fake
 # -- against a real bd database ------------------------------------------------
 
 
-@pytest.mark.beads
-def test_full_lifecycle_against_a_real_database(tmp_path: Path) -> None:
-    """Claim, note, release, and close, using the real `bd`.
+def scratch(tmp_path: Path) -> Path:
+    """A git repository with an empty beads database, or a skip.
 
-    This is what keeps the recorded JSON in the unit tests honest. Skipped when
-    `bd` is not installed.
+    These tests are what keeps the recorded JSON in the unit tests honest.
+    Skipped when `bd` is not installed.
     """
     if shutil.which("bd") is None:
         pytest.skip("bd is not installed")
@@ -189,20 +268,44 @@ def test_full_lifecycle_against_a_real_database(tmp_path: Path) -> None:
     subprocess.run(["git", "-C", str(root), "commit", "-q", "--allow-empty", "-m", "i"], check=True)
     # `bd -C` refuses to run without an existing project, so init runs via cwd.
     subprocess.run(["bd", "init"], cwd=root, check=True, capture_output=True)
+    return root
 
-    def create(title: str, *extra: str) -> str:
-        result = subprocess.run(
-            ["bd", "-C", str(root), "create", title, "--json", *extra],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return str(json.loads(result.stdout)["id"])
 
-    epic = create("Add a hello command", "--type", "epic")
-    first = create("Add it", "--parent", epic, "--description", "do the thing")
-    second = create("Document it", "--parent", epic)
-    subprocess.run(["bd", "-C", str(root), "dep", "add", second, first], check=True)
+def make(root: Path, title: str, *extra: str) -> str:
+    """Create one issue with the real `bd` and return its id."""
+    result = subprocess.run(
+        ["bd", "-C", str(root), "create", title, "--json", *extra],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return str(json.loads(result.stdout)["id"])
+
+
+def depends(root: Path, issue_id: str, blocker_id: str) -> None:
+    """Record that `issue_id` is blocked by `blocker_id`."""
+    subprocess.run(["bd", "-C", str(root), "dep", "add", issue_id, blocker_id], check=True)
+
+
+def bd_ready(root: Path) -> list[str]:
+    """The ids `bd ready` itself offers, which is what `frontier()` must match."""
+    result = subprocess.run(
+        ["bd", "-C", str(root), "ready", "--limit", "0", "--exclude-type", "epic", "--json"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return sorted(str(item["id"]) for item in json.loads(result.stdout.strip() or "[]") or [])
+
+
+@pytest.mark.beads
+def test_full_lifecycle_against_a_real_database(tmp_path: Path) -> None:
+    """Claim, note, release, and close, using the real `bd`."""
+    root = scratch(tmp_path)
+    epic = make(root, "Add a hello command", "--type", "epic")
+    first = make(root, "Add it", "--parent", epic, "--description", "do the thing")
+    second = make(root, "Document it", "--parent", epic)
+    depends(root, second, first)
 
     tracker = BeadsTracker(root)
 
@@ -224,3 +327,47 @@ def test_full_lifecycle_against_a_real_database(tmp_path: Path) -> None:
     # Closing the blocker makes its dependent ready.
     assert tracker.ready(claim=False) is not None
     assert len(tracker.children(epic)) == 2
+
+
+@pytest.mark.beads
+def test_the_graph_matches_a_real_database(tmp_path: Path) -> None:
+    """A diamond in real `bd`, levelled, with `frontier()` held against `bd ready`."""
+    root = scratch(tmp_path)
+    epic = make(root, "Add a hello command", "--type", "epic")
+    first = make(root, "Add it", "--parent", epic)
+    second = make(root, "Document it", "--parent", epic)
+    third = make(root, "Announce it", "--parent", epic)
+    fourth = make(root, "Release it", "--parent", epic)
+    depends(root, second, first)
+    depends(root, third, first)
+    depends(root, fourth, second)
+    depends(root, fourth, third)
+
+    tracker = BeadsTracker(root, TrackerConfig(parent=epic))
+    graph = tracker.graph()
+
+    # The epic itself is not among its own children, so every node is work.
+    assert set(graph.nodes) == {first, second, third, fourth}
+    assert sorted(graph.edges) == sorted(
+        [(first, second), (first, third), (second, fourth), (third, fourth)]
+    )
+    assert graph.waves() == [[first], [second, third], [fourth]]
+    assert graph.width == 2
+    assert sorted(graph.blocked_behind(first)) == sorted([second, third, fourth])
+
+    # What `bd ready` offers is the frontier, before and after a blocker closes.
+    assert bd_ready(root) == [first]
+    assert sorted(issue.id for issue in graph.frontier()) == bd_ready(root)
+    tracker.close(first)
+    assert bd_ready(root) == sorted([second, third])
+    assert sorted(issue.id for issue in tracker.graph().frontier()) == bd_ready(root)
+
+    # An unfenced tracker holds the epic as a node, and still does not offer it.
+    whole = BeadsTracker(root).graph()
+    assert epic in whole.nodes
+    assert sorted(issue.id for issue in whole.frontier()) == bd_ready(root)
+
+    # A closure-scoped tracker keeps its members, and the edges between them.
+    closure = BeadsTracker(root, members={second, fourth}).graph()
+    assert set(closure.nodes) == {second, fourth}
+    assert closure.edges == [(second, fourth)]

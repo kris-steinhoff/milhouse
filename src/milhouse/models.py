@@ -1,7 +1,8 @@
 """The data milhouse passes between its modules.
 
-Two types carry everything: an :class:`Issue` is one unit of work in beads, and
-an :class:`Iteration` is one turn of the agent.
+Three types carry everything: an :class:`Issue` is one unit of work in beads, an
+:class:`Iteration` is one turn of the agent, and a :class:`Graph` is a scope of
+issues with the ``blocks`` edges between them.
 
 Beads and git remain the source of truth for the work itself. Everything here is
 derived from them. Persisting it is :mod:`milhouse.audit`'s job, not this
@@ -16,11 +17,18 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 __all__ = [
+    "Graph",
     "Issue",
     "Iteration",
     "Outcome",
     "now",
 ]
+
+_EPIC = "epic"
+"""Issue type that is a container for work rather than a unit of it."""
+
+_OPEN = "open"
+"""``bd`` status for an issue nobody has claimed and nobody has set aside."""
 
 Outcome = Literal["success", "rejected", "blocked", "partial", "stalled", "timeout", "error"]
 """How one iteration ended. See ``docs/architecture.md`` for the decision table."""
@@ -78,6 +86,151 @@ class Issue(BaseModel):
             for item in relations
             if isinstance(item, dict) and item.get("dependency_type") == "blocks" and item.get("id")
         ]
+
+
+class Graph(BaseModel):
+    """The issues in one scope and the ``blocks`` edges between them.
+
+    Fetching it is :meth:`~milhouse.tracker.base.Tracker.graph`'s job. This is
+    the value that comes back, and every helper on it is pure, so what the graph
+    means is unit-tested rather than acted out against a database.
+
+    ``bd ready`` already finds the parallelism, because an issue is offered only
+    when every blocker is closed. The graph answers what the ready queue cannot:
+    how wide the scope actually is (:attr:`width`), and what is stuck behind one
+    issue (:meth:`blocked_behind`).
+
+    **The helpers reason about unfinished work only.** A closed issue is in
+    :attr:`nodes`, because the scope contains it, but it is in no wave and
+    nothing waits on it. Neither is an epic, which is a container for work and
+    never a unit of it, the same rule
+    :meth:`~milhouse.tracker.beads.BeadsTracker.ready` applies.
+    """
+
+    nodes: dict[str, Issue] = Field(default_factory=dict)
+    """Every issue in scope, by id, closed ones included."""
+
+    edges: list[tuple[str, str]] = Field(default_factory=list)
+    """``(blocker, blocked)`` pairs: ``blocks`` relations, and nothing else.
+
+    Both ends are always in :attr:`nodes`. An edge to an issue outside the scope
+    is dropped when the graph is built, because every helper here turns on
+    whether a blocker is closed and the graph cannot answer that for a node it
+    does not hold.
+    """
+
+    def frontier(self) -> list[Issue]:
+        """Open issues with no open blocker: what ``bd ready`` offers.
+
+        Open means exactly ``bd``'s ``open``, so an issue already in progress or
+        set aside with ``bd defer`` is not on the frontier even though it is
+        still unfinished work and still in a wave.
+
+        Returns:
+            The issues that could be claimed now, in :attr:`nodes` order.
+        """
+        blockers = self._blockers()
+        return [
+            issue
+            for issue_id, issue in self._unfinished().items()
+            if issue.status == _OPEN and not blockers[issue_id]
+        ]
+
+    def waves(self) -> list[list[str]]:
+        """The unfinished issues in topological levels, deepest blockers first.
+
+        Everything in one wave can be worked at the same time, and nothing in a
+        wave can start until the wave before it is done, so this is the shape a
+        concurrent run would take if every turn succeeded first time.
+
+        A cycle cannot be levelled. Whatever is left when no further wave can be
+        peeled off is appended as one final wave, so a cycle terminates and its
+        issues are still named rather than quietly vanishing. ``bd`` should not
+        permit one, and a walk that hangs would be a poor way to find out it did.
+
+        Returns:
+            Issue ids per level, the first level being :meth:`frontier` plus
+            whatever is already in progress or set aside.
+        """
+        remaining = {issue_id: set(ids) for issue_id, ids in self._blockers().items()}
+        levels: list[list[str]] = []
+        while remaining:
+            wave = [
+                issue_id
+                for issue_id, blockers in remaining.items()
+                if not blockers & remaining.keys()
+            ]
+            if not wave:
+                levels.append(list(remaining))
+                break
+            levels.append(wave)
+            for issue_id in wave:
+                del remaining[issue_id]
+        return levels
+
+    @property
+    def width(self) -> int:
+        """The widest wave: the most concurrency this scope can ever use.
+
+        A ``--count`` above it buys nothing, which is worth knowing before a run
+        rather than after one.
+        """
+        return max((len(wave) for wave in self.waves()), default=0)
+
+    def blocked_behind(self, issue_id: str) -> list[str]:
+        """The unfinished issues waiting on ``issue_id``, transitively.
+
+        What a deadlocked run wants to name: not the list of things that did not
+        get done, but the one issue they are all queued behind.
+
+        Args:
+            issue_id: The blocker to look behind.
+
+        Returns:
+            Ids in breadth-first order, nearest dependents first, without
+            ``issue_id`` itself. Empty when nothing waits on it, and empty when
+            the issue is closed or out of scope, since neither holds anything
+            up. Visited ids are remembered, so a cycle terminates.
+        """
+        if issue_id not in self._unfinished():
+            return []
+        dependents = self._dependents()
+        seen = {issue_id}
+        queue = [issue_id]
+        behind: list[str] = []
+        while queue:
+            for dependent in dependents.get(queue.pop(0), []):
+                if dependent in seen:
+                    continue
+                seen.add(dependent)
+                behind.append(dependent)
+                queue.append(dependent)
+        return behind
+
+    def _unfinished(self) -> dict[str, Issue]:
+        """The nodes that are still work: not closed, and not an epic."""
+        return {
+            issue_id: issue
+            for issue_id, issue in self.nodes.items()
+            if not issue.is_closed and issue.issue_type != _EPIC
+        }
+
+    def _blockers(self) -> dict[str, list[str]]:
+        """Unfinished blockers per unfinished issue, every one of them keyed."""
+        unfinished = self._unfinished()
+        blockers: dict[str, list[str]] = {issue_id: [] for issue_id in unfinished}
+        for blocker, blocked in self.edges:
+            if blocker in unfinished and blocked in unfinished:
+                blockers[blocked].append(blocker)
+        return blockers
+
+    def _dependents(self) -> dict[str, list[str]]:
+        """The same edges the other way round: who waits on whom."""
+        dependents: dict[str, list[str]] = {}
+        for blocked, blockers in self._blockers().items():
+            for blocker in blockers:
+                dependents.setdefault(blocker, []).append(blocked)
+        return dependents
 
 
 class Iteration(BaseModel):

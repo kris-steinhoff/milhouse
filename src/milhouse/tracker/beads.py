@@ -24,7 +24,7 @@ from typing import Any
 from .. import proc
 from ..config import TrackerConfig
 from ..errors import MilhouseError, TrackerError
-from ..models import Issue
+from ..models import Graph, Issue
 
 __all__ = ["BeadsTracker"]
 
@@ -82,6 +82,52 @@ class BeadsTracker:
         if self.members is not None and parent_id is None:
             return [issue for issue in issues if issue.id in self.members]
         return issues
+
+    def graph(self) -> Graph:
+        """The issues in scope and the ``blocks`` edges between them.
+
+        Two calls. :meth:`children` for the nodes, so the fence — a parent, a
+        label, or an explicit membership — is applied in one place and this
+        method never learns which one is in force. Then a single
+        ``bd dep list <id>... --type blocks``, which takes every id at once.
+        """
+        nodes = {issue.id: issue for issue in self.children()}
+        if not nodes:
+            return Graph()
+        return Graph(nodes=nodes, edges=self._blocks_edges(list(nodes)))
+
+    def _blocks_edges(self, ids: list[str]) -> list[tuple[str, str]]:
+        """The ``blocks`` relations among ``ids``, as ``(blocker, blocked)`` pairs.
+
+        ``bd dep list <id>... --type blocks --json`` returns a flat array of
+        relations, ``{"issue_id", "depends_on_id", "type"}``, where
+        ``depends_on_id`` is the blocker and ``issue_id`` the issue it holds up.
+        Only the ids asked about appear on the ``issue_id`` side, so a blocker
+        outside the scope arrives as a ``depends_on_id`` naming a node the graph
+        does not hold, and is dropped: the graph cannot say whether it is closed.
+
+        ``--type`` also decides the *shape* of the answer. Without it the same
+        command returns whole issues carrying a ``dependency_type``, which is
+        another reason it is never omitted here.
+
+        Raises:
+            TrackerError: The payload is not a list of relation objects.
+        """
+        payload = self._json(["dep", "list", *ids, "--type", "blocks"])
+        if payload is None:
+            return []
+        if not isinstance(payload, list):
+            raise TrackerError(f"unexpected bd output: {payload!r}")
+        known = set(ids)
+        edges = []
+        for item in payload:
+            if not isinstance(item, dict):
+                raise TrackerError(f"unexpected bd output: {item!r}")
+            blocker = str(item.get("depends_on_id") or "")
+            blocked = str(item.get("issue_id") or "")
+            if blocker in known and blocked in known:
+                edges.append((blocker, blocked))
+        return edges
 
     def ready(self, *, claim: bool) -> Issue | None:
         """Return the next ready issue in scope, optionally claiming it.

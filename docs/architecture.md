@@ -174,7 +174,8 @@ src/milhouse/
 - **`run.py` owns only the count.** It may not classify a turn, decide what becomes of an issue, or know what is in scope. Its loop body is an argument for the same reason.
 - **`cli.py` holds no behaviour, and no private attributes.** It resolves config, drives a `Session` through public methods, and formats the result.
 - **`completion.py` never raises and never calls a server.** Its callbacks run on a keypress, in a shell with nowhere to show a traceback, so they answer from the filesystem and from constants rather than from `bd`, `herdr`, or `gh`.
-- **`Tracker` and `Runner` are protocols with one implementation each.** The protocol is not speculative generality: it is what `tests/doubles.py` implements. `Tracker` is six methods — `ready`, `get`, `children`, `release`, `defer`, `note` — and nothing on it creates an issue.
+- **`Tracker` and `Runner` are protocols with one implementation each.** The protocol is not speculative generality: it is what `tests/doubles.py` implements. `Tracker` is seven methods — `ready`, `get`, `children`, `graph`, `release`, `defer`, `note` — and nothing on it creates an issue.
+- **`Graph` reasons, `graph()` fetches.** `Tracker.graph()` is the two `bd` calls that build the value; every question about it — `frontier()`, `waves()`, `width`, `blocked_behind()` — is a pure method on `models.Graph`, so what the dependency graph means is a unit test rather than a scenario. The ready queue already _is_ the frontier, so the graph is not what makes concurrency possible: it is how a run says how wide the scope is before it starts, and what everything is stuck behind when it stops.
 
 ## Data flow
 

@@ -9,6 +9,11 @@ Six methods is what is left once there is no task to decompose
 plus the one a loop needs. Getting work *into* the tracker is somebody else's
 job, so nothing here creates an issue.
 
+:meth:`Tracker.graph` is the seventh, and it is a reader like the first three.
+It exists because the ready queue cannot say how wide a scope is or what is
+stuck behind what, and both are questions a run wants answered before it starts
+rather than after it stops.
+
 Marking an issue **blocked** is deliberately not on it. That was how the old
 attempt cap gave up on an issue and moved to the next, and giving up is a
 person's decision
@@ -26,7 +31,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from ..models import Issue
+from ..models import Graph, Issue
 
 __all__ = ["Tracker"]
 
@@ -67,6 +72,15 @@ class Tracker(Protocol):
         Args:
             parent_id: The epic to look under, or ``None`` for every issue in
                 the configured scope.
+        """
+        ...
+
+    def graph(self) -> Graph:
+        """The issues in scope and the ``blocks`` edges between them.
+
+        Returns:
+            The scope as one value, closed issues included, with the reasoning
+            left to :class:`~milhouse.models.Graph`'s pure helpers.
         """
         ...
 
