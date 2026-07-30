@@ -1,13 +1,22 @@
 """Tests for the small amount of git milhouse needs.
 
-These check the argv, because that is where a wrong flag turns into a wrong
+The reads check the argv, because that is where a wrong flag turns into a wrong
 outcome: `commits_between` is what decides `partial` from `stalled`.
+
+`merge` is checked against a real repository in `tmp_path` instead. What it
+reports — fast-forward or merge commit, and what conflicted — is git's answer to
+a question about two histories, and a fake that returned those answers would be
+asserting on itself.
 """
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
+import pytest
+
+from milhouse.errors import MilhouseError
 from milhouse.gitrepo import GitRepo
 
 from .fakes import FakeProc, Reply
@@ -17,6 +26,53 @@ REPO = Path("/repo")
 
 def repo() -> GitRepo:
     return GitRepo(REPO)
+
+
+def git(path: Path, *args: str) -> None:
+    """Run a git command in `path`, failing the test if it does not succeed."""
+    subprocess.run(["git", "-C", str(path), *args], check=True, capture_output=True)
+
+
+def rev(path: Path, ref: str) -> str:
+    """Full sha of `ref` in the repository at `path`."""
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", ref],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def commit(path: Path, message: str, **files: str) -> None:
+    """Write `files` into `path` and commit them."""
+    for name, text in files.items():
+        (path / name).write_text(text)
+    git(path, "add", "-A")
+    git(path, "commit", "-q", "-m", message)
+
+
+def a_repo(tmp_path: Path) -> GitRepo:
+    """A real repository on `main` with one commit, bound to its own root."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    git(root, "config", "user.email", "milhouse@example.invalid")
+    git(root, "config", "user.name", "milhouse tests")
+    # git's own default, pinned so a developer whose global config sets
+    # merge.ff = false does not read a different answer than CI does.
+    git(root, "config", "merge.ff", "true")
+    commit(root, "first", shared="one\n")
+    return GitRepo(root)
+
+
+def a_branch(repo: GitRepo, name: str, **files: str) -> None:
+    """Branch off the current commit, commit `files` on it, and come back."""
+    was = repo.current_branch()
+    assert was is not None
+    repo.ensure_branch(name)
+    commit(repo.path, f"work on {name}", **files)
+    repo.ensure_branch(was)
 
 
 def test_every_read_is_scoped_to_the_bound_directory(fake_proc: FakeProc) -> None:
@@ -100,3 +156,76 @@ def test_a_clean_tree_is_not_dirty(fake_proc: FakeProc) -> None:
     fake_proc.expect("git", Reply(stdout="\n"))
 
     assert not repo().is_dirty()
+
+
+def test_a_merge_into_a_branch_that_has_not_moved_fast_forwards(tmp_path: Path) -> None:
+    """ADR 0024's common case: nothing to join, so nothing is verified again."""
+    integration = a_repo(tmp_path)
+    a_branch(integration, "worker", added="two\n")
+    tip = rev(integration.path, "worker")
+
+    result = integration.merge("worker")
+
+    assert result.sha == tip
+    assert result.fast_forwarded
+    assert not result.joined
+    assert not result.conflicts
+    assert integration.head() == tip
+
+
+def test_a_diverged_branch_makes_a_merge_commit(tmp_path: Path) -> None:
+    """Two histories git had to join, which is what earns a second gate run."""
+    integration = a_repo(tmp_path)
+    a_branch(integration, "worker", added="two\n")
+    commit(integration.path, "meanwhile", elsewhere="three\n")
+    tip = rev(integration.path, "worker")
+
+    result = integration.merge("worker", message="Merge worker")
+
+    assert result.sha == integration.head()
+    assert result.sha not in (tip, None)
+    assert not result.fast_forwarded
+    assert result.joined
+    assert (integration.path / "added").read_text() == "two\n"
+    assert (integration.path / "elsewhere").read_text() == "three\n"
+
+
+def test_a_conflict_is_reported_and_leaves_nothing_behind(tmp_path: Path) -> None:
+    """The integration lane has to be exactly where it was, or a person cannot land it."""
+    integration = a_repo(tmp_path)
+    a_branch(integration, "worker", shared="theirs\n")
+    commit(integration.path, "meanwhile", shared="ours\n")
+    before = integration.head()
+
+    result = integration.merge("worker")
+
+    assert result.conflicts == ("shared",)
+    assert result.sha is None
+    assert not result.fast_forwarded
+    assert not result.joined
+    assert integration.head() == before
+    assert not integration.is_dirty()
+    assert (integration.path / "shared").read_text() == "ours\n"
+
+
+def test_an_already_merged_branch_merges_nothing(tmp_path: Path) -> None:
+    """Nothing was merged, so there is no sha to record and no fast-forward to report."""
+    integration = a_repo(tmp_path)
+    a_branch(integration, "worker", added="two\n")
+    integration.merge("worker")
+    landed = integration.head()
+
+    result = integration.merge("worker")
+
+    assert result.sha is None
+    assert not result.fast_forwarded
+    assert not result.conflicts
+    assert integration.head() == landed
+
+
+def test_a_failure_that_is_not_a_conflict_raises(tmp_path: Path) -> None:
+    """A branch that does not exist is a bug in the caller, not an outcome to report."""
+    integration = a_repo(tmp_path)
+
+    with pytest.raises(MilhouseError, match="could not merge worker"):
+        integration.merge("worker")
