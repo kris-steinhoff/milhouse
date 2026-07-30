@@ -424,7 +424,12 @@ def dispatch(
 
     This is not a loop: it starts a bounded number of turns once, and stops.
 
-    Exits 0 when at least one turn was started, and 9 when nothing was ready.
+    A turn that will not start ends the call, because the next issue would be
+    handed to the same herdr and the same agent. It is reported and its issue is
+    re-opened, so nothing is left claimed with no agent behind it.
+
+    Exits 0 when every turn asked for was started, and 9 when nothing was ready
+    or a turn could not be started.
     """
     config = _config(
         repo,
@@ -435,18 +440,26 @@ def dispatch(
         },
     )
     with _session(config, attach=attach) as session:
-        started = run_dispatch(session, limit=count)
-        if not started:
+        dispatched = run_dispatch(session, limit=count)
+        if not dispatched.started and not dispatched.failed:
             reason, completed = nothing_ready(session)
             typer.echo("")
             typer.secho(reason, fg=typer.colors.GREEN if completed else typer.colors.YELLOW)
             raise typer.Exit(code=0 if completed else 9)
 
     typer.echo("")
-    typer.secho(f"{len(started)} turn(s) in flight:", fg=typer.colors.GREEN)
-    for pending in started:
-        typer.echo(f"  {pending.issue.id}  {pending.lane.branch}  {pending.lane.path}")
-    typer.echo("\nrun `milhouse reap` when they settle.")
+    for result in dispatched.failed:
+        typer.secho(
+            f"{result.iteration.issue_id} could not be started: {result.iteration.detail}",
+            fg=typer.colors.RED,
+        )
+    if dispatched.started:
+        typer.secho(f"{len(dispatched.started)} turn(s) in flight:", fg=typer.colors.GREEN)
+        for pending in dispatched.started:
+            typer.echo(f"  {pending.issue.id}  {pending.lane.branch}  {pending.lane.path}")
+        typer.echo("\nrun `milhouse reap` when they settle.")
+    if dispatched.failed:
+        raise typer.Exit(code=9)
 
 
 @app.command()

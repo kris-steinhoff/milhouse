@@ -11,10 +11,10 @@ from milhouse.errors import MilhouseError
 from milhouse.gitrepo import Merge
 from milhouse.herdr import Worktree
 from milhouse.models import Issue
-from milhouse.policy import Decision
+from milhouse.policy import Decision, unattended
 from milhouse.runner import TurnResult
 from milhouse.session import Session
-from milhouse.step import dispatch, nothing_ready, reap, step
+from milhouse.step import DispatchResult, dispatch, nothing_ready, reap, step
 
 from .doubles import FakeClient, FakeRepo, FakeRunner, FakeTracker, build
 from .fakes import FakeProc, Reply
@@ -433,7 +433,7 @@ def test_dispatch_starts_a_turn_and_does_not_wait(config: Config, decomposed: Fa
     runner.working = True
 
     with session as opened:
-        started = dispatch(opened)
+        started = dispatch(opened).started
 
         assert [pending.issue.id for pending in started] == ["bd-e.1"]
         assert runner.turns  # the prompt was submitted
@@ -450,7 +450,7 @@ def test_dispatch_takes_up_to_the_count_asked_for(config: Config, decomposed: Fa
     runner.working = True
 
     with session as opened:
-        started = dispatch(opened, limit=5)
+        started = dispatch(opened, limit=5).started
 
     # Only two issues exist, so the queue runs dry before the limit does.
     assert [pending.issue.id for pending in started] == ["bd-e.1", "bd-e.2"]
@@ -464,7 +464,7 @@ def test_dispatch_reports_nothing_when_the_queue_is_empty(
     session, _ = build(config, tracker=decomposed, script=[])
 
     with session as opened:
-        assert dispatch(opened) == []
+        assert dispatch(opened) == DispatchResult()
 
 
 def test_a_turn_that_will_not_start_is_settled_rather_than_left_claimed(
@@ -474,10 +474,53 @@ def test_a_turn_that_will_not_start_is_settled_rather_than_left_claimed(
     session, _ = build(config, tracker=decomposed, script=["error"])
 
     with session as opened:
-        assert dispatch(opened) == []
+        assert dispatch(opened).started == []
 
     assert [item.outcome for item in session.audit.iterations()] == ["error"]
     assert decomposed.released == ["bd-e.1"]
+
+
+def test_a_turn_that_will_not_start_is_handed_back_rather_than_dropped(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """milhouse-amd.14: it is an `error` iteration, which is a row of the halt table.
+
+    Settling it inside `dispatch` and returning nothing left the caller unable to
+    tell a sick agent side from an empty queue.
+    """
+    session, _ = build(config, tracker=decomposed, script=["error"])
+
+    with session as opened:
+        dispatched = dispatch(opened, limit=2)
+
+    assert dispatched.started == []
+    assert [result.iteration.issue_id for result in dispatched.failed] == ["bd-e.1"]
+    assert [result.iteration.outcome for result in dispatched.failed] == ["error"]
+    assert "herdr fell over" in dispatched.failed[0].iteration.detail
+
+
+def test_one_dispatch_charges_one_issue_one_attempt(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """milhouse-amd.14: the loop was handed the issue it had just released, twice more.
+
+    `_finish` re-opens the issue, so `bd ready` offers it straight back and a
+    `--count 3` dispatch could spend an issue's whole retry ladder on one thing
+    that was wrong with the agent side — three attempts and a deferral, inside a
+    single call, in the time three failures take.
+    """
+    session, runner = build(config, tracker=decomposed, script=["unsubmitted"] * 3)
+
+    with session as opened:
+        dispatched = dispatch(opened, limit=3, policy=unattended(max_attempts=3))
+
+    assert [item.attempt for item in session.audit.iterations()] == [1]
+    assert len(dispatched.failed) == 1
+    assert len(runner.turns) == 1
+    assert decomposed.deferred == []
+    # And the issues behind it in the queue were never claimed either.
+    assert decomposed.released == ["bd-e.1"]
+    assert decomposed.issues[1].status == "open"
 
 
 def test_a_prompt_the_agent_never_took_is_never_dispatched_or_reaped(
@@ -501,7 +544,7 @@ def test_a_prompt_the_agent_never_took_is_never_dispatched_or_reaped(
     session, _ = build(config, tracker=decomposed, script=["unsubmitted"], client=client)
 
     with session as opened:
-        assert dispatch(opened) == []
+        assert dispatch(opened).started == []
         # Nothing is in flight, so a poller finds nothing to collect.
         assert opened.audit.dispatches() == {}
         assert reap(opened) == []

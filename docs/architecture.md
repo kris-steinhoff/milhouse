@@ -45,6 +45,8 @@ Everything above the prompt and everything below it is shared: `step` is `dispat
 
 **The half that does not wait still waits for one thing.** herdr requires an observed state change before `--wait` waits on anything, so `dispatch` asks for that much and no more: it returns as soon as the agent is seen to react, which is a fraction of a second, and never waits out a turn. Without it a swallowed prompt left an agent reporting the same `idle` as one that had finished, and the poller collected a turn nothing had ever run ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)).
 
+**A prompt that will not take ends the dispatch, and the turn is handed back.** It is settled on the spot, since an agent that never ran will never be reaped, and it is returned rather than dropped: it is an `error` iteration, which is a row of the halt table, and a caller that never learns the turn existed reports a sick agent side as a stuck queue. The call stops there because everything `dispatch` can settle is about the agent side rather than about one issue — a failure to prepare one issue is raised by `_prepare` instead — and the next issue would be handed to the same herdr.
+
 Neither half is a loop. `dispatch` starts a bounded number of turns once and returns, and nothing in either decides whether there should be more. What went away is the requirement that turns be serial, and with it the repo-wide run lock — the lock is per lane now, and `bd ready --claim` is what makes two dispatchers safe ([ADR 0015](decisions/0015-one-run-at-a-time.md)).
 
 ## The run
@@ -154,6 +156,7 @@ What the two cost is worth recording, because it is where the layering was not f
 | `Session(lane_key=...)`, `Lanes.open_for` | Resources | 0022 | A run reviews a target rather than an issue, so the lane it works in is a different lane ([ADR 0023](decisions/0023-a-run-has-one-lane.md)) |
 | `scope.py` | Resources | 0022 | A target fences the ready queue, and expressing that as a `Tracker` is what kept it out of every layer above |
 | `parallel.py` | Repetition | 0024 | The body itself: dispatch up to N, poll the lanes, hand back one finished turn per call so `should_halt` stays pure over one iteration |
+| `step.DispatchResult` | Work | 0024 | A turn that could not be started is a finished turn, so `dispatch` hands it back rather than settling it out of sight, and the halt table gets to see it |
 | `run.Draining`, `run._drain` | Repetition | 0024 | A halt stops starting work, not work already started, and a concurrent body has N-1 turns whose agents are still going when the table fires |
 | `should_halt`'s `conflict` and `integration` rows | Repetition | 0024 | Two ways to stop that a serial run cannot produce: a branch that did not land, and a branch that went red once two histories were on it |
 | `RunResult.still_running`, `merged()`, `unmerged()` | Repetition | 0024 | "Closed" and "on the branch you are about to review" stop being the same thing, and a report whose numbers look complete is worse than a short one |

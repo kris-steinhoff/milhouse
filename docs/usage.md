@@ -323,20 +323,22 @@ Re-running the same target finds those lanes again and carries on where it left 
 
 ### When it stops
 
-| Condition                                  | Exit | Report                                                                                                          |
-| ------------------------------------------ | ---- | --------------------------------------------------------------------------------------------------------------- |
-| Nothing ready, nothing in scope unfinished | `0`  | finished                                                                                                        |
-| Nothing ready, work still unfinished       | `9`  | deadlocked, and names what is left                                                                              |
-| An agent stopped waiting on a human        | `9`  | nobody is there to approve, and the next turn would too                                                         |
-| milhouse itself failed (`bd`, herdr)       | `9`  | its own failure rather than the agent's                                                                         |
-| A closed issue left uncommitted changes    | `9`  | serially the next turn in this lane inherits them; in a worker lane nobody does, but they are not merged either |
-| A worker branch did not land               | `9`  | `conflict`, naming both branches — only a person can land it                                                    |
-| The gate failed on the integration branch  | `9`  | `integration`, the merge stands and the output is on the issue                                                  |
-| `--max-iterations` reached                 | `9`  | the ceiling                                                                                                     |
+| Condition                                  | Exit | Report                                                                                                           |
+| ------------------------------------------ | ---- | ---------------------------------------------------------------------------------------------------------------- |
+| Nothing ready, nothing in scope unfinished | `0`  | finished                                                                                                         |
+| Nothing ready, work still unfinished       | `9`  | deadlocked, and names what is left                                                                               |
+| An agent stopped waiting on a human        | `9`  | nobody is there to approve, and the next turn would too                                                          |
+| milhouse itself failed (`bd`, herdr)       | `9`  | its own failure rather than the agent's, including a turn whose agent would not start or would not take a prompt |
+| A closed issue left uncommitted changes    | `9`  | serially the next turn in this lane inherits them; in a worker lane nobody does, but they are not merged either  |
+| A worker branch did not land               | `9`  | `conflict`, naming both branches — only a person can land it                                                     |
+| The gate failed on the integration branch  | `9`  | `integration`, the merge stands and the output is on the issue                                                   |
+| `--max-iterations` reached                 | `9`  | the ceiling                                                                                                      |
 
 The two merge rows only fire above `--count 1`, where there is something to merge. A halt **stops starting work rather than abandoning work already started**: the run reports `draining N turn(s) already in flight` and waits for them, because dropping them would leave claimed issues with live agents and branches nobody merges. Whatever settles during the drain is in the report, and none of it changes why the run stopped.
 
 Whether those turns are also **merged** depends on why the run stopped. After anything but a failed merge they are, and the line says so. After a `conflict` they are not: the first merge that does not land is the last merge of the run, so the drained turns are finished, verified, recorded and settled, and their branches are left where they are. The line says that instead (`nothing more is merged into milhouse/bd-e, which has already refused milhouse/bd-e--bd-e.2`), and the report names every unlanded branch in the order it has to be landed ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)).
+
+A turn that never began is one of those rows and not a quiet one. A wide run stops dispatching at the first agent it cannot start or cannot get a prompt into, because the next issue would be handed to the same herdr and the same agent binary, and the turn it settled goes through the table like any other — so a run whose agent side is sick stops saying `milhouse itself failed: …` rather than reporting a queue that looks stuck.
 
 An issue that fails `--max-attempts` times does **not** stop the run. It is deferred with the reason on it, and the run moves to the next ready issue. A deferred issue is hidden from `bd ready` and still listed by `bd list`, so it still counts as unfinished — which is why a run that deferred anything exits `9` rather than claiming success. `bd undefer <id>` puts one back.
 
@@ -454,7 +456,9 @@ Two conflicts are worth expecting rather than being surprised by. Agents told to
 
 Open, reachable today, and not fixed:
 
-- **A turn can settle seconds after it starts, having done nothing.** herdr can report an agent as not working while its prompt is still sitting unsubmitted in the pane, and the poll believes it. The symptom is a `stalled` outcome about ten seconds after the turn was dispatched, often with `agent did not exit from key presses; replacing pane` in the same turn. It costs attempts rather than time: an issue can burn its whole retry ladder in under a minute while its siblings are still on their first turn. `milhouse step` cannot reach this, because the waiting happens inside `herdr agent prompt --wait`; `dispatch` and `reap` have always had it.
+- **`milhouse step` can report a prompt the agent never took as milhouse's own failure.** A submission from a non-working state has five seconds to be seen to land, whatever `[agent] turn_timeout_ms` says, and the first prompt after an agent starts is regularly swallowed outright. `step` submits once, so herdr's `agent_prompt_stalled` arrives as outcome `error`, which reads as milhouse's own failure, for a turn that never began. No tokens are spent and stepping again usually takes, but the history carries it as a failed attempt at the issue.
+
+  `run`, `dispatch` and `reap` do not have this: they re-submit an unobserved prompt up to `[agent] submit_attempts` times, and one that still will not take stops the run there and then, naming the agent, rather than being collected a poll later as `stalled`.
 
 ### Reading the report
 
@@ -617,7 +621,9 @@ dogfood-6i2.2: success — dogfood-6i2.2 closed in beads
 1 turn(s) still running.
 ```
 
-`dispatch` exits `0` when it started at least one turn, and `9` when nothing was ready but work is outstanding. `reap` exits `0` when everything it collected succeeded and nothing is left running, and `9` otherwise — so `until milhouse reap; do sleep 60; done` is a wait.
+`dispatch` exits `0` when it started at least one turn and none failed to start, and `9` when nothing was ready but work is outstanding, or when a turn could not be started. `reap` exits `0` when everything it collected succeeded and nothing is left running, and `9` otherwise — so `until milhouse reap; do sleep 60; done` is a wait.
+
+**A turn that will not start ends the call.** Its issue is re-opened rather than left claimed with no agent behind it, and the failure is printed with the issue id. The issues behind it in the queue are not claimed at all: the next one would be handed to the same herdr and the same agent binary, and each one tried would be charged an attempt in the history a later `milhouse run` counts against `--max-attempts`.
 
 **This is still not a loop.** `dispatch` starts a bounded number of turns once and stops; nothing here decides whether there should be more ([ADR 0017](decisions/0017-no-loop-until-it-is-earned.md)). What it removes is the requirement that the turns be serial.
 

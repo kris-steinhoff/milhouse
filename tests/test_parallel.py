@@ -519,3 +519,30 @@ def test_a_run_names_a_turn_it_could_not_collect(config: Config, decomposed: Fak
 
     assert result.still_running == ["bd-e.1"]
     assert result.iterations == []
+
+
+def test_a_run_whose_agent_side_will_not_take_prompts_halts_saying_so(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """milhouse-amd.14: the turn was settled inside `dispatch` and never handed back.
+
+    So the body reported no work, the queue looked stuck, and the run ended
+    "nothing is ready but N issue(s) are unfinished" — which is what a deadlocked
+    dependency graph looks like, not a herdr that will not take a prompt.
+    """
+    ids = [issue.id for issue in decomposed.issues]
+    session, runner = build(
+        config, tracker=decomposed, script=["unsubmitted"] * 5, client=with_lanes(*ids)
+    )
+
+    with session as opened:
+        result = run(opened, TARGET, policy=POLICY, max_iterations=50, body=body(3))
+
+    assert not result.finished
+    assert result.halt.reason == "error"
+    assert "could not prompt the agent" in result.halt.detail
+    assert "nothing is ready" not in result.halt.detail
+    # One turn was attempted, not one per issue and not one per attempt.
+    assert [item.issue_id for item in result.iterations] == ["bd-e.1"]
+    assert len(runner.turns) == 1
+    assert result.still_running == []

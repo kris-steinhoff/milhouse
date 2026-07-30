@@ -16,7 +16,8 @@ integration branch, because that tree is one nothing has tested.
 once (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`):
 
 - :func:`dispatch` claims up to N ready issues, sets up their lanes, starts their
-  agents, and returns. It waits for nothing.
+  agents, and returns. It waits for nothing, and it hands back the turns it could
+  not start alongside the ones it did, because those are over already.
 - :func:`reap` finds the turns that have settled since and finishes them.
 - :func:`step` is dispatch-one-and-wait: the whole turn in one call, which is
   what ``milhouse step`` has always done and still does.
@@ -29,7 +30,7 @@ still holds, and the seam a loop would swap is still the ``policy`` argument
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,7 @@ from .verify import Verification, verify
 
 __all__ = [
     "MERGE_ERROR_CHARS",
+    "DispatchResult",
     "Dispatched",
     "StepResult",
     "dispatch",
@@ -118,6 +120,28 @@ class Dispatched:
         }
 
 
+@dataclass(frozen=True)
+class DispatchResult:
+    """What one :func:`dispatch` call started, and what it could not start.
+
+    Two lists rather than one, because they are two different things to a
+    caller: :attr:`started` is work in flight that something has to reap, and
+    :attr:`failed` is work that is already over. A turn that never began is an
+    ``error`` iteration like any other, so it belongs to whatever asks
+    :func:`milhouse.run.should_halt` about turns rather than to a list of agents
+    to wait for.
+
+    Attributes:
+        started: The turns now in flight, in the order they were started.
+        failed: The turns that could not be started, already classified,
+            recorded and settled exactly as :func:`reap` would have. At most one
+            per call, since the first of them ends the call.
+    """
+
+    started: list[Dispatched] = field(default_factory=list)
+    failed: list[StepResult] = field(default_factory=list)
+
+
 def step(session: Session, *, policy: Policy = decide) -> StepResult | None:
     """Work the next ready issue and wait for it, or report that none is ready.
 
@@ -148,7 +172,7 @@ def step(session: Session, *, policy: Policy = decide) -> StepResult | None:
     return result
 
 
-def dispatch(session: Session, *, limit: int = 1) -> list[Dispatched]:
+def dispatch(session: Session, *, limit: int = 1, policy: Policy = decide) -> DispatchResult:
     """Claim up to ``limit`` ready issues, start their agents, and return.
 
     Nothing is waited on, so the turns run concurrently in their own lanes.
@@ -156,14 +180,48 @@ def dispatch(session: Session, *, limit: int = 1) -> list[Dispatched]:
     issue, and each holds only its own lane's lock.
 
     A turn that could not be started is settled immediately rather than left
-    claimed: an agent that never ran will never be reaped.
+    claimed: an agent that never ran will never be reaped. It is also **handed
+    back** rather than dropped. It is an ``error`` iteration, which is a row of
+    :func:`milhouse.run.should_halt`'s table, and a caller that never learns the
+    turn existed reports a run whose agent side is sick as "nothing is ready but
+    N issue(s) are unfinished" — the one thing that did not happen.
+
+    **The first failure ends the call**, and which failure it was does not come
+    into it, because the two kinds surface in different places:
+
+    - A failure to prepare *this issue* — its lane branch is taken, its blockers
+      ran in two different lanes — is raised by :func:`_prepare` and never
+      reaches here. It ends the call by propagating, which is not a decision
+      this function gets to make.
+    - Every failure it can settle is the **agent side**: an agent that would not
+      start in a pane, or a prompt herdr could not get taken
+      (:meth:`~milhouse.runner.AgentRunner.start_turn`). The next issue would be
+      handed to the same herdr, the same agent binary and the same submission
+      floor, so carrying on charges another issue an attempt for one thing that
+      is wrong somewhere else.
+
+    Stopping is also what makes **one dispatch, one attempt** true. :func:`_finish`
+    releases the issue it settles, so it is ready again the instant it is
+    recorded, and the very next claim in this loop would be handed the same issue
+    back: at ``limit`` 3, one issue whose agent will not take a prompt could be
+    charged three attempts and deferred, spending its whole retry ladder inside a
+    single call.
+
+    If a preparation failure is ever settled here rather than raised, it belongs
+    in a third list that does *not* end the call. It is about one issue, and the
+    issues behind it in the queue are fine.
 
     Args:
         session: An open session.
-        limit: How many issues to take at most. Fewer if the queue runs dry.
+        limit: How many issues to take at most. Fewer if the queue runs dry, or
+            if a turn will not start.
+        policy: What settles the issue behind a turn that could not be started.
+            The same argument :func:`reap` takes, and for the same reason: a run
+            caps attempts and ``milhouse dispatch`` does not, and a turn that
+            never began is still an attempt at the issue.
 
     Returns:
-        The turns now in flight, in the order they were started.
+        What was started, and what was not.
     """
     started: list[Dispatched] = []
     for _ in range(max(limit, 0)):
@@ -182,14 +240,14 @@ def dispatch(session: Session, *, limit: int = 1) -> list[Dispatched]:
             error = turn.error
         if error:
             session.report(about(issue.id, f"→ could not start: {error}"))
-            _finish(session, pending, runner, turn, error=error, policy=decide)
-            continue
+            result = _finish(session, pending, runner, turn, error=error, policy=policy)
+            return DispatchResult(started=started, failed=[result])
         pending = replace(pending, prompt_path=session.relative(turn.prompt_path if turn else None))
         session.audit.dispatched(issue.id, pending.as_entry())
         session.hand_off(issue.id)
         session.report(about(issue.id, f"→ dispatched to {pending.lane.workspace_id}"))
         started.append(pending)
-    return started
+    return DispatchResult(started=started)
 
 
 def reap(session: Session, *, policy: Policy = decide) -> list[StepResult]:

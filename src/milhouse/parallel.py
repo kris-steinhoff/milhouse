@@ -13,11 +13,12 @@ here, so :func:`milhouse.run.should_halt` stays a pure function over one
 finished iteration and the counters stay in ``run()``.
 
 **It decides nothing.** :func:`milhouse.step.reap` has already classified each
-turn and applied the policy by the time a result reaches this module, and
-whether the run stops is ``run()``'s question. So nothing here reads an outcome
-or a decision, and this module imports neither :mod:`milhouse.outcome` nor
-:mod:`milhouse.policy` — which is also why the policy it carries through to
-``reap`` is typed as :data:`Settle` rather than named.
+turn and applied the policy by the time a result reaches this module, and so has
+:func:`milhouse.step.dispatch` for a turn that could not be started at all.
+Whether the run stops for either is ``run()``'s question. So nothing here reads
+an outcome or a decision, and this module imports neither :mod:`milhouse.outcome`
+nor :mod:`milhouse.policy` — which is also why the policy it carries through to
+``dispatch`` and ``reap`` is typed as :data:`Settle` rather than named.
 
 **Claiming N issues in a row is still safe.**
 ``BeadsTracker._ready_among``, which a closure-scoped run uses, lists the ready
@@ -130,7 +131,7 @@ class Parallel:
             :func:`milhouse.step.step` gives, which ``run()`` already turns into
             finished or deadlocked.
         """
-        self._dispatch(session)
+        self._dispatch(session, policy)
         while self._flying and not self._settled:
             self._collect(session, policy)
             if self._flying and not self._settled:
@@ -185,7 +186,7 @@ class Parallel:
 
     # -- the three things one call does --------------------------------------
 
-    def _dispatch(self, session: Session) -> None:
+    def _dispatch(self, session: Session, policy: Settle) -> None:
         """Top the lanes up to ``count``, without going past the run's ceiling.
 
         Dispatching happens even when there is already a result waiting to be
@@ -194,14 +195,22 @@ class Parallel:
         once :meth:`drain` has been called, which is what makes "a halt stops
         starting work" a property of this object rather than a convention its
         caller observes.
+
+        A turn :func:`milhouse.step.dispatch` could not start is queued with the
+        ones that settle normally, so it reaches ``run()`` and the halt table
+        like any other finished turn. It is the whole of what this object does
+        about it: the turn is already classified, recorded and settled, and
+        whether a run stops for it is ``run()``'s question, not this one's.
         """
         if self._stopped:
             return
         room = min(self.count - len(self._flying), self._allowance())
         if room <= 0:
             return
-        for pending in dispatch(session, limit=room):
+        outcome = dispatch(session, limit=room, policy=policy)
+        for pending in outcome.started:
             self._flying[pending.issue.id] = pending
+        self._settled.extend(outcome.failed)
 
     def _allowance(self) -> int:
         """Turns the run may still start.
