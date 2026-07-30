@@ -174,9 +174,20 @@ class Session:
         running — is deliberately left alone. It belongs to the lane now, and
         ``milhouse reap`` is what settles it.
 
-        The workspace is deliberately left open, whether or not the work failed,
-        so the panes can be inspected
+        Every lane this session opened is deliberately left open, whether or not
+        the work failed, so the panes can be inspected
         (:doc:`ADR 0005 <../../docs/decisions/0005-milhouse-owns-the-loop>`).
+        Each one is named on the way out, with its checkout, because that is the
+        directory somebody goes and looks at. The outcome does not change the
+        line, since nothing is closed either way: after a failure it says where to
+        debug, and after a success where the branch under review was written.
+
+        The **source** workspace is not mentioned. It was open before the session
+        started, no agent ever runs in it
+        (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`),
+        and it is the checkout milhouse was typed into, so naming it points a
+        person at where they already are. A session that opened no lane therefore
+        says nothing, rather than claiming something was left behind.
         """
         try:
             for issue_id in list(self.in_flight):
@@ -187,9 +198,25 @@ class Session:
         finally:
             self._release_locks()
             self._restore_signals()
-        if self.workspace is not None:
-            self.report(f"the herdr workspace {self.workspace.workspace_id} is left open")
+        for lane in self._lanes_opened():
+            self.report(f"lane {lane.workspace_id} is left open ({lane.path})")
         return False
+
+    def _lanes_opened(self) -> list[Lane]:
+        """The distinct lanes this session opened, in the order it opened them.
+
+        :attr:`_opened` is keyed by issue, and several issues can share one lane:
+        a run works all of them in the lane named after its target
+        (:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`), and a
+        stacked issue gets a tab in its blocker's lane. What teardown is telling
+        somebody is where to look, so a checkout is named once however many turns
+        happened in it, and one line per lane keeps the shape the same whether
+        there is one or several.
+        """
+        distinct: dict[tuple[str, Path], Lane] = {}
+        for lane in self._opened.values():
+            distinct.setdefault((lane.workspace_id, lane.path), lane)
+        return list(distinct.values())
 
     # -- the per-lane lock ------------------------------------------------
 

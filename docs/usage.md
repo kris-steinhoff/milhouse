@@ -207,12 +207,14 @@ created herdr workspace wG (milhouse:greet)
 iteration 1: dogfood-6i2.1 Add goodbye(name) to src/greet/__init__.py and document it in README.md
   lane wL4 on milhouse/dogfood-6i2.1 (/home/you/.herdr/worktrees/greet/milhouse-dogfood-6i2-1)
   → success: dogfood-6i2.1 closed in beads
-the herdr workspace wG is left open
+lane wL4 is left open (/home/you/.herdr/worktrees/greet/milhouse-dogfood-6i2-1)
 
 dogfood-6i2.1: success — dogfood-6i2.1 closed in beads
 ```
 
 Exit `0`. Step again for the next issue.
+
+The last line is where the work happened. A lane is deliberately left open, whether or not the turn succeeded, so its panes and its checkout can be inspected ([ADR 0005](decisions/0005-milhouse-owns-the-loop.md)). The source workspace above it is not named again: no agent runs in it, and it is the checkout you ran milhouse from.
 
 An iteration that does not finish its issue re-opens it and says what happened:
 
@@ -222,7 +224,7 @@ iteration 2: dogfood-6i2.2 Make the src-layout greet package importable when run
   lane wL5 on milhouse/dogfood-6i2.2 (/home/you/.herdr/worktrees/greet/milhouse-dogfood-6i2-2)
   → stalled: dogfood-6i2.2 is still open and nothing was committed
   dogfood-6i2.2 did not finish (stalled: dogfood-6i2.2 is still open and nothing was committed)
-the herdr workspace wG is left open
+lane wL5 is left open (/home/you/.herdr/worktrees/greet/milhouse-dogfood-6i2-2)
 
 dogfood-6i2.2: stalled — dogfood-6i2.2 is still open and nothing was committed
 ```
@@ -235,7 +237,6 @@ A step also does nothing when `bd ready` offers nothing, which means either that
 
 ```console
 $ milhouse step
-the herdr workspace wG is left open
 
 nothing is ready but 3 issue(s) are unfinished (dogfood-6i2.1, dogfood-6i2.2, dogfood-6i2.3); `bd blocked` says what is stuck
 ```
@@ -244,7 +245,7 @@ That exits `9`. Only "no issues are ready; everything in scope is closed" exits 
 
 Repo-wide this question is weaker than it was under an epic: "unfinished" now means every open issue in scope, so a fence usually makes the answer worth more. `bd blocked` is the tool for the follow-up.
 
-The workspace is deliberately left open so the panes can be inspected ([ADR 0005](decisions/0005-milhouse-owns-the-loop.md)).
+Notice what is missing from that output: there is no `lane … is left open` line, because a step that claimed nothing opened no lane and so has nothing to point at.
 
 ### The queue grows while you step through it
 
@@ -377,7 +378,7 @@ iteration 3: greet-qit.1 Add greet.goodbye() (attempt 3)
   lane wH on milhouse/greet-qit (/home/you/.herdr/worktrees/greet/milhouse-greet-qit)
   → partial: greet-qit.1 is still open, but 1 commit landed for it
 stopping: nothing is ready but 2 issue(s) are unfinished (greet-qit.1, greet-qit.2); `bd blocked` says what is stuck, and this run deferred 1 of them
-the herdr workspace wG is left open
+lane wH is left open (/home/you/.herdr/worktrees/greet/milhouse-greet-qit)
 
 iterations (2, 2m)
     2  timeout   greet-qit.1  the turn did not finish within the turn timeout
@@ -415,7 +416,7 @@ iteration 5: greet-qit.2 Document goodbye in the README
   lane wH on milhouse/greet-qit (/home/you/.herdr/worktrees/greet/milhouse-greet-qit)
   → success: greet-qit.2 closed in beads
 stopping: no issues are ready; everything in scope is closed
-the herdr workspace wG is left open
+lane wH is left open (/home/you/.herdr/worktrees/greet/milhouse-greet-qit)
 
 iterations (2, 2m)
     4  success   greet-qit.1  greet-qit.1 closed in beads

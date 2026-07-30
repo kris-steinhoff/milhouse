@@ -362,3 +362,79 @@ def test_a_configured_workspace_is_the_source_rather_than_a_new_one(
         assert opened.workspace.workspace_id == "wG"
 
     assert client.workspaces == {"wG": "somebody-elses-label"}
+
+
+# -- what teardown says it left behind -----------------------------------------
+
+
+def test_a_failed_step_names_the_lane_it_left_open(config: Config, decomposed: FakeTracker) -> None:
+    """Naming the source workspace instead pointed at the checkout it was run from.
+
+    That is where the person reading the line already is, and no agent runs in
+    it. The lane is the thing that was left behind, so it is the thing named.
+    """
+    client = FakeClient()
+    lines: list[str] = []
+    session, _ = build(config, tracker=decomposed, script=[], client=client)
+    session._runner = None
+    session.report = lines.append
+
+    with pytest.raises(MilhouseError, match="herdr said no"), session as opened:
+        opened.runner_for(decomposed.issues[0])
+        raise MilhouseError("herdr said no")
+
+    assert "lane wL1 is left open (/worktrees/milhouse-bd-e.1)" in lines
+    # wG is the source workspace, which was open before the step and stays open.
+    assert not any("wG is left open" in line for line in lines)
+
+
+def test_a_step_that_opened_no_lane_leaves_no_lane_open(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """Nothing ready means no lane, and nothing for a person to go and look at."""
+    lines: list[str] = []
+    session, _ = build(config, tracker=decomposed, script=[], client=FakeClient())
+    session.report = lines.append
+
+    with session:
+        pass
+
+    assert not any("left open" in line for line in lines)
+
+
+def test_a_session_that_opened_several_lanes_names_every_one(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """What `milhouse dispatch` leaves: a lane per issue, each in its own checkout."""
+    lines: list[str] = []
+    session, _ = build(config, tracker=decomposed, script=[], client=FakeClient())
+    session._runner = None
+    session.report = lines.append
+
+    with session as opened:
+        opened.runner_for(decomposed.issues[0])
+        opened.runner_for(decomposed.issues[1])
+
+    assert [line for line in lines if "left open" in line] == [
+        "lane wL1 is left open (/worktrees/milhouse-bd-e.1)",
+        "lane wL2 is left open (/worktrees/milhouse-bd-e.2)",
+    ]
+
+
+def test_a_run_s_one_lane_is_named_once_however_many_issues_it_worked(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """A run works every issue in one checkout (ADR 0023), so there is one place to look."""
+    lines: list[str] = []
+    session, _ = build(config, tracker=decomposed, script=[], client=FakeClient())
+    session._runner = None
+    session.lane_key = "bd-e"
+    session.report = lines.append
+
+    with session as opened:
+        opened.runner_for(decomposed.issues[0])
+        opened.runner_for(decomposed.issues[1])
+
+    assert [line for line in lines if "left open" in line] == [
+        "lane wL1 is left open (/worktrees/milhouse-bd-e)"
+    ]
