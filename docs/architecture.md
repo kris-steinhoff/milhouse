@@ -159,6 +159,7 @@ src/milhouse/
   step.py        step / dispatch / reap — one turn, whole or in halves
   scope.py       resolve(target) -> a Tracker fenced to an epic or a closure
   run.py         the loop, the halt rules, and what a finished run reports
+  parallel.py    Parallel — a loop body that keeps N turns in flight at once
   prompts/
     iterate.md.j2   per-issue prompt
 ```
