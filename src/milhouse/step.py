@@ -47,6 +47,7 @@ __all__ = [
     "Dispatched",
     "StepResult",
     "dispatch",
+    "merge_line",
     "nothing_ready",
     "reap",
     "step",
@@ -467,16 +468,20 @@ def _land(session: Session, pending: Dispatched, outcome: Outcome) -> MergeRecor
             fast_forwarded=merged.fast_forwarded,
             conflicts=list(merged.conflicts),
         )
-    session.report(f"  → {_merge_line(record)}")
+    session.report(f"  → {merge_line(record)}")
     return record
 
 
-def _merge_line(record: MergeRecord) -> str:
+def merge_line(record: MergeRecord) -> str:
     """One line saying what the merge did, precise enough to act on.
 
     A conflict is the one mess a concurrent run can leave that a serial one
     could not: a closed issue, a live branch, and an integration branch without
     its work. That line therefore names both branches and every path.
+
+    Public because a merge that did not land halts the run, and the halt's
+    detail and the run's report should say the same thing the turn said as it
+    happened rather than three wordings of it (:mod:`milhouse.run`).
     """
     if record.conflicts:
         return (

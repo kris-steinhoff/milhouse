@@ -67,6 +67,11 @@ class Parallel:
     One call is: top the lanes up, wait for something to settle, and hand back
     one result. Whatever else settled in the same round is kept for the calls
     after it, so ``run()`` still sees one finished iteration at a time.
+
+    :meth:`drain` is the other half of that bargain. Handing back one turn at a
+    time means the run halts on one turn while N-1 are still working, so the
+    loop needs a way to say "start nothing more, and finish what you started"
+    (:class:`milhouse.run.Draining`).
     """
 
     def __init__(
@@ -94,13 +99,21 @@ class Parallel:
         self.poll_ms = max(poll_ms, 0)
         self._sleep = sleep
         self._flying: dict[str, Dispatched] = {}
+        self._lost: list[str] = []
         self._settled: deque[StepResult] = deque()
         self._handed_back = 0
+        self._stopped = False
 
     @property
     def in_flight(self) -> list[str]:
-        """Issues whose agents are running right now, oldest dispatch first."""
-        return list(self._flying)
+        """Issues this body started and has not handed back, oldest dispatch first.
+
+        A turn given up on by :meth:`_abandon` stays here rather than
+        disappearing. milhouse cannot reap it, but its agent may well still be
+        running, and the run's report is the only place anybody finds that out
+        (:class:`milhouse.run.RunResult`).
+        """
+        return [*self._flying, *self._lost]
 
     def __call__(self, session: Session, policy: Settle) -> StepResult | None:
         """Dispatch, poll, reap, and hand back one turn.
@@ -127,6 +140,42 @@ class Parallel:
         self._handed_back += 1
         return self._settled.popleft()
 
+    def drain(self, session: Session, policy: Settle) -> list[StepResult]:
+        """Start nothing more, and finish every turn already started.
+
+        What :func:`milhouse.run.run` calls once the halt table has fired. A
+        halt means stop starting work, not abandon the agents that are already
+        working: their issues are claimed, their branches are unmerged, and
+        ``milhouse reap`` would collect them later without landing any of them.
+
+        So this keeps polling and reaping, which merges each success exactly as
+        an unhalted run would, and hands back everything that settles. Nothing
+        new is dispatched, here or in any later call: a drained body is done.
+
+        It terminates because :func:`milhouse.step.reap` collects a turn past
+        ``[agent] turn_timeout_ms`` rather than waiting on it, and because
+        :meth:`_abandon` gives up on one whose lane herdr has lost. That second
+        case is what :attr:`in_flight` still names afterwards.
+
+        Args:
+            session: An open session, whose tracker is already fenced to the
+                target.
+            policy: What settles each issue afterwards, passed through unread.
+
+        Returns:
+            Every turn that settled, oldest dispatch first, including any that
+            had settled before the halt and were not handed back yet.
+        """
+        self._stopped = True
+        while self._flying:
+            self._collect(session, policy)
+            if self._flying:
+                self._sleep(self.poll_ms / 1000)
+        collected = list(self._settled)
+        self._settled.clear()
+        self._handed_back += len(collected)
+        return collected
+
     # -- the three things one call does --------------------------------------
 
     def _dispatch(self, session: Session) -> None:
@@ -134,8 +183,13 @@ class Parallel:
 
         Dispatching happens even when there is already a result waiting to be
         handed back, so a lane that has just been emptied is refilled in the
-        same call rather than after the backlog has drained.
+        same call rather than after the backlog has drained. It stops entirely
+        once :meth:`drain` has been called, which is what makes "a halt stops
+        starting work" a property of this object rather than a convention its
+        caller observes.
         """
+        if self._stopped:
+            return
         room = min(self.count - len(self._flying), self._allowance())
         if room <= 0:
             return
@@ -149,8 +203,13 @@ class Parallel:
         it is dispatched rather than when it is reported. Counting only what
         ``run()`` has seen would let a ``count`` of four overshoot the ceiling by
         three.
+
+        A turn given up on is spent too. Its agent was started and its issue was
+        claimed, so freeing its slot in the *budget* as well as in the width
+        would let a run of lost lanes dispatch past its ceiling one turn at a
+        time.
         """
-        spent = self._handed_back + len(self._settled) + len(self._flying)
+        spent = self._handed_back + len(self._settled) + len(self._flying) + len(self._lost)
         return self.max_iterations - spent
 
     def _collect(self, session: Session, policy: Settle) -> None:
@@ -177,3 +236,4 @@ class Parallel:
                 continue
             session.report(f"{issue_id} is overdue and cannot be reaped; giving up on it")
             del self._flying[issue_id]
+            self._lost.append(issue_id)

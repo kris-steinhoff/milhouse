@@ -13,9 +13,18 @@ of the stopping is :func:`should_halt`, which is pure, plus the empty queue,
 which :func:`milhouse.step.nothing_ready` already explains.
 
 **The loop body is an argument.** Serially it is one :func:`milhouse.step.step`,
-which claims an issue, waits for its agent, and settles it. A later ``--count N``
-replaces it with dispatch-then-reap, and nothing else in this module changes,
-because the loop's question is how many rather than how.
+which claims an issue, waits for its agent, and settles it. The concurrent one
+is :class:`milhouse.parallel.Parallel`, which dispatches several and reaps them,
+and nothing else in this module changed to accommodate it, because the loop's
+question is how many rather than how.
+
+**A halt stops starting work, not work already started.** A concurrent body has
+turns of its own in flight when the table fires, and abandoning them would leave
+claimed issues with live agents and branches nobody merges — ``milhouse reap``
+collects a turn but does not land it. So a body that has turns to finish is
+asked to :meth:`~Draining.drain` them before the run reports, and whatever they
+produce joins the report. The first halt is still why the run stopped: nothing
+that settles during the drain is put back through :func:`should_halt`.
 """
 
 from __future__ import annotations
@@ -23,20 +32,41 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Protocol, runtime_checkable
 
 from .models import Issue, Iteration, now
 from .policy import Policy, decide
 from .session import Session
-from .step import StepResult, nothing_ready, step
+from .step import StepResult, merge_line, nothing_ready, step
 
-__all__ = ["Body", "Halt", "RunResult", "run", "should_halt"]
+__all__ = ["Body", "Draining", "Halt", "RunResult", "run", "should_halt"]
 
-StopReason = Literal["finished", "deadlocked", "blocked", "error", "dirty", "ceiling"]
+StopReason = Literal["finished", "deadlocked", "blocked", "error", "dirty", "conflict", "ceiling"]
 """Why a run stopped. Only ``finished`` means the target is done."""
 
 Body = Callable[[Session, Policy], StepResult | None]
 """One unit of work, or ``None`` when the queue had nothing to offer."""
+
+
+@runtime_checkable
+class Draining(Protocol):
+    """A loop body with turns of its own that a halt must not abandon.
+
+    :func:`milhouse.step.step` is not one: it waits for its agent, so when it
+    returns there is nothing left running and a halt can report immediately.
+    :class:`milhouse.parallel.Parallel` is, because it keeps up to N turns in
+    flight and only one of them is the turn that halted the run.
+
+    Structural rather than declared, so the loop keeps taking any callable as a
+    body and gains a second question it may ask one.
+    """
+
+    @property
+    def in_flight(self) -> list[str]:
+        """Issues this body started and has not handed back."""
+
+    def drain(self, session: Session, policy: Policy) -> list[StepResult]:
+        """Start nothing more, and finish everything already started."""
 
 
 @dataclass(frozen=True)
@@ -66,6 +96,11 @@ class RunResult:
         iterations: Every turn it took, in order.
         deferred: Issues it gave up on, as ``(issue_id, reason)``. These are
             still unfinished, so a run with any of them did not finish.
+        still_running: Issues whose turns the run started and never collected,
+            even after draining. Empty for a serial run, which cannot start a
+            turn it does not wait for. A concurrent one that stopped with two
+            agents still working has to say so, rather than printing numbers
+            that look complete.
         started_at: When the run began.
         ended_at: When it stopped.
     """
@@ -74,6 +109,7 @@ class RunResult:
     halt: Halt
     iterations: list[Iteration] = field(default_factory=list)
     deferred: list[tuple[str, str]] = field(default_factory=list)
+    still_running: list[str] = field(default_factory=list)
     started_at: datetime = field(default_factory=now)
     ended_at: datetime = field(default_factory=now)
 
@@ -91,6 +127,28 @@ class RunResult:
         """The turns that finished an issue."""
         return [item for item in self.iterations if item.outcome == "success"]
 
+    def merged(self) -> list[Iteration]:
+        """The turns whose branch is now on the integration branch, in merge order.
+
+        Empty for a serial run, which works in the integration lane itself and
+        so has nothing to land in it
+        (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+        """
+        return [item for item in self.iterations if item.merge is not None and item.merge.landed]
+
+    def unmerged(self) -> list[Iteration]:
+        """The turns that closed an issue and could not be landed.
+
+        Usually one, since the first of them halts the run, but a drain can
+        produce more: the turns already in flight are finished and merged, and
+        their merges can fail too. Each is a closed issue whose work is on a
+        branch only a person can land, which is the one mess a serial run could
+        not leave.
+        """
+        return [
+            item for item in self.iterations if item.merge is not None and not item.merge.landed
+        ]
+
 
 def should_halt(iteration: Iteration, *, used: int, max_iterations: int) -> Halt | None:
     """Whether the run stops now that ``iteration`` is over.
@@ -106,6 +164,7 @@ def should_halt(iteration: Iteration, *, used: int, max_iterations: int) -> Halt
     outcome ``error``                   ``error``, milhouse failed rather than the
                                         agent
     ``success`` that left a dirty tree  ``dirty``, the next turn would inherit it
+    a merge that did not land           ``conflict``, only a person can land it
     ``used`` reached ``max_iterations`` ``ceiling``
     anything else                       none, keep going
     ==================================  ===========================================
@@ -116,6 +175,20 @@ def should_halt(iteration: Iteration, *, used: int, max_iterations: int) -> Halt
     *successful* one is different: the issue is closed, so nothing will revisit
     those changes, and they may be the work the close was claiming to have done
     (:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`).
+
+    A merge that did not land is a **halt rather than a deferral**, because the
+    work is done, the issue is closed, and nothing an agent could be asked next
+    would change that. Only a person can land the branch
+    (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+
+    That row is one row and not two. ``MergeRecord.landed`` is false both for a
+    conflict and for a merge git refused outright, and those are different
+    causes with the same consequence: a closed issue, a live worker branch, an
+    integration branch without the work, and a recovery that is entirely by
+    hand. Splitting them would double the table without doubling the response,
+    so the reason is one word and the detail is the one that says which happened
+    — which is also why the detail is :func:`milhouse.step.merge_line`, the same
+    sentence the run printed when the merge failed.
 
     Args:
         iteration: The turn that just ended, already classified.
@@ -138,6 +211,12 @@ def should_halt(iteration: Iteration, *, used: int, max_iterations: int) -> Halt
             "dirty",
             f"{iteration.issue_id} was closed but left uncommitted changes, which the "
             "next iteration in this lane would inherit",
+        )
+    if iteration.merge is not None and not iteration.merge.landed:
+        return Halt(
+            "conflict",
+            f"{iteration.issue_id} is closed but its work is not on "
+            f"{iteration.merge.target}: {merge_line(iteration.merge)}",
         )
     if used >= max_iterations:
         return Halt("ceiling", f"the run hit its ceiling of {max_iterations} iteration(s)")
@@ -174,13 +253,21 @@ def run(
     deferred: list[tuple[str, str]] = []
     used = 0
 
+    def take(result: StepResult) -> None:
+        iterations.append(result.iteration)
+        if result.decision.issue == "defer":
+            deferred.append((result.iteration.issue_id, result.decision.reason))
+
     def finish(halt: Halt) -> RunResult:
         session.report(f"stopping: {halt.detail}")
+        for result in _drain(body, session, policy):
+            take(result)
         return RunResult(
             target=target,
             halt=halt,
             iterations=iterations,
             deferred=deferred,
+            still_running=_still_running(body),
             started_at=started_at,
             ended_at=now(),
         )
@@ -190,12 +277,53 @@ def run(
         if result is None:
             return finish(_empty_queue(session, deferred))
         used += 1
-        iterations.append(result.iteration)
-        if result.decision.issue == "defer":
-            deferred.append((result.iteration.issue_id, result.decision.reason))
+        take(result)
         halt = should_halt(result.iteration, used=used, max_iterations=max_iterations)
         if halt is not None:
             return finish(halt)
+
+
+def _drain(body: Body, session: Session, policy: Policy) -> list[StepResult]:
+    """Finish the turns the body already started, and start no more.
+
+    A serial body has none, so this is nothing at all for ``milhouse run``
+    without ``--count``. A concurrent one has up to N-1 turns whose agents are
+    still working when the halt fires, and dropping them would leave claimed
+    issues with live agents and successful branches nobody merges — a later
+    ``milhouse reap`` collects a turn but does not land it.
+
+    The drain is bounded by the turn timeout, which
+    :func:`milhouse.step.reap` already enforces: a turn past it is collected and
+    classified ``timeout`` rather than waited on forever.
+
+    Whatever settles here is reported, and none of it is put back through
+    :func:`should_halt`. A second reason arriving during the drain does not
+    change the outcome, because the run is already stopping and the first reason
+    is why.
+
+    A body with nothing in flight is still asked, because turns that settled
+    together are handed back one per call: when the first of them halts the run,
+    the rest have already been reaped and merged, and losing them would report a
+    merge the branch really has as a merge nobody made.
+    """
+    if not isinstance(body, Draining):
+        return []
+    if body.in_flight:
+        session.report(
+            f"draining {len(body.in_flight)} turn(s) already in flight; "
+            "they are not abandoned, and a successful one is still merged"
+        )
+    return body.drain(session, policy)
+
+
+def _still_running(body: Body) -> list[str]:
+    """Issues whose turns the run started and could not collect, after draining.
+
+    Normally empty: the drain waits for everything it started. What survives it
+    is a turn whose lane herdr no longer has, which no amount of polling will
+    settle and whose agent may well still be running somewhere.
+    """
+    return list(body.in_flight) if isinstance(body, Draining) else []
 
 
 def _empty_queue(session: Session, deferred: list[tuple[str, str]]) -> Halt:

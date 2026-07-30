@@ -14,7 +14,8 @@ import pytest
 from typer.testing import CliRunner, Result
 
 from milhouse import cli, proc
-from milhouse.models import Iteration
+from milhouse.models import Issue, Iteration, MergeRecord
+from milhouse.run import Halt, RunResult
 
 from .doubles import FakeAudit
 from .fakes import FakeProc, Reply
@@ -430,6 +431,92 @@ def test_run_exits_nine_when_work_is_left(worked_repo: Path, fake_proc: FakeProc
 
     assert result.exit_code == 9
     assert "unfinished" in result.output
+
+
+def merged_turn(number: int, issue_id: str, merge: MergeRecord) -> Iteration:
+    """One successful turn of a concurrent run, with what became of its branch."""
+    return Iteration(
+        number=number,
+        issue_id=issue_id,
+        outcome="success",
+        detail="closed and verified",
+        merge=merge,
+    )
+
+
+def test_the_run_report_says_what_landed_on_the_integration_branch(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Closed and on the branch you are about to review stop being the same thing."""
+    result = RunResult(
+        target=Issue(id="bd-e", title="Add a hello command", status="open"),
+        halt=Halt("conflict", "bd-e.2 is closed but its work is not on milhouse/bd-e"),
+        iterations=[
+            merged_turn(
+                1,
+                "bd-e.1",
+                MergeRecord(source="milhouse/bd-e/bd-e.1", target="milhouse/bd-e", sha="a" * 40),
+            ),
+            merged_turn(
+                2,
+                "bd-e.2",
+                MergeRecord(
+                    source="milhouse/bd-e/bd-e.2",
+                    target="milhouse/bd-e",
+                    conflicts=["src/a.py"],
+                ),
+            ),
+        ],
+    )
+
+    cli._print_run(result, lane=None)
+
+    output = capsys.readouterr().out
+    assert "merged (1)" in output
+    assert "bd-e.1  merged milhouse/bd-e/bd-e.1 into milhouse/bd-e" in output
+    assert "not merged (1)" in output
+    assert "src/a.py" in output
+    assert "Land it by hand." in output
+    # Two issues closed, one of them on the branch. The summary says both.
+    assert "bd-e: 2 issue(s) closed, 1 merged —" in output
+
+
+def test_the_run_report_names_the_agents_that_were_still_working(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Numbers that look complete while two agents are still running is the worse report."""
+    result = RunResult(
+        target=Issue(id="bd-e", title="Add a hello command", status="open"),
+        halt=Halt("blocked", "the agent stopped waiting on a human"),
+        iterations=[merged_turn(1, "bd-e.1", MergeRecord(source="w", target="i", sha="b" * 40))],
+        still_running=["bd-e.4", "bd-e.5"],
+    )
+
+    cli._print_run(result, lane=None)
+
+    output = capsys.readouterr().out
+    assert "still running (2)" in output
+    assert "bd-e.4" in output
+    assert "does not merge it" in output
+    assert "1 issue(s) closed, 1 merged, 2 still running —" in output
+
+
+def test_a_serial_run_report_is_unchanged(capsys: pytest.CaptureFixture[str]) -> None:
+    """Nothing merges into the lane a serial run works in, so nothing is said about it."""
+    result = RunResult(
+        target=Issue(id="bd-e", title="Add a hello command", status="open"),
+        halt=Halt("finished", "everything in scope is closed", finished=True),
+        iterations=[
+            Iteration(number=1, issue_id="bd-e.1", outcome="success", detail="closed"),
+        ],
+    )
+
+    cli._print_run(result, lane=None)
+
+    output = capsys.readouterr().out
+    assert "merged" not in output
+    assert "still running" not in output
+    assert "bd-e: 1 issue(s) closed — everything in scope is closed" in output
 
 
 def bd_is_all_closed(argv: tuple[str, ...]) -> Reply:

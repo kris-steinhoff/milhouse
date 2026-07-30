@@ -23,7 +23,7 @@ from milhouse.runner import TurnResult
 from milhouse.session import Session
 from milhouse.step import StepResult
 
-from .doubles import FakeClient, FakeRunner, FakeTracker, build
+from .doubles import FakeClient, FakeRepo, FakeRunner, FakeTracker, build
 
 TARGET = Issue(id="bd-e", title="Add a hello command", status="open", issue_type="epic")
 
@@ -232,6 +232,24 @@ def test_a_turn_that_can_never_be_reaped_is_given_up_on(
     assert any("giving up on it" in line for line in lines)
 
 
+def test_a_turn_given_up_on_is_still_a_turn_the_run_spent(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """Its agent was started and its issue was claimed, so it cost one of the ceiling."""
+    session, runner = build(config, tracker=decomposed, script=["close"] * 5, client=FakeClient())
+    runner.working = True
+    config.agent.turn_timeout_ms = 0
+    running = body(2, max_iterations=2, poll_ms=0)
+
+    with session as opened:
+        # Two dispatched, both lost, and then the budget is gone.
+        assert running(opened, POLICY) is None
+        assert running(opened, POLICY) is None
+
+    assert len(runner.turns) == 2
+    assert running.in_flight == ["bd-e.1", "bd-e.2"]
+
+
 # -- what it is not allowed to know --------------------------------------------
 
 
@@ -286,3 +304,120 @@ def test_a_concurrent_run_stops_at_its_ceiling(config: Config, decomposed: FakeT
     assert result.halt.reason == "ceiling"
     assert len(result.iterations) == 3
     assert len(runner.turns) == 3
+
+
+def test_a_run_wider_than_its_ceiling_starts_only_what_the_ceiling_allows(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """A dispatched turn is spent, so a width of four does not overshoot a ceiling of one."""
+    ids = [issue.id for issue in decomposed.issues]
+    session, runner = build(
+        config, tracker=decomposed, script=["close"] * 5, client=with_lanes(*ids)
+    )
+
+    with session as opened:
+        result = run(
+            opened, TARGET, policy=POLICY, max_iterations=1, body=body(4, max_iterations=1)
+        )
+
+    assert result.halt.reason == "ceiling"
+    assert len(runner.turns) == 1
+    assert len(result.iterations) == 1
+    assert [issue.is_closed for issue in decomposed.issues] == [True, False, False, False, False]
+
+
+def test_a_halt_drains_the_turns_in_flight_rather_than_abandoning_them(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """They have claimed issues and live agents, and ``milhouse reap`` would not merge them."""
+    decomposed.issues = decomposed.issues[:3]
+    ids = [issue.id for issue in decomposed.issues]
+    # Every turn closes its issue and leaves the tree dirty, so the first one
+    # handed back halts the run and the other two are still going.
+    session, runner = build(
+        config,
+        tracker=decomposed,
+        script=["close"] * 3,
+        repo=FakeRepo(dirty=True),
+        client=with_lanes(*ids),
+    )
+
+    with session as opened:
+        result = run(opened, TARGET, policy=POLICY, max_iterations=50, body=body(3))
+
+    assert result.halt.reason == "dirty"
+    # All three were started, so all three are finished and settled.
+    assert [item.issue_id for item in result.iterations] == ids
+    assert len(runner.turns) == 3
+    assert all(issue.is_closed for issue in decomposed.issues)
+    assert result.still_running == []
+
+
+def test_the_drain_waits_for_a_turn_that_has_not_settled_yet(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """The drain is patient, and bounded by the turn timeout ``reap`` already enforces."""
+    decomposed.issues = decomposed.issues[:2]
+    ids = [issue.id for issue in decomposed.issues]
+    repo = FakeRepo(dirty=True)
+    session, runner = build(
+        config, tracker=decomposed, script=["close"] * 2, repo=repo, client=with_lanes(*ids)
+    )
+    finish = FakeRunner.finish_turn
+
+    def one_at_a_time(iteration: int, *, issue_id: str | None = None) -> TurnResult:
+        # Whatever is reaped next has not settled yet, so the second lane is
+        # left in flight and the halt has something real to drain.
+        runner.working = True
+        return finish(runner, iteration, issue_id=issue_id)
+
+    runner.finish_turn = one_at_a_time  # ty: ignore[invalid-assignment]
+    waits: list[float] = []
+
+    def wake(seconds: float) -> None:
+        waits.append(seconds)
+        runner.working = False
+
+    running = Parallel(count=2, max_iterations=50, poll_ms=250, sleep=wake)
+
+    with session as opened:
+        result = run(opened, TARGET, policy=POLICY, max_iterations=50, body=running)
+
+    assert result.halt.reason == "dirty"
+    assert [item.issue_id for item in result.iterations] == ids
+    assert all(issue.is_closed for issue in decomposed.issues)
+    # The second lane was polled during the drain rather than dropped.
+    assert waits == [0.25]
+    assert running.in_flight == []
+
+
+def test_a_drained_body_starts_nothing_more(config: Config, decomposed: FakeTracker) -> None:
+    """A halt means stop starting work, and that is the body's promise rather than the loop's."""
+    ids = [issue.id for issue in decomposed.issues]
+    session, runner = build(
+        config, tracker=decomposed, script=["close"] * 5, client=with_lanes(*ids)
+    )
+    running = body(2)
+
+    with session as opened:
+        assert running(opened, POLICY) is not None
+        started = len(runner.turns)
+        running.drain(opened, POLICY)
+
+        assert running(opened, POLICY) is None
+
+    assert len(runner.turns) == started
+
+
+def test_a_run_names_a_turn_it_could_not_collect(config: Config, decomposed: FakeTracker) -> None:
+    """A lane herdr has lost will not settle, and the report is where somebody finds out."""
+    decomposed.issues = decomposed.issues[:1]
+    session, runner = build(config, tracker=decomposed, script=["close"], client=FakeClient())
+    runner.working = True
+    config.agent.turn_timeout_ms = 0
+
+    with session as opened:
+        result = run(opened, TARGET, policy=POLICY, max_iterations=50, body=body(2, poll_ms=0))
+
+    assert result.still_running == ["bd-e.1"]
+    assert result.iterations == []

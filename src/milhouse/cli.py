@@ -39,7 +39,7 @@ from .errors import MilhouseError
 from .gitrepo import GitRepo, find_repo_root
 from .herdr import HerdrClient
 from .lanes import Lane, Lanes
-from .models import Issue
+from .models import Issue, Iteration
 from .policy import unattended
 from .run import RunResult
 from .run import run as run_loop
@@ -48,7 +48,7 @@ from .scope import Scope
 from .scope import resolve as resolve_target
 from .session import Session, usable_workspace
 from .step import dispatch as run_dispatch
-from .step import nothing_ready
+from .step import merge_line, nothing_ready
 from .step import reap as run_reap
 from .step import step as run_step
 from .tracker import BeadsTracker
@@ -606,6 +606,16 @@ def _print_run(result: RunResult, *, lane: Lane | None) -> None:
     This is read after an hour away rather than glanced at, so it says more than
     the one line a step ends with. The colours are ``status``'s, because a
     second vocabulary for the same outcomes would be one to learn twice.
+
+    A concurrent run has two things to say that a serial one does not, and both
+    are printed only when there is something to print, so a serial run reads
+    exactly as it always did
+    (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+    Which turns landed on the integration branch, since "closed" and "on the
+    branch you are about to review" stop being the same thing. And what was
+    still running when the run stopped, because a report whose numbers look
+    complete while two agents are still working is the one thing worse than a
+    short one.
     """
     typer.echo("")
     if result.iterations:
@@ -615,6 +625,8 @@ def _print_run(result: RunResult, *, lane: Lane | None) -> None:
             mark = typer.style(item.outcome.ljust(8), fg=colour)
             typer.echo(f"  {item.number:>3}  {mark}  {item.issue_id}  {item.detail}")
 
+    _print_merges(result)
+
     if result.deferred:
         typer.echo("")
         typer.secho(f"deferred ({len(result.deferred)})", fg=typer.colors.YELLOW)
@@ -622,15 +634,61 @@ def _print_run(result: RunResult, *, lane: Lane | None) -> None:
             typer.echo(f"  {issue_id}  {reason}")
         typer.echo("  `bd undefer <id>` puts one back in the queue.")
 
+    if result.still_running:
+        typer.echo("")
+        typer.secho(f"still running ({len(result.still_running)})", fg=typer.colors.YELLOW)
+        for issue_id in result.still_running:
+            typer.echo(f"  {issue_id}")
+        typer.echo("  These turns could not be collected. `milhouse reap` finishes one")
+        typer.echo("  once its lane settles, and does not merge it.")
+
     if lane is not None:
         typer.echo("")
         typer.echo(f"branch  {lane.branch}")
         typer.echo(f"lane    {lane.path}")
 
     typer.echo("")
-    closed = len(result.closed())
-    summary = f"{result.target.id}: {closed} issue(s) closed — {result.halt.detail}"
+    parts = [f"{len(result.closed())} issue(s) closed"]
+    merged, unmerged = result.merged(), result.unmerged()
+    if merged or unmerged:
+        parts.append(f"{len(merged)} merged")
+    if result.still_running:
+        parts.append(f"{len(result.still_running)} still running")
+    summary = f"{result.target.id}: {', '.join(parts)} — {result.halt.detail}"
     typer.secho(summary, fg=typer.colors.GREEN if result.finished else typer.colors.YELLOW)
+
+
+def _print_merges(result: RunResult) -> None:
+    """What a concurrent run landed on the integration branch, and what it could not.
+
+    Silent for a serial run, which works in the integration lane itself and so
+    merges nothing into it. A branch that did not land gets its own block rather
+    than a line in this one: it is why the run stopped, the issue is closed
+    anyway, and landing it is somebody's next job.
+    """
+    merged, unmerged = result.merged(), result.unmerged()
+    if merged:
+        typer.echo("")
+        typer.echo(f"merged ({len(merged)})")
+        for line in _merge_lines(merged):
+            typer.echo(line)
+
+    if unmerged:
+        typer.echo("")
+        typer.secho(f"not merged ({len(unmerged)})", fg=typer.colors.RED)
+        for line in _merge_lines(unmerged):
+            typer.echo(line)
+        typer.echo("  The issue is closed and the work is on its branch. Land it by hand.")
+
+
+def _merge_lines(items: list[Iteration]) -> list[str]:
+    """One line per turn saying what became of its branch, issue id first.
+
+    The wording is :func:`milhouse.step.merge_line`, which is what the run
+    printed as each merge happened, so the report and the transcript above it do
+    not describe the same event twice in two vocabularies.
+    """
+    return [f"  {item.issue_id}  {merge_line(item.merge)}" for item in items if item.merge]
 
 
 def _minutes(seconds: float) -> str:
