@@ -407,3 +407,97 @@ def test_a_second_run_of_the_same_target_resumes_its_branch(lanes: Lanes) -> Non
 
     assert resumed.branch == first.branch
     assert resumed.path == first.path
+
+
+# -- a run's worker lanes ------------------------------------------------------
+
+
+def open_worker(
+    lanes: Lanes, key: str, *, target: str = "bd-e", base: str = "milhouse/bd-e"
+) -> Any:
+    return lanes.open_worker(key, target=target, source_workspace=SOURCE, base=base)
+
+
+def test_a_worker_lane_is_namespaced_under_the_target(lanes: Lanes, client: FakeClient) -> None:
+    """The branch is what distinguishes it, and what stops two targets colliding."""
+    integration = open_for(lanes, "bd-e")
+
+    worker = open_worker(lanes, "bd-e.1", base=integration.branch)
+
+    assert worker.branch == "milhouse/bd-e/bd-e.1"
+    assert client.bases["milhouse/bd-e/bd-e.1"] == "milhouse/bd-e"
+    assert worker.path != integration.path
+
+
+def test_the_branch_prefix_applies_to_a_worker_lane_too(client: FakeClient, config: Config) -> None:
+    config.lane.branch_prefix = "lane/"
+
+    worker = open_worker(Lanes(client, config), "bd-e.1")  # ty: ignore[invalid-argument-type]
+
+    assert worker.branch == "lane/bd-e/bd-e.1"
+
+
+def test_a_worker_lane_is_labelled_with_its_issue(lanes: Lanes, client: FakeClient) -> None:
+    """Which is what lets `Lanes.locate` answer for it, and reconciliation read it."""
+    worker = open_worker(lanes, "bd-e.1")
+
+    assert worker.key == "bd-e.1"
+    assert client.workspaces[worker.workspace_id] == "bd-e.1"
+    located = lanes.locate("bd-e.1")
+    assert located is not None
+    assert located[0].path == worker.path
+
+
+def test_a_second_attempt_at_an_issue_returns_to_its_worker_lane(lanes: Lanes) -> None:
+    """So a failed turn's commits are where the next attempt finds them."""
+    first = open_worker(lanes, "bd-e.1")
+
+    again = open_worker(lanes, "bd-e.1")
+
+    assert (again.path, again.branch, again.workspace_id) == (
+        first.path,
+        first.branch,
+        first.workspace_id,
+    )
+
+
+def test_two_runs_of_different_targets_do_not_collide_on_a_branch(lanes: Lanes) -> None:
+    """The reason the branch is namespaced rather than keyed by the issue alone."""
+    mine = open_worker(lanes, "bd-e.1", target="bd-e")
+
+    theirs = open_worker(lanes, "bd-e.1", target="bd-f", base="milhouse/bd-f")
+
+    assert theirs.branch == "milhouse/bd-f/bd-e.1"
+    assert theirs.branch != mine.branch
+    assert theirs.path != mine.path
+
+
+def test_a_worker_lane_is_not_the_dispatch_lane_for_the_same_issue(lanes: Lanes) -> None:
+    """Same label, different branch, which is what `milhouse status` reads."""
+    dispatched = open_lane(lanes, issue("bd-e.1"))
+
+    worker = open_worker(lanes, "bd-e.1")
+
+    assert dispatched.branch == "milhouse/bd-e.1"
+    assert worker.branch == "milhouse/bd-e/bd-e.1"
+    assert worker.path != dispatched.path
+
+
+def test_a_worker_lane_whose_workspace_was_closed_is_reopened(
+    lanes: Lanes, client: FakeClient
+) -> None:
+    """A worker lane is looked up by branch, so a dormant checkout is still it."""
+    first = open_worker(lanes, "bd-e.1")
+    del client.workspaces[first.workspace_id]
+    client.checkouts = [
+        Worktree(path=item.path, branch=item.branch, workspace_id="")
+        if item.path == first.path
+        else item
+        for item in client.checkouts
+    ]
+
+    again = open_worker(lanes, "bd-e.1")
+
+    assert again.path == first.path
+    assert again.branch == first.branch
+    assert client.workspaces[again.workspace_id] == "bd-e.1"

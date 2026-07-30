@@ -15,6 +15,14 @@ ways of driving milhouse
 - ``milhouse run`` reviews a target, so :meth:`Lanes.open_for` gives the whole
   run one lane labelled with the target id and no rules at all.
 
+A run working several issues at once needs both keys at two levels
+(:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+The lane :meth:`Lanes.open_for` gives it is then its **integration** lane, the
+one branch a person reviews, and :meth:`Lanes.open_worker` gives each issue in
+flight a **worker** lane branched from the integration branch, on
+``{branch_prefix}{target}/{issue}``. At ``--count 1`` there are no worker lanes
+at all, so a serial run is exactly what ADR 0023 describes.
+
 **herdr is the registry.** ``herdr worktree list`` answers what lanes exist and
 on what branches, and ``herdr workspace list`` answers which issue each one is
 for, because the id is the workspace label. milhouse stores no lane state, the
@@ -99,8 +107,11 @@ class Lane:
 
     Attributes:
         key: What the lane is labelled with, which is the unit somebody will
-            review: the issue for ``dispatch``, the target for ``run``
-            (:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`).
+            review: the issue for ``dispatch``, the target for a run's
+            integration lane
+            (:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`),
+            and the issue again for a worker lane inside a run
+            (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
         path: The checkout the agent works in.
         branch: The branch it commits to.
         workspace_id: The herdr workspace holding the lane.
@@ -307,6 +318,92 @@ class Lanes:
             return existing
         return self._new_lane(key, source_workspace=source_workspace, base=base, focus=focus)
 
+    def worker_branch(self, target: str, key: str) -> str:
+        """The branch a worker lane for ``key`` inside a run of ``target`` commits to.
+
+        ``{branch_prefix}{target}/{key}``, and the namespacing is the whole point
+        (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+        It is what stops two runs of different targets that both reach the same
+        issue colliding on a branch name, and it is what lets ``milhouse status``
+        tell a run's worker lane from a ``dispatch`` lane by looking at it: the
+        two carry the same label, and only the branch says which is which.
+
+        Args:
+            target: What the run is working towards, which keys its integration
+                lane.
+            key: The issue the worker lane is for.
+
+        Returns:
+            The branch name.
+        """
+        return f"{self.config.lane.branch_prefix}{target}/{key}"
+
+    def open_worker(
+        self,
+        key: str,
+        *,
+        target: str,
+        source_workspace: str,
+        base: str,
+        focus: bool = False,
+    ) -> Lane:
+        """The worker lane ``key`` is worked in inside a run of ``target``.
+
+        What a run above ``--count 1`` opens per issue in flight. None of the
+        dependency rules in :meth:`open` apply, for the reason ADR 0023 gave and
+        :meth:`open_for` repeats: ``base`` is the integration branch by
+        construction, so a join has nothing to choose between
+        (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+
+        The lane is **labelled with the issue id**, not with the namespaced
+        branch, so :meth:`locate` finds it and a crashed run can tell an
+        in-flight turn from an orphaned claim. That is also why an existing
+        worker lane is looked up by its branch rather than by its label: a
+        ``dispatch`` lane for the same issue carries the same label, and the
+        branch is the only thing that distinguishes them.
+
+        Sharing the label with a ``dispatch`` lane means sharing
+        :attr:`Lane.agent_name` too. Nothing needs to detect that, because two
+        turns on one issue cannot be in flight at once: the issue's lane lock is
+        keyed the same way in both, and ``bd ready --claim`` hands the issue to
+        one process.
+
+        Args:
+            key: The claimed issue's id.
+            target: What the run is working towards.
+            source_workspace: The workspace of the primary checkout.
+            base: Ref a new lane branches from, which is the integration branch
+                as it stands at this moment.
+            focus: Bring a newly created lane to the front.
+
+        Returns:
+            The lane, with a pane ready for an agent.
+        """
+        branch = self.worker_branch(target, key)
+        existing = self._on_branch(branch, key=key)
+        if existing is not None:
+            return existing
+        return self._new_lane(
+            key, source_workspace=source_workspace, base=base, focus=focus, branch=branch
+        )
+
+    def _on_branch(self, branch: str, *, key: str) -> Lane | None:
+        """The open lane committing to ``branch``, with a pane ready for an agent.
+
+        A lane whose workspace has been closed is not one: re-opening that
+        checkout is :meth:`dormant`'s job, and :meth:`_new_lane` already does it.
+
+        ``key`` is what the returned lane is keyed by rather than the label herdr
+        happens to be holding, because it is what :attr:`Lane.agent_name` is
+        derived from and a turn addresses its agent by name in a later process.
+        """
+        for worktree in self.client.worktrees(self.config.repo_root):
+            if worktree.branch != branch or not worktree.workspace_id:
+                continue
+            lane = self._lane(key, worktree)
+            return replace(lane, pane_id=self._pane_in(lane, tab_id=None))
+        return None
+
     def _stack_on(self, predecessor: Lane, issue: Issue, *, focus: bool) -> Lane:
         """Give ``issue`` a tab in the lane its blocker ran in.
 
@@ -330,7 +427,15 @@ class Lanes:
             pane_id=pane_id,
         )
 
-    def _new_lane(self, key: str, *, source_workspace: str, base: str, focus: bool) -> Lane:
+    def _new_lane(
+        self,
+        key: str,
+        *,
+        source_workspace: str,
+        base: str,
+        focus: bool,
+        branch: str | None = None,
+    ) -> Lane:
         """Open a worktree labelled ``key``, re-using the checkout if one survived.
 
         Both identifiers this derives from ``key`` take it as it is, unlike
@@ -344,8 +449,12 @@ class Lanes:
           leading a component, a doubled one, or a ``.lock`` ending. The rule that
           bites first is not git's but herdr's checkout path, which flattens the
           dot (see :attr:`~milhouse.herdr.Worktree.path`).
+
+        A caller may name the branch itself, which is how a worker lane gets one
+        namespaced under the run's target while keeping the issue id as its label
+        (:meth:`open_worker`).
         """
-        branch = f"{self.config.lane.branch_prefix}{key}"
+        branch = branch or f"{self.config.lane.branch_prefix}{key}"
         sleeping = self.dormant(branch)
         if sleeping is not None:
             worktree = self.client.open_worktree(

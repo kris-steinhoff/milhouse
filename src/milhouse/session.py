@@ -6,7 +6,10 @@ manager, so opening and tearing all of that down is one ``with``.
 
 The lock is **per lane**, not per repository. Several turns running at once is
 the point of lanes, so the thing being protected is one lane, not the run
-(:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
+(:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`). A run
+therefore holds one lock per lane it has open: its integration lane's, and one
+per worker lane if it has any
+(:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
 
 It **stores nothing**. Every fact it needs comes back from whatever owns it —
 ``bd`` for the issues, herdr for the workspace, git for the branch, and the
@@ -103,6 +106,7 @@ class Session:
         report: Reporter = lambda line: None,
         attach: bool = False,
         lane_key: str | None = None,
+        worker_lanes: bool = False,
         runner: Runner | None = None,
     ) -> None:
         """Assemble a session from its collaborators.
@@ -118,12 +122,21 @@ class Session:
             attach: Focus the workspace when creating it, so a human watches it
                 happen. Off by default, so a background run does not steal the
                 screen.
-            lane_key: Work every issue in the one lane labelled this, and hold
-                one lock on it. What ``milhouse run`` passes, so a whole target
-                lands on one reviewable branch
+            lane_key: The label of this run's **integration** lane, which is its
+                target. What ``milhouse run`` passes, so a whole target lands on
+                one reviewable branch
                 (:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`).
                 ``None`` gives each issue a lane and a lock of its own, which is
                 what ``step``, ``dispatch``, and ``reap`` want.
+            worker_lanes: Give each issue a lane of its own, branched from the
+                integration branch, instead of working them all in the
+                integration lane
+                (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+                Ignored without a ``lane_key``, since a worker lane is defined by
+                the integration branch it comes from. This is a **mode, not a
+                count**: a session never learns how many turns are coming, so a
+                run at ``--count 1`` simply leaves it off and gets ADR 0023
+                exactly.
             runner: Run turns with this instead of starting agents in the pane.
                 Nothing in the package passes one; the tests do.
         """
@@ -135,6 +148,7 @@ class Session:
         self.report = report
         self.attach = attach
         self.lane_key = lane_key
+        self.worker_lanes = worker_lanes
         self.lanes = Lanes(client, config)
         self.branch: str | None = None
         self.workspace: Workspace | None = None
@@ -142,6 +156,7 @@ class Session:
         """Issues this process claimed and has neither settled nor handed off."""
 
         self._locks: dict[str, RunLock] = {}
+        self._integration: Lane | None = None
         self._opened: dict[str, Lane] = {}
         self._runner: Runner | None = runner
         self._active: Runner | None = None
@@ -212,9 +227,17 @@ class Session:
         somebody is where to look, so a checkout is named once however many turns
         happened in it, and one line per lane keeps the shape the same whether
         there is one or several.
+
+        The integration lane comes first, and comes first even in a run that
+        opened worker lanes and never worked an issue in it, because it is the
+        branch a person reviews
+        (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
         """
+        every = list(self._opened.values())
+        if self._integration is not None:
+            every.insert(0, self._integration)
         distinct: dict[tuple[str, Path], Lane] = {}
-        for lane in self._opened.values():
+        for lane in every:
             distinct.setdefault((lane.workspace_id, lane.path), lane)
         return list(distinct.values())
 
@@ -230,15 +253,22 @@ class Session:
         --claim`` is atomic — so all this stops is two processes working the
         same lane, which is the case that would drive one pane from two places.
 
-        A run works every issue in one lane, so it takes one lock, on the
+        A serial run works every issue in one lane, so it takes one lock, on the
         target. Taking a lock per issue would let a second run of the same
         target start the moment the first one moved on
         (:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`).
 
+        A run with worker lanes is the other way round again: the lane an issue
+        is worked in is its own, so the lock is the issue's, and the target's
+        lock is held separately by :meth:`integration_lane`
+        (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+        Keying it by the issue exactly as ``dispatch`` does is deliberate: the
+        two are the same lane key in different lanes, so nothing else can be
+        working that issue while this run is.
+
         Args:
             issue_id: The issue whose lane is being worked. Ignored when this
-                session has a :attr:`lane_key`, which names the only lane there
-                is.
+                session works every issue in one lane, which names it instead.
 
         Returns:
             The held lock.
@@ -246,7 +276,16 @@ class Session:
         Raises:
             RunLockedError: A live process already holds this lane.
         """
-        key = self.lane_key or issue_id
+        return self._lock(self._lane_key_for(issue_id))
+
+    def _lane_key_for(self, issue_id: str) -> str:
+        """Which lane ``issue_id``'s turn happens in, by label."""
+        if self.lane_key is not None and not self.worker_lanes:
+            return self.lane_key
+        return issue_id
+
+    def _lock(self, key: str) -> RunLock:
+        """Take the lock on the lane labelled ``key``, and hold it for this session."""
         held = self._locks.get(key)
         if held is not None:
             return held
@@ -308,6 +347,13 @@ class Session:
 
         Taking each lane's lock first is what makes it safe: the claim being
         re-opened cannot belong to a dispatcher that is still setting it up.
+
+        A run with worker lanes reconciles better than a serial one, because a
+        worker lane is labelled with the issue rather than with the target, so
+        the lane registry can answer the second question about it at all
+        (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+        A serial run's claim is always re-opened, which is what ADR 0023 wanted
+        and still gets.
         """
         for issue_id in self.audit.unsettled_claims():
             if self.lanes.locate(issue_id) is not None:
@@ -380,6 +426,47 @@ class Session:
             self.report(refusal)
         return usable
 
+    def integration_lane(self) -> Lane | None:
+        """This run's integration lane, opened and locked the first time it is asked for.
+
+        The one branch a person reviews, labelled with the target
+        (:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`). Every
+        worker lane branches from it, and a merge back into it is what lands one
+        (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+
+        Opening it is deferred rather than done in :meth:`__enter__`, so a run
+        that finds nothing ready creates no worktree and takes no lock, which is
+        what ``step``, ``dispatch``, and ``reap`` already do.
+
+        Returns:
+            The lane, or ``None`` for a session with no :attr:`lane_key` — which
+            is ``step``, ``dispatch``, and ``reap``, and is how a caller asks
+            whether there is an integration branch at all.
+
+        Raises:
+            MilhouseError: The workspace has not been opened yet.
+        """
+        if self.lane_key is None:
+            return None
+        if self._integration is None:
+            if self.workspace is None:
+                raise MilhouseError("no herdr workspace has been opened yet")
+            self._lock(self.lane_key)
+            self._integration = self.lanes.open_for(
+                self.lane_key,
+                source_workspace=self.workspace.workspace_id,
+                base=self.branch or "HEAD",
+                focus=self.attach,
+            )
+            if self.worker_lanes:
+                # Without worker lanes this is the lane every turn happens in,
+                # and `runner_for` names it there instead of naming it twice.
+                lane = self._integration
+                self.report(
+                    f"  integration lane {lane.workspace_id} on {lane.branch} ({lane.path})"
+                )
+        return self._integration
+
     def runner_for(self, issue: Issue) -> Runner:
         """Open ``issue``'s lane and return a runner bound to it.
 
@@ -387,7 +474,10 @@ class Session:
         two turns can be in flight without either seeing the other's pane or
         commits. A session with a :attr:`lane_key` works them all in that one
         lane instead
-        (:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`).
+        (:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`), unless
+        it also has :attr:`worker_lanes`, in which case each issue gets a lane
+        branched from the integration branch as it stands right now
+        (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
 
         Args:
             issue: The claimed issue.
@@ -405,14 +495,21 @@ class Session:
         if self.workspace is None:
             raise MilhouseError("no herdr workspace has been opened yet")
         source = self.workspace.workspace_id
-        base = self.branch or "HEAD"
-        lane = (
-            self.lanes.open_for(
-                self.lane_key, source_workspace=source, base=base, focus=self.attach
+        integration = self.integration_lane()
+        if integration is None:
+            lane = self.lanes.open(
+                issue, source_workspace=source, base=self.branch or "HEAD", focus=self.attach
             )
-            if self.lane_key
-            else self.lanes.open(issue, source_workspace=source, base=base, focus=self.attach)
-        )
+        elif not self.worker_lanes:
+            lane = integration
+        else:
+            lane = self.lanes.open_worker(
+                issue.id,
+                target=integration.key,
+                source_workspace=source,
+                base=integration.branch,
+                focus=self.attach,
+            )
         self._opened[issue.id] = lane
         self.report(f"  lane {lane.workspace_id} on {lane.branch} ({lane.path})")
         self._active = AgentRunner(
@@ -461,7 +558,7 @@ class Session:
         if opened is not None:
             return opened
         return Lane(
-            key=self.lane_key or issue.id,
+            key=self._lane_key_for(issue.id),
             path=runner.workdir,
             branch=self.repo.at(runner.workdir).current_branch() or "",
             workspace_id="",

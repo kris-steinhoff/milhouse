@@ -14,8 +14,10 @@ import pytest
 
 from milhouse.config import Config
 from milhouse.errors import MilhouseError, RunLockedError, UserAbortError
+from milhouse.herdr import Worktree
 from milhouse.models import Issue
 from milhouse.policy import Decision
+from milhouse.session import Session
 
 from .doubles import FakeClient, FakeRepo, FakeTracker, build
 
@@ -159,6 +161,170 @@ def test_without_a_lane_key_each_issue_still_gets_its_own_lock(
 
     with session as opened:
         assert opened.lock_for("bd-e.1") is not opened.lock_for("bd-e.2")
+
+
+# -- a run's integration lane and its worker lanes -----------------------------
+
+
+def concurrent(config: Config, tracker: FakeTracker, client: FakeClient) -> Session:
+    """A run of ``bd-e`` that gives every issue in flight a worker lane.
+
+    Which is what ``--count N`` above one will assemble. The runner is dropped so
+    real lanes get opened, since the lanes are what these are about.
+    """
+    session, _ = build(config, tracker=tracker, script=[], client=client)
+    session._runner = None
+    session.lane_key = "bd-e"
+    session.worker_lanes = True
+    return session
+
+
+def test_a_session_with_no_target_has_no_integration_lane(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """`step`, `dispatch` and `reap` have no branch to land anything in."""
+    session, _ = build(config, tracker=decomposed, script=[], client=FakeClient())
+
+    with session as opened:
+        assert opened.integration_lane() is None
+
+
+def test_a_worker_lane_branches_off_the_integration_branch(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """One reviewable branch, and a lane per issue coming off it (ADR 0024)."""
+    client = FakeClient()
+    session = concurrent(config, decomposed, client)
+
+    with session as opened:
+        first = opened.runner_for(decomposed.issues[0])
+        second = opened.runner_for(decomposed.issues[1])
+        integration = opened.integration_lane()
+
+    assert integration is not None
+    assert integration.branch == "milhouse/bd-e"
+    assert first.workdir != second.workdir
+    assert first.workdir != integration.path
+    assert client.bases["milhouse/bd-e/bd-e.1"] == "milhouse/bd-e"
+    assert client.bases["milhouse/bd-e/bd-e.2"] == "milhouse/bd-e"
+
+
+def test_a_second_attempt_in_a_run_returns_to_the_issue_s_worker_lane(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """A failed turn's commits stay there, which is where the retry finds them."""
+    client = FakeClient()
+    session = concurrent(config, decomposed, client)
+
+    with session as opened:
+        first = opened.runner_for(decomposed.issues[0])
+        again = opened.runner_for(decomposed.issues[0])
+
+    assert again.workdir == first.workdir
+    assert again.agent_name == first.agent_name
+    assert list(client.bases) == ["milhouse/bd-e", "milhouse/bd-e/bd-e.1"]
+
+
+def test_a_run_with_worker_lanes_holds_one_lock_per_lane(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """One on the target, one per worker lane, and all of them dropped at the end."""
+    session = concurrent(config, decomposed, FakeClient())
+    locks = [config.run_dir() / key / "lock.json" for key in ("bd-e", "bd-e.1", "bd-e.2")]
+
+    with session as opened:
+        opened.runner_for(decomposed.issues[0])
+        opened.runner_for(decomposed.issues[1])
+        assert opened.lock_for("bd-e.1") is not opened.lock_for("bd-e.2")
+        assert all(lock.exists() for lock in locks)
+
+    assert not any(lock.exists() for lock in locks)
+
+
+def test_a_run_without_worker_lanes_opens_none(config: Config, decomposed: FakeTracker) -> None:
+    """At `--count 1` there is nothing to merge, so it is ADR 0023 exactly."""
+    client = FakeClient()
+    session, _ = build(config, tracker=decomposed, script=[], client=client)
+    session._runner = None
+    session.lane_key = "bd-e"
+
+    with session as opened:
+        first = opened.runner_for(decomposed.issues[0])
+        second = opened.runner_for(decomposed.issues[1])
+        integration = opened.integration_lane()
+
+    assert integration is not None
+    assert first.workdir == second.workdir == integration.path
+    assert list(client.bases) == ["milhouse/bd-e"]
+
+
+def test_a_run_with_worker_lanes_names_every_lane_it_left_open(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """The integration branch first, because that is the one a person reviews."""
+    lines: list[str] = []
+    session = concurrent(config, decomposed, FakeClient())
+    session.report = lines.append
+
+    with session as opened:
+        opened.runner_for(decomposed.issues[0])
+        opened.runner_for(decomposed.issues[1])
+
+    assert [line for line in lines if "left open" in line] == [
+        "lane wL1 is left open (/worktrees/milhouse-bd-e)",
+        "lane wL2 is left open (/worktrees/milhouse-bd-e-bd-e.1)",
+        "lane wL3 is left open (/worktrees/milhouse-bd-e-bd-e.2)",
+    ]
+
+
+# -- reconciling a run that had worker lanes -----------------------------------
+
+
+def with_worker_lane(config: Config, issue_id: str) -> FakeClient:
+    """A herdr holding the primary checkout and one live worker lane for ``issue_id``."""
+    return FakeClient(
+        workspaces={"wG": f"milhouse:{config.repo_root.name}", "wL9": issue_id},
+        checkouts=[
+            Worktree(path=config.repo_root, branch="main", workspace_id="wG"),
+            Worktree(
+                path=Path("/worktrees/milhouse-bd-e-bd-e.1"),
+                branch=f"milhouse/bd-e/{issue_id}",
+                workspace_id="wL9",
+            ),
+        ],
+    )
+
+
+def test_a_claim_whose_worker_lane_is_live_is_left_alone(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """A worker lane carries the issue id, so an in-flight turn is visible."""
+    session = concurrent(config, decomposed, with_worker_lane(config, "bd-e.1"))
+    decomposed.issues[0].status = "in_progress"
+    session.audit.claimed("bd-e.1")
+
+    with session:
+        pass
+
+    assert decomposed.released == []
+    assert decomposed.issues[0].status == "in_progress"
+
+
+def test_a_claim_whose_worker_lane_is_gone_is_reopened(
+    config: Config, decomposed: FakeTracker
+) -> None:
+    """Nobody is working it, and `bd ready` would never offer it again."""
+    session = concurrent(config, decomposed, with_worker_lane(config, "bd-e.1"))
+    decomposed.issues[0].status = "in_progress"
+    decomposed.issues[1].status = "in_progress"
+    session.audit.claimed("bd-e.1")
+    session.audit.claimed("bd-e.2")
+
+    with session:
+        pass
+
+    assert decomposed.released == ["bd-e.2"]
+    assert decomposed.issues[0].status == "in_progress"
 
 
 # -- settling an issue ---------------------------------------------------------

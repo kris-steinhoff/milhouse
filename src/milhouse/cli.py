@@ -669,9 +669,16 @@ def _print_lanes(client: HerdrClient, config: Config) -> None:
     (:doc:`ADR 0020 <../../docs/decisions/0020-a-lane-is-a-herdr-worktree>`).
 
     The first column is the label, which is an issue id for a lane ``dispatch``
-    opened and a target id for one ``run`` did
+    opened and a target id for the integration lane a ``run`` did
     (:doc:`ADR 0023 <../../docs/decisions/0023-a-run-has-one-lane>`). Both are
     beads ids, so the column is headed rather than explained per row.
+
+    A run's **worker** lane carries an issue id too, so the branch is what tells
+    the two apart: ``milhouse/bd-e.1`` came from ``dispatch``, and
+    ``milhouse/bd-e/bd-e.1`` is that issue inside a run of ``bd-e``
+    (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
+    That is what namespacing the branch under the target is for, and it is why
+    the branch is in the listing rather than only the label.
     """
     try:
         lanes = Lanes(client, config).registry()

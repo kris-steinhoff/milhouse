@@ -125,6 +125,14 @@ class FakeClient:
     tab_labels: dict[str, dict[str, str]] = field(default_factory=dict)
     """Tabs per workspace, as ``{workspace_id: {tab_id: label}}``."""
 
+    bases: dict[str, str] = field(default_factory=dict)
+    """What each created worktree branched from, as ``{branch: base}``.
+
+    herdr's registry does not report it, so this is the only way a test can see
+    that a worker lane came off the integration branch rather than off the
+    primary checkout.
+    """
+
     focused: bool = False
     avoided: str | None = None
     _next: int = 0
@@ -200,6 +208,7 @@ class FakeClient:
             pane_id=f"{workspace_id}:p1",
         )
         self.workspaces[workspace_id] = label
+        self.bases[branch] = base
         self.checkouts.append(worktree)
         self.tab_labels.setdefault(workspace_id, {})[f"{workspace_id}:t1"] = "1"
         return worktree
