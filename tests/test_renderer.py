@@ -20,13 +20,16 @@ import re
 import pytest
 from rich.console import Console
 
+from milhouse.errors import ConfigError
 from milhouse.renderer import (
     PLAIN_KEEPALIVE_MS,
     Event,
     LiveRenderer,
+    NullRenderer,
     PlainRenderer,
     about,
     arrow,
+    select_renderer,
 )
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
@@ -458,3 +461,98 @@ def test_ctrl_c_still_leaves_a_readable_terminal() -> None:
     output = buffer.getvalue()
     assert "\x1b[?25l" in output  # cursor hidden while live
     assert "\x1b[?25h" in output  # and shown again on the way out
+
+
+# -- the null renderer and the mode decision ----------------------------------
+
+
+def test_the_null_renderer_prints_nothing(capsys: pytest.CaptureFixture[str]) -> None:
+    renderer = NullRenderer()
+
+    renderer.handle(Event("note", "took over the lock on bd-e from a dead run"))
+
+    assert capsys.readouterr().out == ""
+
+
+class TestSelectRenderer:
+    """`select_renderer`'s cases, from milhouse-lyq.5's acceptance criteria."""
+
+    def test_a_tty_with_no_flags_or_env_gets_live(self) -> None:
+        mode = select_renderer(isatty=True, verbose=False, quiet=False, environ={})
+
+        assert mode == "live"
+
+    def test_a_run_piped_to_a_file_gets_plain(self) -> None:
+        mode = select_renderer(isatty=False, verbose=False, quiet=False, environ={})
+
+        assert mode == "plain"
+
+    def test_verbose_never_redraws_even_on_a_tty(self) -> None:
+        mode = select_renderer(isatty=True, verbose=True, quiet=False, environ={})
+
+        assert mode == "plain"
+
+    def test_quiet_wins_on_a_tty(self) -> None:
+        mode = select_renderer(isatty=True, verbose=False, quiet=True, environ={})
+
+        assert mode == "quiet"
+
+    def test_quiet_beats_verbose(self) -> None:
+        mode = select_renderer(isatty=True, verbose=True, quiet=True, environ={})
+
+        assert mode == "quiet"
+
+    def test_no_color_forces_plain_on_a_tty(self) -> None:
+        mode = select_renderer(isatty=True, verbose=False, quiet=False, environ={"NO_COLOR": "1"})
+
+        assert mode == "plain"
+
+    def test_no_color_counts_even_when_empty(self) -> None:
+        mode = select_renderer(isatty=True, verbose=False, quiet=False, environ={"NO_COLOR": ""})
+
+        assert mode == "plain"
+
+    @pytest.mark.parametrize("value", ["live", "plain", "quiet"])
+    def test_milhouse_output_overrides_the_tty_default(self, value: str) -> None:
+        mode = select_renderer(
+            isatty=value == "plain", verbose=False, quiet=False, environ={"MILHOUSE_OUTPUT": value}
+        )
+
+        assert mode == value
+
+    def test_milhouse_output_beats_no_color(self) -> None:
+        mode = select_renderer(
+            isatty=True,
+            verbose=False,
+            quiet=False,
+            environ={"MILHOUSE_OUTPUT": "live", "NO_COLOR": "1"},
+        )
+
+        assert mode == "live"
+
+    def test_an_empty_milhouse_output_is_treated_as_unset(self) -> None:
+        mode = select_renderer(
+            isatty=False, verbose=False, quiet=False, environ={"MILHOUSE_OUTPUT": ""}
+        )
+
+        assert mode == "plain"
+
+    def test_an_unrecognised_milhouse_output_is_a_config_error(self) -> None:
+        with pytest.raises(ConfigError, match="MILHOUSE_OUTPUT"):
+            select_renderer(
+                isatty=True, verbose=False, quiet=False, environ={"MILHOUSE_OUTPUT": "json"}
+            )
+
+    def test_verbose_beats_an_env_asking_for_live(self) -> None:
+        mode = select_renderer(
+            isatty=True, verbose=True, quiet=False, environ={"MILHOUSE_OUTPUT": "live"}
+        )
+
+        assert mode == "plain"
+
+    def test_quiet_beats_an_env_asking_for_live(self) -> None:
+        mode = select_renderer(
+            isatty=True, verbose=False, quiet=True, environ={"MILHOUSE_OUTPUT": "live"}
+        )
+
+        assert mode == "quiet"

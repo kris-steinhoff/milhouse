@@ -5,25 +5,26 @@ Every command and flag, with worked examples. Output shown here was captured fro
 ## Global options
 
 ```
-milhouse [--version] [--verbose] [--progress {auto,live,plain}] <command> [options]
+milhouse [--version] [--verbose] [--quiet] <command> [options]
 ```
 
-| Option                 | Meaning                                                                 |
-| ---------------------- | ----------------------------------------------------------------------- |
-| `--version`            | Print the milhouse version and exit.                                    |
-| `--verbose`, `-v`      | Log every subprocess milhouse runs, to stderr. The debugging tool.      |
-| `--progress`           | How progress is drawn: `auto` (default), `live`, or `plain`. See below. |
-| `--install-completion` | Install shell completion for milhouse, then exit.                       |
-| `--show-completion`    | Print the completion script instead of installing it.                   |
+| Option                 | Meaning                                                                                                                                                 |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--version`            | Print the milhouse version and exit.                                                                                                                    |
+| `--verbose`, `-v`      | Log every subprocess milhouse runs, to stderr. The debugging tool. Picks the plain renderer, since a redrawn region would fight a greppable transcript. |
+| `--quiet`, `-q`        | Print only the end-of-run report; nothing else during the run.                                                                                          |
+| `--install-completion` | Install shell completion for milhouse, then exit.                                                                                                       |
+| `--show-completion`    | Print the completion script instead of installing it.                                                                                                   |
 
-### `--progress`: how a turn's progress is shown
+### Choosing a renderer
 
-`auto`, the default, picks `live` when stdout is a capable terminal and `plain` otherwise, so redirecting output (`milhouse run bd-e > log.txt`) or running in CI gets `plain` without asking for it. `MILHOUSE_PROGRESS` overrides the default when the flag is not given, and `--progress` overrides both.
+`step`, `run`, `dispatch`, and `reap` each pick a renderer for their progress output: `live`, a lane table redrawn in place, when stdout is a terminal; `plain`, a line per event, otherwise — the same output redirection and CI logs have always seen. `--verbose` always picks `plain`; `--quiet` always picks a renderer that prints nothing until the end-of-run report. `MILHOUSE_OUTPUT=live|plain|quiet` and `NO_COLOR` (present at all, any value) override the auto-detected default but not the flags. Every case is one pure function, `milhouse.renderer.select_renderer`, over `(isatty, verbose, quiet, environ)` — see [Configuration](configuration.md#choosing-a-renderer).
 
 - **`live`** redraws a table in place: one row per lane, dispatched, working, or merging, with a settled turn moving above a rule to show its outcome and whether it merged. Milestones — a turn that settled, a merge, a halt — scroll above the table in ordinary scrollback, so what is left on the screen once a run stops is the milestones plus the table's last frame. No alternate screen and no keybindings: Ctrl-C stops the run the way it always has.
-- **`plain`** is a line per event, unchanged from what `milhouse run` has always printed. What every command other than `run`/`step` at a terminal effectively still gets, and what a redirected or piped `run` gets under `auto`.
+- **`plain`** is a line per event, unchanged from what `milhouse run` has always printed, and what the examples throughout this document show.
+- **`quiet`** prints nothing during the run. The end-of-run report is not an event and does not go through a renderer, so it still arrives.
 
-Both draw from the same typed event stream ([ADR 0026](decisions/0026-the-progress-channel-is-events-and-the-terminal-is-one-renderer.md)); `--progress` only chooses which renderer consumes it.
+All three draw from the same typed event stream ([ADR 0026](decisions/0026-the-progress-channel-is-events-and-the-terminal-is-one-renderer.md)); the mode only chooses which renderer consumes it.
 
 ## Shell completion
 

@@ -15,10 +15,15 @@ fires on every poll regardless of whether anything changed, so it prints only
 when the turn's ``state`` changes or :data:`PLAIN_KEEPALIVE_MS` has passed since
 the last one shown for that turn, rather than once per poll.
 :class:`LiveRenderer` is the second: a lane table redrawn in place, chosen
-instead when stdout is a capable terminal. Both are genuinely two
-implementations of one contract rather than one code path threaded through
-``step.py``, ``run.py``, and ``parallel.py`` with a flag in it — which is the
-point of the seam.
+instead when stdout is a capable terminal. :class:`NullRenderer` is the third,
+discarding everything, for ``--quiet``. All three are genuinely implementations
+of one contract rather than one code path threaded through ``step.py``,
+``run.py``, and ``parallel.py`` with a flag in it — which is the point of the
+seam.
+
+:func:`select_renderer` is the pure function that decides which of them a
+command gets, from ``isatty``, the flags, and the environment — never from
+globals — so the decision is a unit test rather than a subprocess test.
 
 :func:`about` and :func:`arrow` are the two pieces of formatting that used to
 live at the call site — ``session.py``'s indent and ``step.py``'s arrows —
@@ -31,24 +36,29 @@ from __future__ import annotations
 
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import TracebackType
-from typing import Literal, Protocol, runtime_checkable
+from typing import Literal, Protocol, cast, runtime_checkable
 
 import typer
 from rich.console import Console
 from rich.live import Live
+
+from .errors import ConfigError
 
 __all__ = [
     "PLAIN_KEEPALIVE_MS",
     "Event",
     "EventKind",
     "LiveRenderer",
+    "NullRenderer",
+    "OutputMode",
     "PlainRenderer",
     "Renderer",
     "about",
     "arrow",
+    "select_renderer",
 ]
 
 EventKind = Literal["started", "dispatched", "heartbeat", "settled", "merged", "halted", "note"]
@@ -441,3 +451,84 @@ class LiveRenderer:
             f"{row.status.ljust(status_w)}   {tail}"
         )
         return line.rstrip()
+
+
+class NullRenderer:
+    """Discards every event. What ``--quiet`` wires up.
+
+    The end-of-run report is not an event and does not go through a renderer
+    (:doc:`../../docs/decisions/0026-the-progress-channel-is-events-and-the-terminal-is-one-renderer`),
+    so a command still prints it after the run; this is what makes that report
+    the whole output.
+    """
+
+    def handle(self, event: Event) -> None:
+        """Do nothing."""
+
+
+OutputMode = Literal["live", "plain", "quiet"]
+"""Which renderer a command gets, named the way :func:`select_renderer` returns it.
+
+``live`` is :class:`LiveRenderer`, the lane table redrawn in place. ``plain``
+is :class:`PlainRenderer`, today's line-per-event output. ``quiet`` is
+:class:`NullRenderer`: nothing prints until the end-of-run report.
+"""
+
+_OUTPUT_MODES: frozenset[str] = frozenset(("live", "plain", "quiet"))
+
+
+def select_renderer(
+    *, isatty: bool, verbose: bool, quiet: bool, environ: Mapping[str, str]
+) -> OutputMode:
+    """Decide which renderer a command gets.
+
+    A pure function over exactly what the decision needs, rather than a
+    reading of ``sys.stdout`` or ``os.environ`` buried in ``cli.py`` — the
+    same shape :func:`milhouse.config.load` uses for its own layering, so
+    this is a unit test rather than a subprocess test.
+
+    Precedence, highest first:
+
+    1. ``quiet`` — the whole point of asking for it is silence, so nothing
+       below this line gets to argue.
+    2. ``verbose`` — implies ``plain``. Its whole point is a greppable
+       transcript alongside the DEBUG logging it already turns on, and a
+       region that redraws would fight it.
+    3. ``MILHOUSE_OUTPUT`` in ``environ`` — an explicit ``live``, ``plain``,
+       or ``quiet``, following :mod:`milhouse.config`'s own env precedence:
+       env beats the auto-detected default, and flags still beat env.
+    4. ``NO_COLOR`` in ``environ`` — present at all, any value, per
+       `no-color.org <https://no-color.org>`_. ``live`` redraws in colour, so
+       this forces ``plain``.
+    5. ``isatty`` — ``live`` when stdout is a TTY, ``plain`` otherwise, so
+       redirection, CI logs, and ``2>&1 | tee`` behave exactly as they do
+       today.
+
+    Args:
+        isatty: Whether stdout is a terminal (``sys.stdout.isatty()``).
+        verbose: The ``--verbose`` flag.
+        quiet: The ``--quiet`` flag.
+        environ: The process environment (``os.environ``).
+
+    Returns:
+        Which renderer to build.
+
+    Raises:
+        ConfigError: ``MILHOUSE_OUTPUT`` is set to something other than
+            ``live``, ``plain``, or ``quiet``.
+    """
+    if quiet:
+        return "quiet"
+    if verbose:
+        return "plain"
+
+    output = environ.get("MILHOUSE_OUTPUT", "")
+    if output:
+        if output not in _OUTPUT_MODES:
+            raise ConfigError(f"MILHOUSE_OUTPUT must be one of live, plain, quiet, got {output!r}")
+        return cast(OutputMode, output)
+
+    if "NO_COLOR" in environ:
+        return "plain"
+
+    return "live" if isatty else "plain"

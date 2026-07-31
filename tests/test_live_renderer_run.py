@@ -98,9 +98,9 @@ def test_the_same_run_against_a_console_that_is_not_a_terminal_writes_no_redraw_
 ) -> None:
     """The counterpart: without a real terminal, nothing is redrawn mid-run.
 
-    This is what makes `auto` safe to leave as the default: a `LiveRenderer`
-    handed a file rather than a terminal never emits a control sequence, so
-    the CLI's own `--progress auto` chooses `plain` instead and this class is
+    This is what makes auto-detection safe to leave as the default: a
+    `LiveRenderer` handed a file rather than a terminal never emits a control
+    sequence, so `select_renderer` chooses `plain` instead and this class is
     not even reached in that case — but if it ever were, it degrades to a
     single final dump rather than a garbled stream of escape codes.
     """

@@ -20,7 +20,7 @@ from milhouse import cli, proc
 from milhouse.config import Config
 from milhouse.models import Issue, Iteration, MergeRecord, now
 from milhouse.parallel import Parallel
-from milhouse.renderer import LiveRenderer, PlainRenderer
+from milhouse.renderer import LiveRenderer, NullRenderer, PlainRenderer
 from milhouse.run import Draining, Halt, RunResult
 from milhouse.rundir import LOCK_FILENAME, LockHolder, RunLock
 
@@ -74,65 +74,82 @@ class _TTYStream(io.StringIO):
         return True
 
 
-def test_renderer_picks_live_on_a_capable_terminal(
+_NO_FLAGS = cli.OutputFlags(verbose=False, quiet=False)
+"""Neither ``--verbose`` nor ``--quiet``, so the mode comes from the stream."""
+
+
+def test_renderer_builds_the_live_table_on_a_capable_terminal(
     config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cli, "_progress_mode", "auto")
+    """Which mode wins is `select_renderer`'s business; this is mode to object.
 
-    assert isinstance(cli._renderer(config, stream=_TTYStream()), LiveRenderer)
+    `NO_COLOR` has to come back out of the environment first: the suite's
+    `_plain_output` fixture sets it for every test, and `select_renderer`
+    treats it as a request for `plain`, so `live` is otherwise unreachable here.
+    """
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    renderer = cli._renderer(config, _NO_FLAGS, stream=_TTYStream())
+
+    assert isinstance(renderer, LiveRenderer)
 
 
-def test_renderer_picks_plain_off_a_terminal(
+def test_renderer_builds_the_plain_one_off_a_terminal(config: Config) -> None:
+    renderer = cli._renderer(config, _NO_FLAGS, stream=io.StringIO())
+
+    assert isinstance(renderer, PlainRenderer)
+
+
+def test_quiet_builds_the_null_renderer_even_on_a_terminal(config: Config) -> None:
+    quiet = cli.OutputFlags(verbose=False, quiet=True)
+
+    renderer = cli._renderer(config, quiet, stream=_TTYStream())
+
+    assert isinstance(renderer, NullRenderer)
+
+
+def test_verbose_builds_the_plain_one_even_on_a_terminal(config: Config) -> None:
+    verbose = cli.OutputFlags(verbose=True, quiet=False)
+
+    renderer = cli._renderer(config, verbose, stream=_TTYStream())
+
+    assert isinstance(renderer, PlainRenderer)
+
+
+def test_the_output_env_var_reaches_the_renderer_it_names(
     config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cli, "_progress_mode", "auto")
+    """`select_renderer` reads `os.environ`, so `_renderer` has to pass the real one.
 
-    assert isinstance(cli._renderer(config, stream=io.StringIO()), PlainRenderer)
+    Asserted with `quiet`, which no other input in this test would produce, so
+    the env var is the only thing that can have chosen it.
+    """
+    monkeypatch.setenv("MILHOUSE_OUTPUT", "quiet")
+
+    renderer = cli._renderer(config, _NO_FLAGS, stream=io.StringIO())
+
+    assert isinstance(renderer, NullRenderer)
 
 
-def test_an_explicit_progress_mode_overrides_auto_detection(
+def test_no_color_forces_plain_even_on_a_terminal(
     config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cli, "_progress_mode", "live")
-    assert isinstance(cli._renderer(config, stream=io.StringIO()), LiveRenderer)
+    """The live table redraws in colour, so `NO_COLOR` is a request for `plain`."""
+    monkeypatch.setenv("NO_COLOR", "1")
 
-    monkeypatch.setattr(cli, "_progress_mode", "plain")
-    assert isinstance(cli._renderer(config, stream=_TTYStream()), PlainRenderer)
+    renderer = cli._renderer(config, _NO_FLAGS, stream=_TTYStream())
+
+    assert isinstance(renderer, PlainRenderer)
 
 
-def test_the_progress_flag_sets_the_mode_every_command_reads(
+def test_the_quiet_flag_is_carried_from_the_callback_to_every_command(
     worked_repo: Path, fake_proc: FakeProc
 ) -> None:
     fake_proc.expect("bd", bd_reads_the_tree)
 
-    result = invoke("--progress", "plain", "step", "--dry-run")
+    result = invoke("--quiet", "step", "--dry-run")
 
     assert result.exit_code == 0
-    assert cli._progress_mode == "plain"
-
-
-def test_the_progress_env_var_is_read_when_the_flag_is_not_given(
-    worked_repo: Path, fake_proc: FakeProc, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    fake_proc.expect("bd", bd_reads_the_tree)
-    monkeypatch.setenv("MILHOUSE_PROGRESS", "live")
-
-    result = invoke("step", "--dry-run")
-
-    assert result.exit_code == 0
-    assert cli._progress_mode == "live"
-
-
-def test_an_explicit_progress_flag_beats_the_env_var(
-    worked_repo: Path, fake_proc: FakeProc, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    fake_proc.expect("bd", bd_reads_the_tree)
-    monkeypatch.setenv("MILHOUSE_PROGRESS", "live")
-
-    result = invoke("--progress", "plain", "step", "--dry-run")
-
-    assert result.exit_code == 0
-    assert cli._progress_mode == "plain"
 
 
 def test_help_lists_every_command() -> None:
@@ -148,6 +165,34 @@ def test_there_is_no_plan_command() -> None:
     result = invoke("--help")
 
     assert "plan" not in result.output
+
+
+def test_verbose_and_quiet_are_documented_global_options() -> None:
+    """The flags that choose a renderer (milhouse-lyq.5) are on every command."""
+    result = invoke("--help")
+
+    assert result.exit_code == 0
+    output = " ".join(result.output.split())
+    assert "--verbose" in output
+    assert "--quiet" in output
+
+
+@pytest.mark.parametrize(
+    ("verbose", "quiet", "expected"),
+    [
+        (False, False, cli.PlainRenderer),
+        (True, False, cli.PlainRenderer),
+        (False, True, cli.NullRenderer),
+        (True, True, cli.NullRenderer),
+    ],
+)
+def test_the_renderer_built_matches_the_flags(
+    config: Config, verbose: bool, quiet: bool, expected: type[object]
+) -> None:
+    """`_renderer` maps `select_renderer`'s mode onto a real renderer."""
+    renderer = cli._renderer(config, cli.OutputFlags(verbose=verbose, quiet=quiet))
+
+    assert isinstance(renderer, expected)
 
 
 @pytest.mark.parametrize(

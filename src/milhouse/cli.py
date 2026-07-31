@@ -23,13 +23,15 @@ any of them: everything the CLI needs is on
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass
 from datetime import datetime
 from importlib.metadata import version as package_version
 from pathlib import Path
-from typing import IO, Annotated, Any, Literal
+from typing import IO, Annotated, Any
 
 import typer
 from rich.console import Console
@@ -46,7 +48,7 @@ from .lanes import WORKER_SEPARATOR, Lane, Lanes
 from .models import Graph, Issue, Iteration, now
 from .parallel import Parallel
 from .policy import unattended
-from .renderer import LiveRenderer, PlainRenderer, Renderer
+from .renderer import LiveRenderer, NullRenderer, PlainRenderer, Renderer, select_renderer
 from .run import Body, RunResult
 from .run import run as run_loop
 from .rundir import LOCK_FILENAME, RunLock
@@ -108,22 +110,22 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-ProgressMode = Literal["auto", "live", "plain"]
+@dataclass(frozen=True)
+class OutputFlags:
+    """``--verbose`` and ``--quiet``, read once and handed down the click context.
 
-_progress_mode: ProgressMode = "auto"
-"""How the next command's progress is shown, set by ``main_options`` from
-``--progress``/``MILHOUSE_PROGRESS`` before any subcommand runs.
+    Every subcommand that opens a :class:`~milhouse.session.Session` reads
+    these from ``ctx.obj`` and picks its renderer the same way, through
+    :func:`~milhouse.renderer.select_renderer`.
+    """
 
-Module-level rather than threaded through every command's signature, for the
-same reason ``--verbose`` already configures ``logging`` globally rather than
-being passed to each command by hand: it is one setting for the whole
-invocation, decided once, in the one place (:func:`main_options`) every
-subcommand passes through before its own body runs.
-"""
+    verbose: bool
+    quiet: bool
 
 
 @app.callback()
 def main_options(
+    ctx: typer.Context,
     version: Annotated[
         bool,
         typer.Option(
@@ -135,29 +137,24 @@ def main_options(
     ] = False,
     verbose: Annotated[
         bool,
-        typer.Option("--verbose", "-v", help="Log every subprocess milhouse runs."),
-    ] = False,
-    progress: Annotated[
-        ProgressMode,
         typer.Option(
-            "--progress",
-            envvar="MILHOUSE_PROGRESS",
-            help=(
-                "How progress is shown: `live` redraws a lane table in place, "
-                "`plain` is a line per event, `auto` picks `live` on a terminal "
-                "and `plain` otherwise."
-            ),
+            "--verbose",
+            "-v",
+            help="Log every subprocess milhouse runs, and pick the plain renderer.",
         ),
-    ] = "auto",
+    ] = False,
+    quiet: Annotated[
+        bool,
+        typer.Option("--quiet", "-q", help="Print only the end-of-run report."),
+    ] = False,
 ) -> None:
     """Global options that apply to every subcommand."""
-    global _progress_mode
-    _progress_mode = progress
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s",
         stream=sys.stderr,
     )
+    ctx.obj = OutputFlags(verbose=verbose, quiet=quiet)
 
 
 @app.command()
@@ -199,6 +196,7 @@ def doctor(
 
 @app.command()
 def step(
+    ctx: typer.Context,
     agent: Annotated[
         str | None,
         typer.Option(
@@ -260,7 +258,7 @@ def step(
         _dry_run(config)
         return
 
-    with _session(config, attach=attach) as session:
+    with _session(config, output=ctx.obj, attach=attach) as session:
         outcome = run_step(session)
         if outcome is None:
             reason, completed = nothing_ready(session)
@@ -284,6 +282,7 @@ def step(
 
 @app.command()
 def run(
+    ctx: typer.Context,
     targets: Annotated[
         list[str],
         typer.Argument(
@@ -395,6 +394,7 @@ def run(
         typer.echo(f"count   {width} turns in flight at once, each in a worker lane")
     with _session(
         config,
+        output=ctx.obj,
         tracker=scope.tracker,
         attach=attach,
         lane_key=scope.key,
@@ -416,6 +416,7 @@ def run(
 
 @app.command()
 def dispatch(
+    ctx: typer.Context,
     count: Annotated[
         int,
         typer.Option("--count", "-n", min=1, help="How many ready issues to start at most."),
@@ -475,7 +476,7 @@ def dispatch(
             "tracker": {"parent": parent, "label": label},
         },
     )
-    with _session(config, attach=attach) as session:
+    with _session(config, output=ctx.obj, attach=attach) as session:
         dispatched = run_dispatch(session, limit=count)
         if not dispatched.started and not dispatched.failed:
             reason, completed = nothing_ready(session)
@@ -500,6 +501,7 @@ def dispatch(
 
 @app.command()
 def reap(
+    ctx: typer.Context,
     repo: Annotated[
         Path | None,
         typer.Option(
@@ -518,7 +520,7 @@ def reap(
     9 otherwise.
     """
     config = _config(repo)
-    with _session(config) as session:
+    with _session(config, output=ctx.obj) as session:
         results = run_reap(session)
         outstanding = len(session.audit.dispatches())
 
@@ -705,26 +707,36 @@ def _scope(config: Config) -> str:
     return ", ".join(parts) or "every ready issue in the repository"
 
 
-def _renderer(config: Config, *, stream: IO[str] | None = None) -> Renderer:
-    """The renderer this invocation draws progress with.
+def _renderer(config: Config, output: OutputFlags, *, stream: IO[str] | None = None) -> Renderer:
+    """Build the renderer :func:`~milhouse.renderer.select_renderer` picks.
 
-    ``--progress``/``MILHOUSE_PROGRESS`` (:data:`_progress_mode`) picks
-    explicitly; ``auto``, the default, resolves once here to `live` on a
-    capable terminal and to `plain` otherwise. "Capable" is
-    ``rich.console.Console.is_terminal``, which already folds in ``NO_COLOR``,
-    ``TERM=dumb``, and a redirected stream, so this re-implements none of that
+    The choice itself lives in :func:`~milhouse.renderer.select_renderer`, a
+    pure function over ``isatty``, the flags, and the environment, so that it
+    is a unit test rather than a subprocess test. This is the half that cannot
+    be pure: turning the mode it returns into an object
     (:doc:`ADR 0026
     <../../docs/decisions/0026-the-progress-channel-is-events-and-the-terminal-is-one-renderer>`).
 
+    "Is a terminal" is ``rich.console.Console.is_terminal`` rather than
+    ``sys.stdout.isatty()``, because it also folds in ``TERM=dumb`` and a
+    redirected stream, which the live table needs and a bare ``isatty`` misses.
+    ``NO_COLOR`` is not among them, so ``select_renderer`` still checks it.
+
     Args:
         config: Resolved configuration, for the live table's header.
+        output: The invocation's ``--verbose``/``--quiet``, from ``ctx.obj``.
         stream: Where output goes. Defaults to stdout; a test passes its own
             to force (or rule out) terminal behaviour without a real one.
     """
     console = Console(file=stream) if stream is not None else Console()
-    mode = _progress_mode
-    if mode == "auto":
-        mode = "live" if console.is_terminal else "plain"
+    mode = select_renderer(
+        isatty=console.is_terminal,
+        verbose=output.verbose,
+        quiet=output.quiet,
+        environ=os.environ,
+    )
+    if mode == "quiet":
+        return NullRenderer()
     if mode == "live":
         return LiveRenderer(
             console=console, scope=_scope(config), max_iterations=config.run.max_iterations
@@ -736,6 +748,7 @@ def _renderer(config: Config, *, stream: IO[str] | None = None) -> Renderer:
 def _session(
     config: Config,
     *,
+    output: OutputFlags,
     tracker: BeadsTracker | None = None,
     attach: bool = False,
     lane_key: str | None = None,
@@ -748,7 +761,7 @@ def _session(
     around the whole session — including :meth:`Session.__enter__`'s own
     events — and every caller already wraps the result in ``with``.
     """
-    renderer = _renderer(config)
+    renderer = _renderer(config, output)
     screen = renderer if isinstance(renderer, LiveRenderer) else nullcontext()
     with (
         screen,
