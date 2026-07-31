@@ -15,13 +15,16 @@ Four questions had to be answered: what contract the prompt imposes, whether to 
 The prompt states, in the imperative, that the agent must:
 
 1. Work **only** the issue it was given. Not the next one, not the epic.
-2. Verify the change — run the tests, run the linter.
-3. Update the docs covering the change **in the same commit**. An issue is not done until its documentation is.
-4. Commit, referencing the issue id.
-5. Close the issue with `bd close <id>`, and only if all of the above happened.
-6. If it cannot finish: leave the issue open, append what it learned with `bd note <id>`, and stop. Do **not** close it.
+2. **Prepare the lane if it is not built yet**, before judging whether the tests pass.
+3. Verify the change — run the tests, run the linter.
+4. Update the docs covering the change **in the same commit**. An issue is not done until its documentation is.
+5. Commit, referencing the issue id.
+6. Close the issue with `bd close <id>`, and only if all of the above happened.
+7. If it cannot finish: leave the issue open, append what it learned with `bd note <id>`, and stop. Do **not** close it.
 
-Point 6 matters more than it looks. Without it, the incentive is to close the issue and look successful — `bd` says closed, so [ADR 0004](0004-outcome-from-beads-and-git.md) says success. That was the one failure milhouse could not detect until [ADR 0016](0016-milhouse-verifies.md) gave it a way to check. The prompt still asks, because it is cheaper for an agent to find its own failure mid-turn than for milhouse to find it afterwards.
+Point 2 is the newest and belongs to the agent rather than to milhouse for a reason worth stating: bootstrapping varies per project, and the agent is the only party standing in the tree with the repository's own instructions in front of it. milhouse knowing how to build every kind of project is a losing proposition; the agent reading `AGENTS.md` and running what it says is not. It is stated before verification because the failure it prevents is an agent concluding the tests fail when they were never able to run. See [ADR 0024](0024-an-integration-lane-and-worker-lanes.md) for the one lane this does not cover — a concurrent run's integration lane has no agent in it, so its gate command must be able to bootstrap itself.
+
+Point 7 matters more than it looks. Without it, the incentive is to close the issue and look successful — `bd` says closed, so [ADR 0004](0004-outcome-from-beads-and-git.md) says success. That was the one failure milhouse could not detect until [ADR 0016](0016-milhouse-verifies.md) gave it a way to check. The prompt still asks, because it is cheaper for an agent to find its own failure mid-turn than for milhouse to find it afterwards.
 
 ### What goes in
 

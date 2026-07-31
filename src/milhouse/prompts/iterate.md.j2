@@ -4,6 +4,8 @@
 
   Contract this imposes on the agent (ADR 0013):
     * Work only the issue given. Do not pick up other work.
+    * Prepare the lane if it is not built yet. Bootstrapping varies per project
+      and the agent is the only party standing in the tree that knows how.
     * Verify, document, and commit in one change.
     * Close the issue only if it is genuinely done.
     * If it cannot be finished: leave it open, `bd note` what was learned, stop.
@@ -76,11 +78,20 @@ You are on branch `{{ branch }}`. Commit there. Do not switch branches, merge,
 or push.
 {% endif %}
 
+You are in a **fresh worktree**, which may never have been built in: no
+`.venv`, no `node_modules`, no compiled artefacts. Preparing it is part of this
+turn. Do whatever this repository's `AGENTS.md` / `CLAUDE.md` says to do on a
+clean checkout, before you decide anything about whether the tests pass. milhouse
+runs the same tests here after you exit and cannot tell a tree that was never
+set up from code that is broken, so a lane you left unprepared reads as work
+that failed.
+
 An issue is done when **all** of these are true:
 
 1. The change is implemented.
 2. It is verified — the tests pass and the linter is clean. Run them; do not
-   assume.
+   assume. If they cannot run because the worktree is not set up, set it up.
+   That is not a reason to stop.
 3. **The documentation covering the change is updated in the same commit.** A
    behaviour change with no doc change is an incomplete change.
 4. It is committed, with the issue id `{{ issue.id }}` in the commit message.

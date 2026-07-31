@@ -44,6 +44,26 @@ def test_the_iterate_prompt_states_the_whole_done_contract(issue: Issue) -> None
     assert "milhouse/hello" in rendered
 
 
+def test_the_iterate_prompt_makes_preparing_the_lane_part_of_the_turn(
+    issue: Issue,
+) -> None:
+    """A lane is a fresh worktree, and only the agent knows how to build one.
+
+    milhouse re-runs the gate in that same tree after the agent exits and cannot
+    tell a worktree nobody set up from code that is broken, so an unprepared lane
+    reads as a turn that failed. The prompt is where that is prevented, because
+    what "built" means varies per project (ADR 0013).
+    """
+    rendered = prompts.render_iterate(issue, branch="milhouse/hello")
+
+    assert "fresh worktree" in rendered
+    assert "Preparing it is part of this" in rendered
+    # And it has to land before the agent judges the tests, not after.
+    assert rendered.index("fresh worktree") < rendered.index(
+        "the tests pass and the linter is clean"
+    )
+
+
 def test_the_iterate_prompt_forbids_closing_an_unfinished_issue(issue: Issue) -> None:
     """The one failure milhouse cannot detect, so the prompt has to bind it."""
     rendered = prompts.render_iterate(issue)

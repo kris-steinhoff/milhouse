@@ -26,12 +26,14 @@ Rendered once per iteration, for a **fresh agent with no memory of any previous 
 | `attempt`    | 1-based attempt number for this issue    |
 | `previous`   | Earlier attempts, as `{outcome, detail}` |
 
-**What it promises the agent:** exactly one issue, the acceptance criteria, the notes previous attempts left, the parent epic's description as background, and the branch to commit to.
+**What it promises the agent:** exactly one issue, the acceptance criteria, the notes previous attempts left, the parent epic's description as background, the branch to commit to, and that the worktree it is standing in may never have been built in.
 
-**What it demands** — the five conditions for "done":
+**What it demands** — first, that the agent prepare the lane. A lane is a fresh worktree ([ADR 0020](decisions/0020-a-lane-is-a-herdr-worktree.md)) with no `.venv`, no `node_modules`, and nothing compiled, and the prompt says that preparing it is part of the turn, using whatever the repository's own `AGENTS.md` prescribes. milhouse deliberately does not learn how to bootstrap projects: what "built" means varies per project, and the agent is the only party standing in the tree with those instructions in front of it. The prompt also tells the agent _why_ it matters, since milhouse re-runs the same gate in that lane after the agent exits and [cannot tell a tree that was never set up from code that is broken](decisions/README.md#still-open).
+
+Then the five conditions for "done":
 
 1. The change is implemented.
-2. It is verified: tests pass, linter clean. Run them, do not assume.
+2. It is verified: tests pass, linter clean. Run them, do not assume. Tests that cannot run because the worktree is not set up are a reason to set it up, not to stop.
 3. The documentation covering the change is updated **in the same commit**.
 4. It is committed, with the issue id in the message.
 5. `bd close <id>` has been run — and only if 1 through 4 actually happened.
