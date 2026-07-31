@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from datetime import datetime
 from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Annotated, Any
@@ -39,7 +40,7 @@ from .errors import MilhouseError
 from .gitrepo import GitRepo, find_repo_root
 from .herdr import HerdrClient
 from .lanes import WORKER_SEPARATOR, Lane, Lanes
-from .models import Graph, Issue, Iteration
+from .models import Graph, Issue, Iteration, now
 from .parallel import Parallel
 from .policy import unattended
 from .run import Body, RunResult
@@ -525,15 +526,25 @@ def status(
             autocompletion=completion.complete_repo,
         ),
     ] = None,
+    show_all: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help="Show every issue and every iteration, not just what is unfinished or recent.",
+        ),
+    ] = False,
 ) -> None:
     """Show what is in scope, what is claimed, and this repository's iteration history.
 
-    Reads beads, herdr, and git; starts nothing and changes nothing.
+    Reads beads, herdr, and git; starts nothing and changes nothing. Defaults to
+    what is unfinished plus the last few iterations, bounded regardless of how
+    much history the repository holds; ``--all`` restores the full dump.
     """
     config = _config(repo)
     tracker = BeadsTracker(config.repo_root, config.tracker)
     audit = AuditLog(config.repo_root)
     client = HerdrClient(cwd=config.repo_root)
+    lanes = Lanes(client, config)
     label = f"milhouse:{config.repo_root.name}"
 
     typer.echo(f"repo    {config.repo_root}")
@@ -546,21 +557,45 @@ def status(
     if workspace:
         source = "configured" if configured else f"labelled {label}"
         typer.echo(f"herdr   workspace {workspace} ({source})")
-    for issue_id in audit.unsettled_claims():
-        typer.secho(f"claim   {issue_id} is claimed by an unfinished run", fg=typer.colors.YELLOW)
+
     holder = RunLock(config.run_dir() / LOCK_FILENAME).holder()
+    for issue_id in audit.unsettled_claims():
+        if holder is not None and holder.is_live:
+            typer.secho(
+                f"claim   {issue_id} is claimed by the live run ({holder.describe()})",
+                fg=typer.colors.YELLOW,
+            )
+        else:
+            typer.secho(
+                f"claim   {issue_id} is claimed, but nothing is still running it "
+                "— `bd update --release` to hand it back",
+                fg=typer.colors.RED,
+            )
     if holder is not None:
-        typer.secho(f"lock    held by {holder.describe()}", fg=typer.colors.YELLOW)
+        state = "live" if holder.is_live else "dead"
+        typer.secho(
+            f"lock    held by {holder.describe()} ({state})",
+            fg=typer.colors.YELLOW if holder.is_live else typer.colors.RED,
+        )
+
+    _print_turns(audit, lanes)
 
     typer.echo("")
-    _print_tree(tracker)
+    _print_tree(tracker, show_all=show_all)
     _print_lanes(client, config)
 
     history = audit.iterations()
     if history:
+        shown = history if show_all else history[-RECENT_ITERATIONS:]
         typer.echo("")
-        typer.echo(f"iterations ({len(history)})")
-        for item in history:
+        if len(shown) == len(history):
+            typer.echo(f"iterations ({len(history)})")
+        else:
+            typer.echo(
+                f"iterations (showing the last {len(shown)} of {len(history)}; "
+                "--all shows them all)"
+            )
+        for item in shown:
             colour = _OUTCOME_COLOURS.get(item.outcome, typer.colors.WHITE)
             mark = typer.style(item.outcome.ljust(8), fg=colour)
             typer.echo(f"  {item.number:>3}  {mark}  {item.issue_id}  {item.detail}")
@@ -575,6 +610,58 @@ _OUTCOME_COLOURS = {
     "timeout": typer.colors.YELLOW,
     "error": typer.colors.RED,
 }
+
+RECENT_ITERATIONS = 5
+"""How many of the most recent iterations ``status`` shows without ``--all``.
+
+On a repository with dozens of issues behind it, the whole history is what
+scrolls the useful lines — what is unfinished, what is in flight — off the top.
+"""
+
+
+def _print_turns(audit: AuditLog, lanes: Lanes) -> None:
+    """Print every dispatched turn that has not yet been reaped.
+
+    ``AuditLog.dispatches()`` says which issues have an agent running and where
+    it was started; :meth:`Lanes.locate` says whether that lane is still there,
+    which is what :func:`~milhouse.step.reap` itself trusts over the recorded
+    entry. A lane herdr no longer holds is the leftover of a run that stopped
+    mid-turn, and is named as one rather than silently falling back to the
+    stale path.
+    """
+    dispatches = audit.dispatches()
+    if not dispatches:
+        return
+    typer.echo("")
+    typer.echo(f"turns ({len(dispatches)})  issue, branch, checkout, running for")
+    for issue_id, entry in dispatches.items():
+        elapsed = _minutes((now() - _started_at(entry)).total_seconds())
+        located = lanes.locate(issue_id)
+        if located is None:
+            branch = str(entry.get("lane_branch") or "?")
+            path = str(entry.get("lane_path") or "?")
+            typer.secho(
+                f"  {issue_id}  {branch}  {path}  running {elapsed}  (lane is gone)",
+                fg=typer.colors.YELLOW,
+            )
+            continue
+        lane, _tab = located
+        typer.echo(f"  {_lane_line(lane)}  running {elapsed}")
+
+
+def _started_at(entry: dict[str, Any]) -> datetime:
+    """A dispatch entry's ``started_at``, or now for one that will not parse.
+
+    An unreadable timestamp should not stop ``status`` from showing the turn;
+    it just reports it as having taken no time yet.
+    """
+    value = entry.get("started_at")
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            pass
+    return now()
 
 
 def _scope(config: Config) -> str:
@@ -985,18 +1072,31 @@ def _nested(lanes: list[Lane]) -> list[tuple[Lane, list[Lane]]]:
     ]
 
 
-def _print_tree(tracker: BeadsTracker) -> None:
-    """Print the issues in scope with their status."""
+def _print_tree(tracker: BeadsTracker, *, show_all: bool) -> None:
+    """Print the issues in scope with their status.
+
+    Defaults to what is unfinished: on a repository with a long closed history,
+    that is the tree somebody running ``status`` is actually asking about, and
+    printing all of it is what pushed the useful lines off the top. ``--all``
+    restores the full list.
+    """
     issues = tracker.children()
     if not issues:
         typer.echo("  (no issues)")
         return
-    for issue in issues:
+    shown = issues if show_all else [issue for issue in issues if not issue.is_closed]
+    if not shown:
+        typer.echo(f"  (nothing unfinished; {len(issues)} closed — see --all)")
+        return
+    for issue in shown:
         colour = typer.colors.GREEN if issue.is_closed else typer.colors.WHITE
         mark = "x" if issue.is_closed else " "
         typer.echo(
             f"  [{mark}] {typer.style(issue.id, fg=colour)}  {issue.title}  ({issue.status})"
         )
+    hidden = len(issues) - len(shown)
+    if hidden:
+        typer.echo(f"  ... and {hidden} closed issue(s) (--all shows them)")
 
 
 def _indent(text: str) -> str:

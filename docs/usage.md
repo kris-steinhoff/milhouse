@@ -643,10 +643,10 @@ A turn that outlives `[agent] turn_timeout_ms` is collected anyway and classifie
 
 ## `milhouse status`
 
-What is in scope, what lanes are open, what is claimed, and this repository's iteration history. Reads beads, herdr, and git; starts nothing and changes nothing.
+What is in scope, what is running right now, what lanes are open, what is claimed, and this repository's iteration history. Reads beads, herdr, and git; starts nothing and changes nothing.
 
 ```
-milhouse status [--repo PATH]
+milhouse status [--repo PATH] [--all]
 ```
 
 ```console
@@ -656,20 +656,40 @@ scope   every ready issue in the repository
 branch  main
 herdr   workspace wY (labelled milhouse:greet)
 
-  [x] dogfood-6i2.1  Add goodbye(name) to src/greet/__init__.py and document it in README.md  (closed)
   [ ] dogfood-6i2.2  Make the src-layout greet package importable when running python -m pytest  (open)
   [ ] dogfood-6i2.3  Add tests/test_greet.py covering hello and goodbye  (open)
+  ... and 1 closed issue(s) (--all shows them)
 
 lanes (2)
   dogfood-6i2.1  milhouse/dogfood-6i2.1  /home/you/.herdr/worktrees/greet/milhouse-dogfood-6i2-1
   dogfood-6i2.2  milhouse/dogfood-6i2.2  /home/you/.herdr/worktrees/greet/milhouse-dogfood-6i2-2
 
-iterations (2)
+iterations (1)
     1  success   dogfood-6i2.1  dogfood-6i2.1 closed in beads
-    2  stalled   dogfood-6i2.2  dogfood-6i2.2 is still open and nothing was committed
 ```
 
-It also flags any claim or lock left behind by an unfinished run. The history spans every invocation in this repository, not just the last one, because it is read back out of the beads audit log — one append-only trail that `bd`'s own entries share ([ADR 0021](decisions/0021-iteration-history-goes-in-the-beads-audit-log.md)).
+The issue list defaults to what is unfinished and the iteration history to the last few — a repository with dozens of issues and hundreds of turns behind it would otherwise scroll those lines off the top. `--all` restores both in full.
+
+Any turn still running is named on its own, joined from the beads audit log to herdr's lane registry — its branch, its checkout, and how long it has been going:
+
+```console
+turns (1)  issue, branch, checkout, running for
+  dogfood-6i2.3  milhouse/dogfood-6i2.3  /home/you/.herdr/worktrees/greet/milhouse-dogfood-6i2-3  running 4m
+```
+
+A claim left behind by an unfinished run is flagged too, and says which of two opposite situations it is: still being worked by a live run, or abandoned by one that is no longer running (`LockHolder.is_live`, checked against the lock in `.milhouse/runs/lock.json`):
+
+```console
+claim   dogfood-6i2.3 is claimed by the live run (pid 4821 on box, since 2026-07-31T10:02:11+00:00)
+lock    held by pid 4821 on box, since 2026-07-31T10:02:11+00:00 (live)
+```
+
+```console
+claim   dogfood-6i2.3 is claimed, but nothing is still running it — `bd update --release` to hand it back
+lock    held by pid 4821 on box, since 2026-07-31T10:02:11+00:00 (dead)
+```
+
+The iteration history spans every invocation in this repository, not just the last one, because it is read back out of the beads audit log — one append-only trail that `bd`'s own entries share ([ADR 0021](decisions/0021-iteration-history-goes-in-the-beads-audit-log.md)).
 
 `bd audit` has no query, so `milhouse status` is the readable view of `.beads/interactions.jsonl`. Reading the file directly works too, and shows bd's entries interleaved with milhouse's:
 
