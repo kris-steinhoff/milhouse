@@ -46,7 +46,7 @@ from .run import Body, RunResult
 from .run import run as run_loop
 from .rundir import LOCK_FILENAME, RunLock
 from .scope import Scope
-from .scope import resolve as resolve_target
+from .scope import resolve_many as resolve_target
 from .session import Session, usable_workspace
 from .step import dispatch as run_dispatch
 from .step import merge_line, nothing_ready
@@ -251,11 +251,11 @@ def step(
 
 @app.command()
 def run(
-    target: Annotated[
-        str,
+    targets: Annotated[
+        list[str],
         typer.Argument(
-            metavar="TARGET",
-            help="Beads id to work towards: an epic, or a single issue.",
+            metavar="TARGET...",
+            help="Beads id(s) to work towards: epics, issues, or a mix.",
             show_default=False,
         ),
     ],
@@ -312,26 +312,30 @@ def run(
         ),
     ] = None,
 ) -> None:
-    """Work one target to completion, a fresh agent per issue, and report.
+    """Work one or more targets to completion, a fresh agent per issue, and report.
 
     TARGET is a beads id. An epic means "work everything under it"; a single
-    issue means "work it and whatever it is blocked by". The run lands on one
-    branch you can review as a piece: its integration branch.
+    issue means "work it and whatever it is blocked by". Given more than one,
+    the run works their union as one scope, so an issue under one target that is
+    blocked by an issue under another is unblocked and worked in the same run.
+    The run lands on one branch you can review as a piece: its integration
+    branch, named after all the targets
+    (:doc:`ADR 0025 <../../docs/decisions/0025-a-multi-target-run-shares-one-lane>`).
 
     `--count N` above 1 keeps N turns in flight, each in a worker lane branched
     from that integration branch and merged back into it as it settles. At
     `--count 1` there are no worker lanes and nothing to merge. `--dry-run`
-    says how much concurrency this target can actually use.
+    says how much concurrency the targets can actually use.
 
-    It stops when the target is finished, when nothing is ready but work is
+    It stops when every target is finished, when nothing is ready but work is
     left, when an agent needs a human, when a merge conflicts, when the gate
     fails on the integration branch, when milhouse itself fails, or at
     `--max-iterations`. An issue that fails `--max-attempts` times is deferred
     with the reason on it and the run carries on.
 
-    There is no `--parent` or `--label`: the target is the scope.
+    There is no `--parent` or `--label`: the targets are the scope.
 
-    Exits 0 when the target finished, and 9 when the run stopped short.
+    Exits 0 when every target finished, and 9 when the run stopped short.
     """
     config = _config(
         repo,
@@ -345,14 +349,14 @@ def run(
             },
         },
     )
-    scope = resolve_target(target, repo_root=config.repo_root, config=config.tracker)
+    scope = resolve_target(targets, repo_root=config.repo_root, config=config.tracker)
     width = config.run.max_parallel
 
     if dry_run:
         _dry_run(config, scope=scope)
         return
 
-    typer.echo(f"target  {scope.target.id}  {scope.target.title}")
+    _print_targets(scope.targets)
     typer.echo(f"scope   {scope.describe()}")
     if width > 1:
         typer.echo(f"count   {width} turns in flight at once, each in a worker lane")
@@ -360,18 +364,18 @@ def run(
         config,
         tracker=scope.tracker,
         attach=attach,
-        lane_key=scope.target.id,
+        lane_key=scope.key,
         worker_lanes=width > 1,
     )
     with session as opened:
         result = run_loop(
             opened,
-            scope.target,
+            scope.targets,
             policy=unattended(max_attempts=config.run.max_attempts),
             max_iterations=config.run.max_iterations,
             body=_body(config),
         )
-        located = opened.lanes.locate(scope.target.id)
+        located = opened.lanes.locate(scope.key)
 
     _print_run(result, lane=located[0] if located else None)
     if not result.finished:
@@ -644,7 +648,7 @@ def _dry_run(config: Config, *, scope: Scope | None = None) -> None:
 
     typer.secho("dry run — no agent will be started", fg=typer.colors.CYAN)
     if scope is not None:
-        typer.echo(f"target    {scope.target.id}  {scope.target.title}")
+        _print_targets(scope.targets, column="target    ")
     typer.echo(f"scope     {scope.describe() if scope else _scope(config)}")
     branch = repo.current_branch() or "(detached)"
     typer.echo(f"branch    {branch}")
@@ -667,12 +671,12 @@ def _dry_run(config: Config, *, scope: Scope | None = None) -> None:
     background = tracker.get(next_issue.parent).description if next_issue.parent else ""
     commits_to = None
     if scope is not None:
-        # A run works one lane, named after the target (ADR 0023), so there is
-        # nothing to guess and no need to ask herdr what exists. Above a width
-        # of one that lane is the integration lane, and the turn itself happens
-        # in a worker lane branched from it, which is the branch the prompt has
-        # to name (ADR 0024).
-        lane_branch = f"{config.lane.branch_prefix}{scope.target.id}"
+        # A run works one lane, named after the target(s) (ADR 0023, ADR 0025),
+        # so there is nothing to guess and no need to ask herdr what exists.
+        # Above a width of one that lane is the integration lane, and the turn
+        # itself happens in a worker lane branched from it, which is the branch
+        # the prompt has to name (ADR 0024).
+        lane_branch = f"{config.lane.branch_prefix}{scope.key}"
         if config.run.max_parallel > 1:
             commits_to = f"{lane_branch}{WORKER_SEPARATOR}{next_issue.id}"
             note = f"the integration lane; {next_issue.id} would work on {commits_to}"
@@ -737,6 +741,23 @@ def _worth(count: int, width: int) -> str:
     return f"{count} turns at once, and the widest wave is {width}"
 
 
+def _print_targets(targets: tuple[Issue, ...], *, column: str = "target  ") -> None:
+    """The target line(s) a run or a dry run opens with, single or plural.
+
+    One target keeps the single line milhouse has always printed, in
+    whichever column width the caller is aligning to. Several get their own
+    header, the same shape as the other counted sections below
+    (:doc:`ADR 0025 <../../docs/decisions/0025-a-multi-target-run-shares-one-lane>`).
+    """
+    if len(targets) == 1:
+        target = targets[0]
+        typer.echo(f"{column}{target.id}  {target.title}")
+        return
+    typer.echo(f"targets ({len(targets)})")
+    for target in targets:
+        typer.echo(f"  {target.id}  {target.title}")
+
+
 def _print_run(result: RunResult, *, lane: Lane | None) -> None:
     """Report a finished run: every turn, what it gave up on, and why it stopped.
 
@@ -793,7 +814,8 @@ def _print_run(result: RunResult, *, lane: Lane | None) -> None:
         parts.append(f"{len(unmerged)} not merged")
     if result.still_running:
         parts.append(f"{len(result.still_running)} still running")
-    summary = f"{result.target.id}: {', '.join(parts)} — {result.halt.detail}"
+    ids = ", ".join(target.id for target in result.targets)
+    summary = f"{ids}: {', '.join(parts)} — {result.halt.detail}"
     typer.secho(summary, fg=typer.colors.GREEN if result.finished else typer.colors.YELLOW)
 
 

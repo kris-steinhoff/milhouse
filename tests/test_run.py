@@ -144,7 +144,7 @@ def go(
     kwargs = {"body": body} if body is not None else {}
     return run(
         session,
-        TARGET,
+        (TARGET,),
         policy=unattended(max_attempts=max_attempts),
         max_iterations=max_iterations,
         **kwargs,
@@ -443,7 +443,7 @@ def test_the_result_reports_the_turns_that_closed_something(
         result = go(opened)
 
     assert [item.issue_id for item in result.closed()] == ["bd-e.1", "bd-e.2"]
-    assert result.target is TARGET
+    assert result.targets == (TARGET,)
     assert result.elapsed >= 0
 
 

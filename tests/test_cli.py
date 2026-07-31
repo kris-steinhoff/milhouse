@@ -502,6 +502,45 @@ def test_run_dry_run_names_the_one_lane_the_whole_run_uses(
     assert "lane      milhouse/bd-e  (one lane for the whole run)" in result.output
 
 
+EPIC_F = {
+    "id": "bd-f",
+    "title": "Add a goodbye command",
+    "status": "open",
+    "issue_type": "epic",
+    "description": "It should also say goodbye.",
+}
+CHILDREN_F = [{"id": "bd-f.1", "title": "Add the subcommand", "status": "closed", "parent": "bd-f"}]
+
+
+def bd_reads_two_epics(argv: tuple[str, ...]) -> Reply:
+    """`bd show` and `bd list --parent` answer for whichever of two epics is asked."""
+    if "show" in argv:
+        target = argv[argv.index("show") + 1]
+        beads = {issue["id"]: issue for issue in (EPIC, EPIC_F, *CHILDREN, *CHILDREN_F)}
+        return Reply(stdout=json.dumps([beads[target]]))
+    if "--parent" in argv:
+        parent = argv[argv.index("--parent") + 1]
+        children = {"bd-e": CHILDREN, "bd-f": CHILDREN_F}[parent]
+        return Reply(stdout=json.dumps(children))
+    return Reply(stdout=json.dumps([CHILDREN[1]]))
+
+
+def test_run_dry_run_shows_several_targets_and_their_union(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    """Given more than one target, the union of both is what the run would work."""
+    fake_proc.expect("bd", bd_reads_two_epics)
+
+    result = invoke("run", "bd-e", "bd-f", "--dry-run")
+
+    assert result.exit_code == 0
+    assert "targets (2)" in result.output
+    assert "  bd-e  Add a hello command" in result.output
+    assert "  bd-f  Add a goodbye command" in result.output
+    assert "scope     bd-e, bd-f (3 issue(s) total)" in result.output
+    assert "lane      milhouse/bd-e+bd-f  (one lane for the whole run)" in result.output
+
+
 # -- what the count is worth ---------------------------------------------------
 
 WIDE = [
@@ -663,6 +702,23 @@ def test_run_exits_nine_when_work_is_left(worked_repo: Path, fake_proc: FakeProc
     assert "unfinished" in result.output
 
 
+def test_run_with_several_targets_opens_one_lane_keyed_by_both(
+    worked_repo: Path, fake_proc: FakeProc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The union is one scope worked in one lane, not two runs (ADR 0025)."""
+    fake_proc.expect("bd", bd_reads_two_epics)
+    seen = watch_the_run(monkeypatch)
+
+    result = invoke("run", "bd-e", "bd-f")
+
+    assert result.exit_code == 0
+    assert seen["session"]["lane_key"] == "bd-e+bd-f"
+    assert "targets (2)" in result.output
+    assert "  bd-e  Add a hello command" in result.output
+    assert "  bd-f  Add a goodbye command" in result.output
+    assert "bd-e, bd-f: 0 issue(s) closed — everything closed" in result.output
+
+
 # -- what --count wires up -----------------------------------------------------
 
 
@@ -695,9 +751,9 @@ def watch_the_run(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         seen["session"] = kwargs
         return SessionSpy(**kwargs)
 
-    def loop(opened: object, target: Issue, **kwargs: Any) -> RunResult:
+    def loop(opened: object, targets: tuple[Issue, ...], **kwargs: Any) -> RunResult:
         seen.update(kwargs)
-        return RunResult(target=target, halt=Halt("finished", "everything closed", finished=True))
+        return RunResult(targets=targets, halt=Halt("finished", "everything closed", finished=True))
 
     monkeypatch.setattr(cli, "_session", session)
     monkeypatch.setattr(cli, "run_loop", loop)
@@ -770,7 +826,7 @@ def test_the_run_report_says_what_landed_on_the_integration_branch(
 ) -> None:
     """Closed and on the branch you are about to review stop being the same thing."""
     result = RunResult(
-        target=Issue(id="bd-e", title="Add a hello command", status="open"),
+        targets=(Issue(id="bd-e", title="Add a hello command", status="open"),),
         halt=Halt("conflict", "bd-e.2 is closed but its work is not on milhouse/bd-e"),
         iterations=[
             merged_turn(
@@ -819,7 +875,7 @@ def test_the_run_report_tells_the_two_kinds_of_unlanded_branch_apart(
         conflicts=["src/a.py", "src/b.py", "tests/t.py"],
     )
     result = RunResult(
-        target=Issue(id="bd-e", title="Add a hello command", status="open"),
+        targets=(Issue(id="bd-e", title="Add a hello command", status="open"),),
         halt=Halt("conflict", "bd-e.2 is closed but its work is not on milhouse/bd-e"),
         iterations=[
             merged_turn(
@@ -867,7 +923,7 @@ def test_the_run_report_says_which_merge_made_the_branch_red(
 ) -> None:
     """The line above says the merge succeeded, which is true and not the whole story."""
     result = RunResult(
-        target=Issue(id="bd-e", title="Add a hello command", status="open"),
+        targets=(Issue(id="bd-e", title="Add a hello command", status="open"),),
         halt=Halt("integration", "the gate failed on milhouse/bd-e once bd-e.1 was merged"),
         iterations=[
             merged_turn(
@@ -893,7 +949,7 @@ def test_the_run_report_names_the_agents_that_were_still_working(
 ) -> None:
     """Numbers that look complete while two agents are still running is the worse report."""
     result = RunResult(
-        target=Issue(id="bd-e", title="Add a hello command", status="open"),
+        targets=(Issue(id="bd-e", title="Add a hello command", status="open"),),
         halt=Halt("blocked", "the agent stopped waiting on a human"),
         iterations=[merged_turn(1, "bd-e.1", MergeRecord(source="w", target="i", sha="b" * 40))],
         still_running=["bd-e.4", "bd-e.5"],
@@ -911,7 +967,7 @@ def test_the_run_report_names_the_agents_that_were_still_working(
 def test_a_serial_run_report_is_unchanged(capsys: pytest.CaptureFixture[str]) -> None:
     """Nothing merges into the lane a serial run works in, so nothing is said about it."""
     result = RunResult(
-        target=Issue(id="bd-e", title="Add a hello command", status="open"),
+        targets=(Issue(id="bd-e", title="Add a hello command", status="open"),),
         halt=Halt("finished", "everything in scope is closed", finished=True),
         iterations=[
             Iteration(number=1, issue_id="bd-e.1", outcome="success", detail="closed"),

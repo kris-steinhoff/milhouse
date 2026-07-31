@@ -7,10 +7,14 @@ anything added here: a piece that needs the turn count belongs in this module,
 a piece that reads what a turn achieved belongs in :mod:`milhouse.outcome`, and
 a piece that decides what to do about it belongs in :mod:`milhouse.policy`.
 
-``milhouse run`` works one target until it is finished or until something stops
-it (:doc:`ADR 0022 <../../docs/decisions/0022-the-loop-is-earned>`). The whole
-of the stopping is :func:`should_halt`, which is pure, plus the empty queue,
-which :func:`milhouse.step.nothing_ready` already explains.
+``milhouse run`` works one or more targets until they are finished or until
+something stops it (:doc:`ADR 0022 <../../docs/decisions/0022-the-loop-is-earned>`).
+Several targets are one scope that is their union
+(:mod:`milhouse.scope`), so this module never counts them: it takes a fenced
+session and keeps going until that scope is empty, which is the same loop
+whether one target built the scope or five. The whole of the stopping is
+:func:`should_halt`, which is pure, plus the empty queue, which
+:func:`milhouse.step.nothing_ready` already explains.
 
 **The loop body is an argument.** Serially it is one :func:`milhouse.step.step`,
 which claims an issue, waits for its agent, and settles it. The concurrent one
@@ -35,7 +39,7 @@ report says so per branch, because that is the recovery instruction.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Protocol, runtime_checkable
@@ -99,7 +103,8 @@ class RunResult:
     """What one run did, as a value the CLI formats and nothing else reads.
 
     Attributes:
-        target: The issue or epic the run was working towards.
+        targets: The issue(s) or epic(s) the run was working towards, in the
+            order given. Never empty; one entry for the common case.
         halt: Why it stopped.
         iterations: Every turn it took, in order.
         deferred: Issues it gave up on, as ``(issue_id, reason)``. These are
@@ -113,7 +118,7 @@ class RunResult:
         ended_at: When it stopped.
     """
 
-    target: Issue
+    targets: tuple[Issue, ...]
     halt: Halt
     iterations: list[Iteration] = field(default_factory=list)
     deferred: list[tuple[str, str]] = field(default_factory=list)
@@ -256,19 +261,21 @@ def should_halt(iteration: Iteration, *, used: int, max_iterations: int) -> Halt
 
 def run(
     session: Session,
-    target: Issue,
+    targets: Sequence[Issue],
     *,
     policy: Policy = decide,
     max_iterations: int = 50,
     body: Body = lambda session, policy: step(session, policy=policy),
 ) -> RunResult:
-    """Work ``target`` until it is finished or something stops the run.
+    """Work ``targets`` until they are finished or something stops the run.
 
     Args:
-        session: An open session, whose tracker is already fenced to the target
-            (:mod:`milhouse.scope`). This function never asks what is in scope,
-            which is why it needs no idea how the target was resolved.
-        target: What the run is working towards, for the report.
+        session: An open session, whose tracker is already fenced to the union
+            of ``targets`` (:mod:`milhouse.scope`). This function never asks
+            what is in scope, which is why it needs no idea how many targets
+            were resolved or how.
+        targets: What the run is working towards, for the report. One entry for
+            the common case; several are one scope, not several runs.
         policy: What settles each issue afterwards. ``milhouse run`` passes
             :func:`milhouse.policy.unattended`, which caps attempts.
         max_iterations: Turns the run may take. At least one turn always
@@ -294,7 +301,7 @@ def run(
         for result in _drain(body, session, policy):
             take(result)
         return RunResult(
-            target=target,
+            targets=tuple(targets),
             halt=halt,
             iterations=iterations,
             deferred=deferred,

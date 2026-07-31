@@ -51,16 +51,17 @@ Neither half is a loop. `dispatch` starts a bounded number of turns once and ret
 
 ## The run
 
-`milhouse run <target>` is the loop over that turn ([ADR 0022](decisions/0022-the-loop-is-earned.md)). The target is a beads id, so nothing about it reintroduces the task definition [ADR 0018](decisions/0018-no-task-milhouse-works-the-ready-queue.md) removed.
+`milhouse run <target>...` is the loop over that turn ([ADR 0022](decisions/0022-the-loop-is-earned.md)). A target is a beads id, so nothing about it reintroduces the task definition [ADR 0018](decisions/0018-no-task-milhouse-works-the-ready-queue.md) removed. More than one target is worked as their union, in one run rather than several ([ADR 0025](decisions/0025-a-multi-target-run-shares-one-lane.md)).
 
 ```
-milhouse run <target> [--count N]
+milhouse run <target>... [--count N]
   │
-  ├─ scope.resolve(target) ─► a Tracker fenced to the target:
-  │                             an epic     → bd ready --parent <target>
-  │                             a leaf issue → the target + its unmet blockers
+  ├─ scope.resolve_many(targets) ─► a Tracker fenced to the union:
+  │                             one target, epic     → bd ready --parent <target>
+  │                             one target, leaf issue → the target + its unmet blockers
+  │                             several targets       → each target's own members, unioned
   │
-  ├─ open the session ──────► with lane_key=<target>: the INTEGRATION lane and its lock
+  ├─ open the session ──────► with lane_key=scope.key: the INTEGRATION lane and its lock
   │                           worker_lanes above --count 1: a lane and a lock per issue
   │
   └─ repeat ───────────────► the body, with policy=unattended(max_attempts)
@@ -76,7 +77,7 @@ milhouse run <target> [--count N]
         otherwise         → go again
 ```
 
-Three things are worth reading off that. **Scope is a tracker**, so no layer below `run` learns that a target exists. **The lanes nest**: the target's lane is the branch a person reviews, and above `--count 1` each issue in flight also gets a worker lane branched from that branch and merged back into it as its turn settles ([ADR 0023](decisions/0023-a-run-has-one-lane.md), [ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)). And **the loop body is an argument**, defaulting to one `step`, which is how `--count N` arrived: `parallel.Parallel` is a different body rather than a different loop. What that actually cost is [below](#the-empty-layer-and-what-filling-it-cost).
+Three things are worth reading off that. **Scope is a tracker**, so no layer below `run` learns that a target exists, or how many. **The lanes nest**: the target's lane is the branch a person reviews, and above `--count 1` each issue in flight also gets a worker lane branched from that branch and merged back into it as its turn settles ([ADR 0023](decisions/0023-a-run-has-one-lane.md), [ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)). Above one target, `scope.key` is every target's id, sorted and joined with `+`, so the lane is still one name regardless of the order they were typed in ([ADR 0025](decisions/0025-a-multi-target-run-shares-one-lane.md)). And **the loop body is an argument**, defaulting to one `step`, which is how `--count N` arrived: `parallel.Parallel` is a different body rather than a different loop. What that actually cost is [below](#the-empty-layer-and-what-filling-it-cost).
 
 The agent is still started fresh every iteration and exited when the turn ends. Reusing a lane's checkout does not change that, because the fresh context window comes from restarting the agent rather than from the worktree.
 
@@ -84,15 +85,15 @@ The agent is still started fresh every iteration and exited when the turn ends. 
 
 Every turn happens in a **lane**: a herdr worktree with a label on it, which is a checkout of its own, on a branch of its own, in a workspace of its own ([ADR 0020](decisions/0020-a-lane-is-a-herdr-worktree.md)). That container is what lets several agents work at once, and herdr already had it.
 
-**The label is the unit somebody will review**, and that differs between the two ways of driving milhouse ([ADR 0023](decisions/0023-a-run-has-one-lane.md)). `dispatch` reviews an issue, so a lane is labelled with an issue id and assigned by the rules below. `run` reviews a target, so the run gets a lane labelled with the target id, and none of the rules apply.
+**The label is the unit somebody will review**, and that differs between the two ways of driving milhouse ([ADR 0023](decisions/0023-a-run-has-one-lane.md)). `dispatch` reviews an issue, so a lane is labelled with an issue id and assigned by the rules below. `run` reviews its target(s), so the run gets a lane labelled with `scope.key` — one target's id unchanged, or every target's id sorted and joined above one ([ADR 0025](decisions/0025-a-multi-target-run-shares-one-lane.md)) — and none of the rules apply.
 
 A concurrent run needs both keys, one nested inside the other ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)):
 
-| Lane            | Labelled with | On branch                    | Holds                                                 |
-| --------------- | ------------- | ---------------------------- | ----------------------------------------------------- |
-| **integration** | the target    | `milhouse/<target>`          | the branch a person reviews; every merge happens here |
-| **worker**      | an issue      | `milhouse/<target>--<issue>` | one turn, branched from the integration branch        |
-| `dispatch`      | an issue      | `milhouse/<issue>`           | one turn, branched from the primary checkout          |
+| Lane            | Labelled with | On branch                       | Holds                                                 |
+| --------------- | ------------- | ------------------------------- | ----------------------------------------------------- |
+| **integration** | `scope.key`   | `milhouse/<scope.key>`          | the branch a person reviews; every merge happens here |
+| **worker**      | an issue      | `milhouse/<scope.key>--<issue>` | one turn, branched from the integration branch        |
+| `dispatch`      | an issue      | `milhouse/<issue>`              | one turn, branched from the primary checkout          |
 
 At `--count 1` there are no worker lanes at all, so a serial run is ADR 0023 unchanged: it works in the integration lane and has nothing to merge into it.
 
@@ -166,6 +167,7 @@ What the two cost is worth recording, because it is where the layering was not f
 | `step._land`, `step._verify_integration`, `step.merge_line` | Work | 0024 | Landing a turn is part of finishing it, and a merge that joined two histories leaves a tree the gate has never been run against |
 | `MergeRecord`, `Iteration.merge`, `Iteration.integration_verified` | values | 0024 | A pure halt table cannot ask git what a merge did, so what it did has to arrive on the value it is handed — the same shape as `Iteration.attempt` |
 | `Session.refused_merge`, `MergeRecord.skipped` | Resources, values | 0024 | A merge that did not land is the last merge of the run, and the state that says so belongs to the integration branch rather than to the drain, because turns settling in one reap pass are all merged before the loop is told about the first |
+| `scope.resolve_many`, `Scope.targets`, `Scope.key` | Resources, values | 0025 | Several targets have no single `bd --parent` fence to share, so the union is computed once in `scope.py`, and the lane needs a name several ids can share |
 | `--count`, `cli._body`, `[run] max_parallel`, `[run] poll_ms` | surface | 0024 | The width is a flag and a config key, and `cli._body` is the one place that turns it into a body |
 
 **The 0022 rows are not repetition leaking downwards.** Each is a thing that was underspecified while a person was in the loop, and had to be decided once nobody was.
@@ -205,7 +207,7 @@ src/milhouse/
   policy.py      decide / unattended(max_attempts) -> Decision. No I/O.
   verify.py      run the repo's own gate over an issue the agent closed
   step.py        step / dispatch / reap — one turn, whole or in halves
-  scope.py       resolve(target) -> a Tracker fenced to an epic or a closure
+  scope.py       resolve_many(targets) -> a Tracker fenced to their union
   run.py         the loop, the halt rules, and what a finished run reports
   parallel.py    Parallel — a loop body that keeps N turns in flight at once
   prompts/
@@ -219,7 +221,7 @@ src/milhouse/
 - **`gitrepo.py` reads one working directory.** A `GitRepo` is bound to the path it was given, and a turn is classified against the directory the agent actually worked in — the repository root today, a worktree once lanes exist ([ADR 0020](decisions/0020-a-lane-is-a-herdr-worktree.md)). Reading the root instead would credit an issue with commits someone else made, whether that is another lane or a human in another terminal.
 - **`outcome.py` and `policy.py` are pure.** See [the layering](#the-layering): values in, values out, so every row of both decision tables is a unit test with no subprocess involved.
 - **`session.py` holds no policy.** It does not decide what to work on next or whether there is a next. That is what let `run.py` reuse it unchanged.
-- **`scope.py` produces a `Tracker`.** A target fences the ready queue, and expressing the fence as a tracker is what keeps `Session`, `step`, `dispatch`, and `reap` from ever hearing about targets.
+- **`scope.py` produces a `Tracker`.** One target, or several unioned, fences the ready queue, and expressing the fence as a tracker is what keeps `Session`, `step`, `dispatch`, and `reap` from ever hearing that a target exists, let alone how many.
 - **`run.py` owns only the count.** It may not classify a turn, decide what becomes of an issue, or know what is in scope. Its loop body is an argument for the same reason.
 - **`cli.py` holds no behaviour, and no private attributes.** It resolves config, drives a `Session` through public methods, and formats the result.
 - **`completion.py` never raises and never calls a server.** Its callbacks run on a keypress, in a shell with nowhere to show a traceback, so they answer from the filesystem and from constants rather than from `bd`, `herdr`, or `gh`.
@@ -260,7 +262,7 @@ The dependency graph is the only structure milhouse reads, and `bd` owns it. Not
 | Who is working a lane              | `.milhouse/runs/<lane-key>/lock.json`    | bookkeeping    |
 | Exact prompt sent, pane transcript | `.milhouse/runs/<issue-id>/iter-NNN.*`   | bookkeeping    |
 
-The lane key is the issue for a `dispatch` and the target for a `run`'s integration lane ([ADR 0023](decisions/0023-a-run-has-one-lane.md)), so a serial run holds one lock however many issues it works. A concurrent one holds the target's lock plus one per worker lane, keyed by the issue exactly as `dispatch` keys its own, so nothing else can be working an issue a run has in flight ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)). Turn artifacts stay filed under the issue that was worked, because that is what a post-mortem looks for.
+The lane key is the issue for a `dispatch` and `scope.key` for a `run`'s integration lane ([ADR 0023](decisions/0023-a-run-has-one-lane.md), [ADR 0025](decisions/0025-a-multi-target-run-shares-one-lane.md)), so a serial run holds one lock however many issues or targets it works. A concurrent one holds the integration lane's lock plus one per worker lane, keyed by the issue exactly as `dispatch` keys its own, so nothing else can be working an issue a run has in flight ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)). Turn artifacts stay filed under the issue that was worked, because that is what a post-mortem looks for.
 
 **A run keeps nothing of its own either.** What it deferred is in beads, what it committed is in git, what it did is in the audit log, and how far it got is recoverable from those three. There is no run file.
 

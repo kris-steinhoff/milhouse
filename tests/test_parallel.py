@@ -282,7 +282,7 @@ def test_run_works_a_target_through_the_concurrent_body(
     session, _ = build(config, tracker=decomposed, script=["close"] * 5, client=with_lanes(*ids))
 
     with session as opened:
-        result = run(opened, TARGET, policy=POLICY, max_iterations=50, body=body(2))
+        result = run(opened, (TARGET,), policy=POLICY, max_iterations=50, body=body(2))
 
     assert result.finished
     assert result.halt.reason == "finished"
@@ -298,7 +298,7 @@ def test_a_concurrent_run_stops_at_its_ceiling(config: Config, decomposed: FakeT
 
     with session as opened:
         result = run(
-            opened, TARGET, policy=POLICY, max_iterations=3, body=body(2, max_iterations=3)
+            opened, (TARGET,), policy=POLICY, max_iterations=3, body=body(2, max_iterations=3)
         )
 
     assert not result.finished
@@ -318,7 +318,7 @@ def test_a_run_wider_than_its_ceiling_starts_only_what_the_ceiling_allows(
 
     with session as opened:
         result = run(
-            opened, TARGET, policy=POLICY, max_iterations=1, body=body(4, max_iterations=1)
+            opened, (TARGET,), policy=POLICY, max_iterations=1, body=body(4, max_iterations=1)
         )
 
     assert result.halt.reason == "ceiling"
@@ -344,7 +344,7 @@ def test_a_halt_drains_the_turns_in_flight_rather_than_abandoning_them(
     )
 
     with session as opened:
-        result = run(opened, TARGET, policy=POLICY, max_iterations=50, body=body(3))
+        result = run(opened, (TARGET,), policy=POLICY, max_iterations=50, body=body(3))
 
     assert result.halt.reason == "dirty"
     # All three were started, so all three are finished and settled.
@@ -382,7 +382,7 @@ def test_the_drain_waits_for_a_turn_that_has_not_settled_yet(
     running = Parallel(count=2, max_iterations=50, poll_ms=250, sleep=wake)
 
     with session as opened:
-        result = run(opened, TARGET, policy=POLICY, max_iterations=50, body=running)
+        result = run(opened, (TARGET,), policy=POLICY, max_iterations=50, body=running)
 
     assert result.halt.reason == "dirty"
     assert [item.issue_id for item in result.iterations] == ids
@@ -484,7 +484,7 @@ def test_a_drain_merges_nothing_into_a_branch_that_has_already_refused_one(
     session.report = lines.append
 
     with session as opened:
-        result = run(opened, TARGET, policy=POLICY, max_iterations=50, body=running)
+        result = run(opened, (TARGET,), policy=POLICY, max_iterations=50, body=running)
 
     assert result.halt.reason == "conflict"
     # Two turns were still working when it fired, and the drain says what it is
@@ -515,7 +515,7 @@ def test_a_run_names_a_turn_it_could_not_collect(config: Config, decomposed: Fak
     config.agent.turn_timeout_ms = 0
 
     with session as opened:
-        result = run(opened, TARGET, policy=POLICY, max_iterations=50, body=body(2, poll_ms=0))
+        result = run(opened, (TARGET,), policy=POLICY, max_iterations=50, body=body(2, poll_ms=0))
 
     assert result.still_running == ["bd-e.1"]
     assert result.iterations == []
@@ -536,7 +536,7 @@ def test_a_run_whose_agent_side_will_not_take_prompts_halts_saying_so(
     )
 
     with session as opened:
-        result = run(opened, TARGET, policy=POLICY, max_iterations=50, body=body(3))
+        result = run(opened, (TARGET,), policy=POLICY, max_iterations=50, body=body(3))
 
     assert not result.finished
     assert result.halt.reason == "error"

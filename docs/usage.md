@@ -278,25 +278,25 @@ It is the cheapest way to see the effect of a prompt, fence, or config change.
 
 ## `milhouse run`
 
-Repeats a step until a target is finished, one turn at a time by default and up to `--count N` at once. The target is a beads id, so nothing here is a task definition ([ADR 0022](decisions/0022-the-loop-is-earned.md)).
+Repeats a step until every target is finished, one turn at a time by default and up to `--count N` at once. A target is a beads id, so nothing here is a task definition ([ADR 0022](decisions/0022-the-loop-is-earned.md)).
 
 ```
-milhouse run TARGET [--max-iterations N] [--max-attempts N] [--count N] [--agent KIND] [--workspace ID] [--dry-run] [--attach] [--repo PATH]
+milhouse run TARGET... [--max-iterations N] [--max-attempts N] [--count N] [--agent KIND] [--workspace ID] [--dry-run] [--attach] [--repo PATH]
 ```
 
-| Option             | Default              | Meaning                                                                                   |
-| ------------------ | -------------------- | ----------------------------------------------------------------------------------------- |
-| `TARGET`           | required             | Beads id to work towards: an epic, or a single issue.                                     |
-| `--max-iterations` | `50`                 | Turns this run may take before it stops and reports.                                      |
-| `--max-attempts`   | `3`                  | Attempts one issue gets before it is deferred.                                            |
-| `--count`, `-n`    | `1`                  | Turns to keep in flight at once, overriding [`[run] max_parallel`](configuration.md#run). |
-| `--agent`          | `claude`             | Agent kind to run. Any kind herdr supports.                                               |
-| `--workspace`      | `HERDR_WORKSPACE_ID` | Reuse this herdr workspace instead of creating one.                                       |
-| `--dry-run`        | off                  | Show the scope, the caps, the waves, and the first prompt; start no agent.                |
-| `--attach`         | off                  | Focus the lane instead of leaving it hidden.                                              |
-| `--repo`           | the enclosing repo   | Repository to work in.                                                                    |
+| Option             | Default               | Meaning                                                                                   |
+| ------------------ | --------------------- | ----------------------------------------------------------------------------------------- |
+| `TARGET...`        | required, one or more | Beads id(s) to work towards: epics, issues, or a mix.                                     |
+| `--max-iterations` | `50`                  | Turns this run may take before it stops and reports.                                      |
+| `--max-attempts`   | `3`                   | Attempts one issue gets before it is deferred.                                            |
+| `--count`, `-n`    | `1`                   | Turns to keep in flight at once, overriding [`[run] max_parallel`](configuration.md#run). |
+| `--agent`          | `claude`              | Agent kind to run. Any kind herdr supports.                                               |
+| `--workspace`      | `HERDR_WORKSPACE_ID`  | Reuse this herdr workspace instead of creating one.                                       |
+| `--dry-run`        | off                   | Show the scope, the caps, the waves, and the first prompt; start no agent.                |
+| `--attach`         | off                   | Focus the lane instead of leaving it hidden.                                              |
+| `--repo`           | the enclosing repo    | Repository to work in.                                                                    |
 
-There is no `--parent` or `--label`: the target is the scope.
+There is no `--parent` or `--label`: the targets are the scope.
 
 `--count` and `[run] max_parallel` are the same setting under two names, and they are the one such pair in milhouse ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)). [Configuration](configuration.md#run) carries the mapping.
 
@@ -309,17 +309,23 @@ There is no `--parent` or `--label`: the target is the scope.
 
 A leaf target pulls in its blockers because `bd ready` will not offer a blocked issue, so the target cannot close until they do. `milhouse run <issue> --dry-run` prints what it worked out.
 
+### Several targets
+
+`milhouse run` takes more than one target, and works their union as one scope rather than as two runs ([ADR 0025](decisions/0025-a-multi-target-run-shares-one-lane.md)). This is the one case a single target's fence cannot express: an issue under one target that is blocked by an issue under another. Given both targets in one run, that issue is offered by `bd ready` the moment its blocker closes, in the same run. Given them to two separate runs, neither one can finish — the run whose fence excludes the blocker stops with work left, and the operator is left interleaving the two runs by hand.
+
+One target still works exactly as it always has, lane name included. Above that, each target's own scope — an epic's descendants, or a leaf's blockers — is computed the same way a single target's is and unioned, in the order given, with duplicates dropped. `milhouse run <a> <b> --dry-run` prints the union and every target in it.
+
 ### One integration branch, and worker branches under it
 
-Whatever the count, a run has an **integration lane** on `milhouse/<target-id>`, and that is the branch you review ([ADR 0023](decisions/0023-a-run-has-one-lane.md)). Every iteration gets a **fresh agent**, which is what makes this ralph: the fresh context window comes from restarting the agent rather than from the worktree, so reusing the checkout costs nothing.
+Whatever the count, a run has an **integration lane**, and that is the branch you review ([ADR 0023](decisions/0023-a-run-has-one-lane.md)). At one target its branch is `milhouse/<target-id>`. Above one target there is no single id to name it after, so the branch is every target's id, sorted and joined with `+`: `milhouse/<a>+<b>` ([ADR 0025](decisions/0025-a-multi-target-run-shares-one-lane.md)). Sorting means the order you type the targets in does not change which lane you land on. Every iteration gets a **fresh agent**, which is what makes this ralph: the fresh context window comes from restarting the agent rather than from the worktree, so reusing the checkout costs nothing.
 
-At `--count 1` the turns happen in that lane, one after another, and nothing is merged because there is nothing to merge. Above it, each issue in flight gets a **worker lane** of its own, on `milhouse/<target-id>--<issue-id>`, branched from the integration branch as it stands at that moment and merged back into it when its turn succeeds ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)).
+At `--count 1` the turns happen in that lane, one after another, and nothing is merged because there is nothing to merge. Above it, each issue in flight gets a **worker lane** of its own, on `<integration-branch>--<issue-id>`, branched from the integration branch as it stands at that moment and merged back into it when its turn succeeds ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)).
 
 The separator is `--` and not `/`, because git cannot hold `milhouse/bd-e` and `milhouse/bd-e/bd-e.1` at the same time: refs are a directory hierarchy, and the second is refused with `cannot lock ref`. The first watched concurrent run died on exactly that, before it started an agent.
 
 Either way you get one branch to review as a piece, and either way a run never hits the two-blockers-two-lanes refusal that `dispatch` can: a worker lane's base is the integration branch by construction, so there is never a second candidate.
 
-Re-running the same target finds those lanes again and carries on where it left off, on the same branches. Resuming is just running it again.
+Re-running the same target(s) finds those lanes again and carries on where it left off, on the same branches. Resuming is just running it again, targets in whatever order — sorting is what makes that true above one target too.
 
 ### When it stops
 

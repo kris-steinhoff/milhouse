@@ -14,7 +14,7 @@ import pytest
 
 from milhouse.config import TrackerConfig
 from milhouse.errors import MilhouseError, TrackerError
-from milhouse.scope import resolve
+from milhouse.scope import resolve, resolve_many
 
 from .fakes import FakeProc, Reply
 
@@ -245,3 +245,134 @@ def test_a_closed_target_is_refused_with_a_remedy(
 
     assert caught.value.remedy is not None
     assert "bd-1" in caught.value.remedy
+
+
+# -- several targets, unioned ---------------------------------------------------
+
+
+def list_by_parent(repo: Path, children: dict[str, list[dict[str, Any]]]) -> Any:
+    """A `bd list --all --limit 0 --parent <id>` responder keyed on the parent."""
+
+    def respond(argv: tuple[str, ...]) -> Reply:
+        parent = argv[argv.index("--parent") + 1]
+        return Reply(stdout=json.dumps(children[parent]))
+
+    return respond
+
+
+def test_one_target_through_resolve_many_is_resolve_unchanged(
+    repo: Path, fake_proc: FakeProc, shown: Any
+) -> None:
+    """The common case is untouched, lane included."""
+    shown(bead("bd-e", issue_type="epic"))
+
+    scope = resolve_many(["bd-e"], repo_root=repo)
+
+    assert scope.targets[0].id == "bd-e"
+    assert scope.is_epic
+    assert scope.tracker.config.parent == "bd-e"
+    assert scope.key == "bd-e"
+
+
+def test_a_repeated_target_collapses_to_the_one_target_path(
+    repo: Path, fake_proc: FakeProc, shown: Any
+) -> None:
+    shown(bead("bd-e", issue_type="epic"))
+
+    scope = resolve_many(["bd-e", "bd-e"], repo_root=repo)
+
+    assert len(scope.targets) == 1
+    assert scope.key == "bd-e"
+
+
+def test_resolve_many_needs_at_least_one_target(repo: Path) -> None:
+    with pytest.raises(MilhouseError, match="at least one target"):
+        resolve_many([], repo_root=repo)
+
+
+def test_two_epics_union_their_descendants(repo: Path, fake_proc: FakeProc, shown: Any) -> None:
+    shown(bead("bd-e", issue_type="epic"), bead("bd-f", issue_type="epic"))
+    fake_proc.expect(
+        ["bd", "-C", str(repo), "list"],
+        list_by_parent(repo, {"bd-e": [bead("bd-e.1")], "bd-f": [bead("bd-f.1")]}),
+    )
+
+    scope = resolve_many(["bd-e", "bd-f"], repo_root=repo)
+
+    assert [target.id for target in scope.targets] == ["bd-e", "bd-f"]
+    assert scope.members == ("bd-e.1", "bd-f.1")
+    assert not scope.is_epic
+    assert scope.key == "bd-e+bd-f"
+    assert scope.describe() == "bd-e, bd-f (2 issue(s) total)"
+
+
+def test_the_lane_key_is_independent_of_target_order(
+    repo: Path, fake_proc: FakeProc, shown: Any
+) -> None:
+    """`run b a` and `run a b` have to find the same lane."""
+    shown(bead("bd-f", issue_type="epic"), bead("bd-e", issue_type="epic"))
+    fake_proc.expect(
+        ["bd", "-C", str(repo), "list"],
+        list_by_parent(repo, {"bd-e": [bead("bd-e.1")], "bd-f": [bead("bd-f.1")]}),
+    )
+
+    scope = resolve_many(["bd-f", "bd-e"], repo_root=repo)
+
+    assert scope.key == "bd-e+bd-f"
+
+
+def test_ready_offers_a_member_from_either_target(
+    repo: Path, fake_proc: FakeProc, shown: Any
+) -> None:
+    """The scenario the feature exists for: work under one target unblocks the other.
+
+    A child of ``bd-f`` would never reach a run scoped to ``bd-e`` alone. Given
+    both as targets it is a member of the union, so it is offered in the same
+    run rather than a second one.
+    """
+    shown(bead("bd-e", issue_type="epic"), bead("bd-f", issue_type="epic"))
+    fake_proc.expect(
+        ["bd", "-C", str(repo), "list"],
+        list_by_parent(repo, {"bd-e": [bead("bd-e.1")], "bd-f": [bead("bd-f.1")]}),
+    )
+    fake_proc.expect(["bd", "-C", str(repo), "ready"], Reply(stdout=json.dumps([bead("bd-f.1")])))
+
+    scope = resolve_many(["bd-e", "bd-f"], repo_root=repo)
+    found = scope.tracker.ready(claim=False)
+
+    assert found is not None
+    assert found.id == "bd-f.1"
+
+
+def test_a_mixed_epic_and_leaf_target_list_unions_both_kinds(
+    repo: Path, fake_proc: FakeProc, shown: Any
+) -> None:
+    shown(bead("bd-e", issue_type="epic"), bead("bd-1", **blocked_by("bd-0")), bead("bd-0"))
+    fake_proc.expect(
+        ["bd", "-C", str(repo), "list"], list_by_parent(repo, {"bd-e": [bead("bd-e.1")]})
+    )
+
+    scope = resolve_many(["bd-e", "bd-1"], repo_root=repo)
+
+    assert [target.id for target in scope.targets] == ["bd-e", "bd-1"]
+    # The epic's own descendants, then the leaf's blockers deepest first, then it.
+    assert scope.members == ("bd-e.1", "bd-0", "bd-1")
+    assert scope.key == "bd-1+bd-e"
+
+
+def test_a_missing_target_among_several_is_refused_before_the_others_are_resolved(
+    repo: Path, fake_proc: FakeProc
+) -> None:
+    fake_proc.expect(["bd", "-C", str(repo), "show", "bd-nope"], Reply(stdout="[]"))
+
+    with pytest.raises(TrackerError, match="no such target: bd-nope"):
+        resolve_many(["bd-nope", "bd-e"], repo_root=repo)
+
+
+def test_a_closed_target_among_several_is_refused(
+    repo: Path, fake_proc: FakeProc, shown: Any
+) -> None:
+    shown(bead("bd-1", status="closed"))
+
+    with pytest.raises(MilhouseError, match="already closed"):
+        resolve_many(["bd-1", "bd-e"], repo_root=repo)

@@ -28,6 +28,7 @@ One file per settled decision. Each states the context, the decision, and what i
 | [0022](0022-the-loop-is-earned.md)                            | The loop is earned, as `milhouse run <target>`                       |
 | [0023](0023-a-run-has-one-lane.md)                            | A run has one lane, keyed by its target                              |
 | [0024](0024-an-integration-lane-and-worker-lanes.md)          | A concurrent run has an integration lane and a worker lane per issue |
+| [0025](0025-a-multi-target-run-shares-one-lane.md)            | A multi-target run shares one lane, keyed by every target            |
 
 ## Superseded
 

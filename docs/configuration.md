@@ -110,7 +110,7 @@ Where an issue's agent works. See [ADR 0020](decisions/0020-a-lane-is-a-herdr-wo
 
 A lane is a herdr worktree labelled with the issue id, and herdr chooses where it goes — under `~/.herdr/worktrees/<repo>/<branch>` — so there is no key saying where lanes live. Nothing here turns lanes off: every turn happens in one.
 
-The prefix is in front of every branch milhouse creates, which is three shapes rather than one ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)): `milhouse/<issue>` for a `dispatch` lane, `milhouse/<target>` for a run's integration branch, and `milhouse/<target>--<issue>` for a worker branch inside that run. The `--` is not configurable, and it is not `/` because git cannot hold `milhouse/bd-e` and `milhouse/bd-e/bd-e.1` at the same time.
+The prefix is in front of every branch milhouse creates, which is three shapes rather than one ([ADR 0024](decisions/0024-an-integration-lane-and-worker-lanes.md)): `milhouse/<issue>` for a `dispatch` lane, `milhouse/<target>` for a run's integration branch, and `milhouse/<target>--<issue>` for a worker branch inside that run. The `--` is not configurable, and it is not `/` because git cannot hold `milhouse/bd-e` and `milhouse/bd-e/bd-e.1` at the same time. Given more than one target, `<target>` is every target's id, sorted and joined with `+` ([ADR 0025](decisions/0025-a-multi-target-run-shares-one-lane.md)).
 
 ## `[tracker]`
 
