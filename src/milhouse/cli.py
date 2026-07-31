@@ -23,7 +23,9 @@ any of them: everything the CLI needs is on
 from __future__ import annotations
 
 import logging
+import os
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from importlib.metadata import version as package_version
 from pathlib import Path
@@ -43,7 +45,7 @@ from .lanes import WORKER_SEPARATOR, Lane, Lanes
 from .models import Graph, Issue, Iteration, now
 from .parallel import Parallel
 from .policy import unattended
-from .renderer import PlainRenderer
+from .renderer import NullRenderer, PlainRenderer, Renderer, select_renderer
 from .run import Body, RunResult
 from .run import run as run_loop
 from .rundir import LOCK_FILENAME, RunLock
@@ -105,8 +107,22 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
+@dataclass(frozen=True)
+class OutputFlags:
+    """``--verbose`` and ``--quiet``, read once and handed down the click context.
+
+    Every subcommand that opens a :class:`~milhouse.session.Session` reads
+    these from ``ctx.obj`` and picks its renderer the same way, through
+    :func:`~milhouse.renderer.select_renderer`.
+    """
+
+    verbose: bool
+    quiet: bool
+
+
 @app.callback()
 def main_options(
+    ctx: typer.Context,
     version: Annotated[
         bool,
         typer.Option(
@@ -118,7 +134,15 @@ def main_options(
     ] = False,
     verbose: Annotated[
         bool,
-        typer.Option("--verbose", "-v", help="Log every subprocess milhouse runs."),
+        typer.Option(
+            "--verbose",
+            "-v",
+            help="Log every subprocess milhouse runs, and pick the plain renderer.",
+        ),
+    ] = False,
+    quiet: Annotated[
+        bool,
+        typer.Option("--quiet", "-q", help="Print only the end-of-run report."),
     ] = False,
 ) -> None:
     """Global options that apply to every subcommand."""
@@ -127,6 +151,7 @@ def main_options(
         format="%(levelname)s %(name)s: %(message)s",
         stream=sys.stderr,
     )
+    ctx.obj = OutputFlags(verbose=verbose, quiet=quiet)
 
 
 @app.command()
@@ -168,6 +193,7 @@ def doctor(
 
 @app.command()
 def step(
+    ctx: typer.Context,
     agent: Annotated[
         str | None,
         typer.Option(
@@ -229,7 +255,7 @@ def step(
         _dry_run(config)
         return
 
-    with _session(config, attach=attach) as session:
+    with _session(config, output=ctx.obj, attach=attach) as session:
         outcome = run_step(session)
         if outcome is None:
             reason, completed = nothing_ready(session)
@@ -253,6 +279,7 @@ def step(
 
 @app.command()
 def run(
+    ctx: typer.Context,
     targets: Annotated[
         list[str],
         typer.Argument(
@@ -364,6 +391,7 @@ def run(
         typer.echo(f"count   {width} turns in flight at once, each in a worker lane")
     session = _session(
         config,
+        output=ctx.obj,
         tracker=scope.tracker,
         attach=attach,
         lane_key=scope.key,
@@ -386,6 +414,7 @@ def run(
 
 @app.command()
 def dispatch(
+    ctx: typer.Context,
     count: Annotated[
         int,
         typer.Option("--count", "-n", min=1, help="How many ready issues to start at most."),
@@ -445,7 +474,7 @@ def dispatch(
             "tracker": {"parent": parent, "label": label},
         },
     )
-    with _session(config, attach=attach) as session:
+    with _session(config, output=ctx.obj, attach=attach) as session:
         dispatched = run_dispatch(session, limit=count)
         if not dispatched.started and not dispatched.failed:
             reason, completed = nothing_ready(session)
@@ -470,6 +499,7 @@ def dispatch(
 
 @app.command()
 def reap(
+    ctx: typer.Context,
     repo: Annotated[
         Path | None,
         typer.Option(
@@ -488,7 +518,7 @@ def reap(
     9 otherwise.
     """
     config = _config(repo)
-    with _session(config) as session:
+    with _session(config, output=ctx.obj) as session:
         results = run_reap(session)
         outstanding = len(session.audit.dispatches())
 
@@ -678,13 +708,14 @@ def _scope(config: Config) -> str:
 def _session(
     config: Config,
     *,
+    output: OutputFlags,
     tracker: BeadsTracker | None = None,
     attach: bool = False,
     lane_key: str | None = None,
     worker_lanes: bool = False,
 ) -> Session:
     """Assemble a :class:`~milhouse.session.Session` from resolved configuration."""
-    renderer = PlainRenderer()
+    renderer = _renderer(output)
     return Session(
         config,
         tracker=tracker or BeadsTracker(config.repo_root, config.tracker),
@@ -695,6 +726,21 @@ def _session(
         lane_key=lane_key,
         worker_lanes=worker_lanes,
     )
+
+
+def _renderer(output: OutputFlags) -> Renderer:
+    """Build the renderer :func:`~milhouse.renderer.select_renderer` picks.
+
+    ``live`` has no implementation yet (a later issue in the same epic), so it
+    falls back to :class:`PlainRenderer` until one lands; every other mode is
+    real today.
+    """
+    mode = select_renderer(
+        isatty=sys.stdout.isatty(), verbose=output.verbose, quiet=output.quiet, environ=os.environ
+    )
+    if mode == "quiet":
+        return NullRenderer()
+    return PlainRenderer()
 
 
 def _body(config: Config) -> Body:

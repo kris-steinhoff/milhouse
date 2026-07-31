@@ -172,6 +172,17 @@ A reused workspace is not an empty one, which is why `self_pane` exists. Its pan
 
 Variables holding an integer must parse as one, or milhouse exits with `ConfigError` (exit code 2). `MILHOUSE_AGENT_ARGS` and `MILHOUSE_VERIFY_COMMAND` are split with `shlex`, so quoting works the way it does in a shell.
 
+## Choosing a renderer
+
+Two more environment variables sit outside `Config`: they choose which renderer draws a command's progress rather than setting a value on it, so they are read directly (`milhouse.renderer.select_renderer`) instead of going through `load()`. They still follow the same env-beats-default, flags-beat-env layering:
+
+| Variable          | Sets                                                                                 |
+| ----------------- | ------------------------------------------------------------------------------------ |
+| `MILHOUSE_OUTPUT` | Forces `live`, `plain`, or `quiet`. Any other value is a `ConfigError`.              |
+| `NO_COLOR`        | Present at all (any value) forces `plain`, per [no-color.org](https://no-color.org). |
+
+`--quiet` beats both, and `--verbose` beats both but not `--quiet`. Without a flag or either variable, `live` is chosen when stdout is a terminal and `plain` otherwise. See [Global options](usage.md#global-options).
+
 ## What is not configurable
 
 - Prompt templates. They ship in the package and are versioned with the code, so a run is reproducible from a milhouse version. See [prompts](prompts.md).

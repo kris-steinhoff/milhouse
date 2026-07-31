@@ -79,6 +79,34 @@ def test_there_is_no_plan_command() -> None:
     assert "plan" not in result.output
 
 
+def test_verbose_and_quiet_are_documented_global_options() -> None:
+    """The flags that choose a renderer (milhouse-lyq.5) are on every command."""
+    result = invoke("--help")
+
+    assert result.exit_code == 0
+    output = " ".join(result.output.split())
+    assert "--verbose" in output
+    assert "--quiet" in output
+
+
+@pytest.mark.parametrize(
+    ("verbose", "quiet", "expected"),
+    [
+        (False, False, cli.PlainRenderer),
+        (True, False, cli.PlainRenderer),
+        (False, True, cli.NullRenderer),
+        (True, True, cli.NullRenderer),
+    ],
+)
+def test_the_renderer_built_matches_the_flags(
+    verbose: bool, quiet: bool, expected: type[object]
+) -> None:
+    """`_renderer` maps `select_renderer`'s mode onto a real renderer."""
+    renderer = cli._renderer(cli.OutputFlags(verbose=verbose, quiet=quiet))
+
+    assert isinstance(renderer, expected)
+
+
 @pytest.mark.parametrize(
     ("command", "flags"),
     [

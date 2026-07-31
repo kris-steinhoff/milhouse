@@ -5,15 +5,22 @@ Every command and flag, with worked examples. Output shown here was captured fro
 ## Global options
 
 ```
-milhouse [--version] [--verbose] <command> [options]
+milhouse [--version] [--verbose] [--quiet] <command> [options]
 ```
 
-| Option                 | Meaning                                                            |
-| ---------------------- | ------------------------------------------------------------------ |
-| `--version`            | Print the milhouse version and exit.                               |
-| `--verbose`, `-v`      | Log every subprocess milhouse runs, to stderr. The debugging tool. |
-| `--install-completion` | Install shell completion for milhouse, then exit.                  |
-| `--show-completion`    | Print the completion script instead of installing it.              |
+| Option                 | Meaning                                                                                                                                                 |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--version`            | Print the milhouse version and exit.                                                                                                                    |
+| `--verbose`, `-v`      | Log every subprocess milhouse runs, to stderr. The debugging tool. Picks the plain renderer, since a redrawn region would fight a greppable transcript. |
+| `--quiet`, `-q`        | Print only the end-of-run report; nothing else during the run.                                                                                          |
+| `--install-completion` | Install shell completion for milhouse, then exit.                                                                                                       |
+| `--show-completion`    | Print the completion script instead of installing it.                                                                                                   |
+
+### Choosing a renderer
+
+`step`, `run`, `dispatch`, and `reap` each pick a renderer for their progress output: `live`, a lane table redrawn in place, when stdout is a terminal; `plain`, a line per event, otherwise — the same output redirection and CI logs have always seen. `--verbose` always picks `plain`; `--quiet` always picks a renderer that prints nothing until the end-of-run report. `MILHOUSE_OUTPUT=live|plain|quiet` and `NO_COLOR` (present at all, any value) override the auto-detected default but not the flags. Every case is one pure function, `milhouse.renderer.select_renderer`, over `(isatty, verbose, quiet, environ)` — see [Configuration](configuration.md#choosing-a-renderer).
+
+The live renderer itself is a later issue in the same epic; until it lands, `live` falls back to `plain`, so today every case except `--quiet` prints the line-per-event output shown throughout this document.
 
 ## Shell completion
 

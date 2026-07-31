@@ -9,12 +9,16 @@ nothing between the code that knew what happened and the terminal that drew it
 
 :class:`Event` is the typed record that replaces the pre-formatted string, and
 :class:`Renderer` is the one contract a terminal implements over a stream of
-them. :class:`PlainRenderer` is the only implementation this issue ships: it
-reproduces today's line-per-event output, byte for byte, so that redirection
-and CI logs see no change. A live, redrawn-in-place renderer is a later issue
-in the same epic, and the point of the seam is that it is a second
-:class:`Renderer` rather than a second code path threaded through
+them. :class:`PlainRenderer` reproduces today's line-per-event output, byte
+for byte, so that redirection and CI logs see no change; :class:`NullRenderer`
+discards everything, for ``--quiet``. A live, redrawn-in-place renderer is a
+later issue in the same epic, and the point of the seam is that it is a
+second :class:`Renderer` rather than a second code path threaded through
 ``step.py``, ``run.py``, and ``parallel.py``.
+
+:func:`select_renderer` is the pure function that decides which of them a
+command gets, from ``isatty``, the flags, and the environment — never from
+globals — so the decision is a unit test rather than a subprocess test.
 
 :func:`about` and :func:`arrow` are the two pieces of formatting that used to
 live at the call site — ``session.py``'s indent and ``step.py``'s arrows —
@@ -25,12 +29,25 @@ though a call site still asks for it by name when it builds an
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, Protocol, runtime_checkable
+from typing import Literal, Protocol, cast, runtime_checkable
 
 import typer
 
-__all__ = ["Event", "EventKind", "PlainRenderer", "Renderer", "about", "arrow"]
+from .errors import ConfigError
+
+__all__ = [
+    "Event",
+    "EventKind",
+    "NullRenderer",
+    "OutputMode",
+    "PlainRenderer",
+    "Renderer",
+    "about",
+    "arrow",
+    "select_renderer",
+]
 
 EventKind = Literal["started", "dispatched", "heartbeat", "settled", "merged", "halted", "note"]
 """What kind of thing happened, named concretely by ADR 0026's table.
@@ -129,12 +146,93 @@ def arrow(text: str) -> str:
 class PlainRenderer:
     """One line per event, in order — today's output, unchanged.
 
-    The only renderer this issue ships. It reproduces ``milhouse run``'s
-    output byte for byte, because every call site already builds
-    :attr:`Event.text` to be exactly what it echoed before the seam existed;
-    this renderer's whole job is to print it.
+    Reproduces ``milhouse run``'s output byte for byte, because every call
+    site already builds :attr:`Event.text` to be exactly what it echoed
+    before the seam existed; this renderer's whole job is to print it.
     """
 
     def handle(self, event: Event) -> None:
         """Print ``event``'s text, the way ``typer.echo`` always did."""
         typer.echo(event.text)
+
+
+class NullRenderer:
+    """Discards every event. What ``--quiet`` wires up.
+
+    The end-of-run report is not an event and does not go through a renderer
+    (:doc:`../../docs/decisions/0026-the-progress-channel-is-events-and-the-terminal-is-one-renderer`),
+    so a command still prints it after the run; this is what makes that report
+    the whole output.
+    """
+
+    def handle(self, event: Event) -> None:
+        """Do nothing."""
+
+
+OutputMode = Literal["live", "plain", "quiet"]
+"""Which renderer a command gets, named the way :func:`select_renderer` returns it.
+
+``live`` is the lane table redrawn in place (a later issue in this epic;
+nothing builds it yet). ``plain`` is :class:`PlainRenderer`, today's
+line-per-event output. ``quiet`` is :class:`NullRenderer`: nothing prints
+until the end-of-run report.
+"""
+
+_OUTPUT_MODES: frozenset[str] = frozenset(("live", "plain", "quiet"))
+
+
+def select_renderer(
+    *, isatty: bool, verbose: bool, quiet: bool, environ: Mapping[str, str]
+) -> OutputMode:
+    """Decide which renderer a command gets.
+
+    A pure function over exactly what the decision needs, rather than a
+    reading of ``sys.stdout`` or ``os.environ`` buried in ``cli.py`` — the
+    same shape :func:`milhouse.config.load` uses for its own layering, so
+    this is a unit test rather than a subprocess test.
+
+    Precedence, highest first:
+
+    1. ``quiet`` — the whole point of asking for it is silence, so nothing
+       below this line gets to argue.
+    2. ``verbose`` — implies ``plain``. Its whole point is a greppable
+       transcript alongside the DEBUG logging it already turns on, and a
+       region that redraws would fight it.
+    3. ``MILHOUSE_OUTPUT`` in ``environ`` — an explicit ``live``, ``plain``,
+       or ``quiet``, following :mod:`milhouse.config`'s own env precedence:
+       env beats the auto-detected default, and flags still beat env.
+    4. ``NO_COLOR`` in ``environ`` — present at all, any value, per
+       `no-color.org <https://no-color.org>`_. ``live`` redraws in colour, so
+       this forces ``plain``.
+    5. ``isatty`` — ``live`` when stdout is a TTY, ``plain`` otherwise, so
+       redirection, CI logs, and ``2>&1 | tee`` behave exactly as they do
+       today.
+
+    Args:
+        isatty: Whether stdout is a terminal (``sys.stdout.isatty()``).
+        verbose: The ``--verbose`` flag.
+        quiet: The ``--quiet`` flag.
+        environ: The process environment (``os.environ``).
+
+    Returns:
+        Which renderer to build.
+
+    Raises:
+        ConfigError: ``MILHOUSE_OUTPUT`` is set to something other than
+            ``live``, ``plain``, or ``quiet``.
+    """
+    if quiet:
+        return "quiet"
+    if verbose:
+        return "plain"
+
+    output = environ.get("MILHOUSE_OUTPUT", "")
+    if output:
+        if output not in _OUTPUT_MODES:
+            raise ConfigError(f"MILHOUSE_OUTPUT must be one of live, plain, quiet, got {output!r}")
+        return cast(OutputMode, output)
+
+    if "NO_COLOR" in environ:
+        return "plain"
+
+    return "live" if isatty else "plain"
