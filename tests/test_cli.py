@@ -8,6 +8,7 @@ codes, and the commands that promise not to start anything really do not.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -15,13 +16,15 @@ import pytest
 from typer.testing import CliRunner, Result
 
 from milhouse import cli, proc
-from milhouse.models import Issue, Iteration, MergeRecord
+from milhouse.models import Issue, Iteration, MergeRecord, now
 from milhouse.parallel import Parallel
 from milhouse.run import Draining, Halt, RunResult
+from milhouse.rundir import LOCK_FILENAME, LockHolder, RunLock
 
 from .doubles import FakeAudit
 from .fakes import FakeProc, Reply
 from .test_herdr import wrapped
+from .test_rundir import _unused_pid
 
 runner = CliRunner()
 
@@ -326,12 +329,169 @@ def test_status_leaves_a_worker_lane_whose_run_is_gone_at_the_top_level(
 def test_status_flags_a_claim_left_by_an_unfinished_run(
     worked_repo: Path, fake_proc: FakeProc
 ) -> None:
+    """No lock at all reads the same as a dead one: nobody is running this claim."""
     fake_proc.expect("bd", Reply(stdout="[]"))
     FakeAudit(worked_repo).claimed("bd-e.2")
 
     result = invoke("status")
 
-    assert "bd-e.2 is claimed by an unfinished run" in result.output
+    assert "bd-e.2 is claimed, but nothing is still running it" in result.output
+
+
+def test_status_names_a_claim_held_by_a_live_run(worked_repo: Path, fake_proc: FakeProc) -> None:
+    fake_proc.expect("bd", Reply(stdout="[]"))
+    FakeAudit(worked_repo).claimed("bd-e.2")
+    lock = RunLock((worked_repo / ".milhouse" / "runs") / LOCK_FILENAME)
+    lock.path.parent.mkdir(parents=True)
+    lock.path.write_text(LockHolder(pid=os.getpid()).model_dump_json(), encoding="utf-8")
+
+    result = invoke("status")
+
+    assert "bd-e.2 is claimed by the live run" in result.output
+    assert "lock    held by pid" in result.output
+    assert "(live)" in result.output
+
+
+def test_status_names_a_claim_held_by_a_dead_run(worked_repo: Path, fake_proc: FakeProc) -> None:
+    """A claimed issue under a live run and one under a crashed one are opposites."""
+    fake_proc.expect("bd", Reply(stdout="[]"))
+    FakeAudit(worked_repo).claimed("bd-e.2")
+    lock = RunLock((worked_repo / ".milhouse" / "runs") / LOCK_FILENAME)
+    lock.path.parent.mkdir(parents=True)
+    lock.path.write_text(LockHolder(pid=_unused_pid()).model_dump_json(), encoding="utf-8")
+
+    result = invoke("status")
+
+    assert "bd-e.2 is claimed, but nothing is still running it" in result.output
+    assert "(dead)" in result.output
+
+
+def test_status_names_a_turn_in_flight_with_its_lane_branch_and_elapsed_time(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    fake_proc.expect("bd", Reply(stdout="[]"))
+    fake_proc.expect(
+        "herdr workspace list",
+        Reply(
+            stdout=wrapped(
+                "workspace:list", {"workspaces": [{"workspace_id": "wW1", "label": "bd-e.1"}]}
+            )
+        ),
+    )
+    fake_proc.expect(
+        "herdr worktree list",
+        Reply(
+            stdout=wrapped(
+                "worktree:list",
+                {
+                    "worktrees": [
+                        {"path": str(worked_repo), "branch": "main", "open_workspace_id": "wG"},
+                        {
+                            "path": "/worktrees/milhouse-bd-e.1",
+                            "branch": "milhouse/bd-e.1",
+                            "open_workspace_id": "wW1",
+                        },
+                    ]
+                },
+            )
+        ),
+    )
+    audit = FakeAudit(worked_repo)
+    audit.claimed("bd-e.1")
+    audit.dispatched(
+        "bd-e.1",
+        {
+            "number": 1,
+            "attempt": 1,
+            "head_before": "sha0",
+            "prompt_path": None,
+            "started_at": now().isoformat(),
+            "lane_branch": "milhouse/bd-e.1",
+            "lane_path": "/worktrees/milhouse-bd-e.1",
+        },
+    )
+
+    result = invoke("status")
+
+    assert "turns (1)" in result.output
+    lines = [line for line in result.output.splitlines() if "milhouse/bd-e.1" in line]
+    assert lines[0].startswith("  bd-e.1  milhouse/bd-e.1  /worktrees/milhouse-bd-e.1  running")
+
+
+def test_status_names_a_turn_whose_lane_herdr_no_longer_holds(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    fake_proc.expect("bd", Reply(stdout="[]"))
+    FakeAudit(worked_repo).dispatched(
+        "bd-e.1",
+        {
+            "number": 1,
+            "attempt": 1,
+            "head_before": "sha0",
+            "prompt_path": None,
+            "started_at": now().isoformat(),
+            "lane_branch": "milhouse/bd-e.1",
+            "lane_path": "/worktrees/milhouse-bd-e.1",
+        },
+    )
+
+    result = invoke("status")
+
+    assert "turns (1)" in result.output
+    assert "bd-e.1  milhouse/bd-e.1  /worktrees/milhouse-bd-e.1  running" in result.output
+    assert "(lane is gone)" in result.output
+
+
+def test_status_on_an_empty_repository_has_no_turns_claims_or_lock(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    fake_proc.expect("bd", Reply(stdout="[]"))
+
+    result = invoke("status")
+
+    assert result.exit_code == 0
+    assert "(no issues)" in result.output
+    assert "turns (" not in result.output
+    assert "claim   " not in result.output
+    assert "lock    " not in result.output
+
+
+def test_status_defaults_to_unfinished_issues_and_all_restores_the_rest(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    fake_proc.expect("bd", Reply(stdout=json.dumps(CHILDREN)))
+
+    default = invoke("status")
+    everything = invoke("status", "--all")
+
+    assert "Add the subcommand" not in default.output
+    assert "Document it" in default.output
+    assert "and 1 closed issue(s)" in default.output
+
+    assert "Add the subcommand" in everything.output
+    assert "Document it" in everything.output
+
+
+def test_status_defaults_to_recent_iterations_and_all_restores_the_rest(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    fake_proc.expect("bd", Reply(stdout="[]"))
+    audit = FakeAudit(worked_repo)
+    for number in range(1, 8):
+        audit.record(
+            Iteration(number=number, issue_id=f"bd-e.{number}", outcome="success", detail="closed")
+        )
+
+    default = invoke("status")
+    everything = invoke("status", "--all")
+
+    assert "bd-e.1 " not in default.output
+    assert "bd-e.7 " in default.output
+    assert "showing the last 5 of 7" in default.output
+
+    assert "bd-e.1 " in everything.output
+    assert "bd-e.7 " in everything.output
+    assert "iterations (7)" in everything.output
 
 
 def bd_reads_the_tree(argv: tuple[str, ...]) -> Reply:
