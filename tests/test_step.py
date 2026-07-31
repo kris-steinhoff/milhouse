@@ -12,6 +12,7 @@ from milhouse.gitrepo import Merge
 from milhouse.herdr import Worktree
 from milhouse.models import Issue
 from milhouse.policy import Decision, unattended
+from milhouse.renderer import PlainRenderer
 from milhouse.runner import TurnResult
 from milhouse.session import Session
 from milhouse.step import DispatchResult, dispatch, nothing_ready, reap, step
@@ -620,6 +621,28 @@ def test_reap_leaves_a_turn_that_is_still_working(config: Config, decomposed: Fa
         assert reap(opened) == []
 
     assert list(session.audit.dispatches()) == ["bd-e.1"]
+
+
+def test_many_polls_over_one_unchanged_turn_do_not_grow_the_plain_output(
+    config: Config, decomposed: FakeTracker, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A `--count N` run at the default `poll_ms` against a long turn.
+
+    `reap` used to print "... is still working" on every one of these polls.
+    Through the plain renderer, none past the first does.
+    """
+    client = with_lane(FakeClient(), "bd-e.1")
+    session, runner = build(config, tracker=decomposed, script=["close"], client=client)
+    runner.working = True
+    session.report = PlainRenderer().handle
+
+    with session as opened:
+        dispatch(opened)
+        capsys.readouterr()  # drop the dispatch line; only the polls are under test
+        for _ in range(50):
+            assert reap(opened) == []
+
+    assert capsys.readouterr().out.count("\n") <= 1
 
 
 def test_a_reaped_turn_that_did_not_finish_reopens_its_issue(

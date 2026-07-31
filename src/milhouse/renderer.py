@@ -9,9 +9,11 @@ nothing between the code that knew what happened and the terminal that drew it
 
 :class:`Event` is the typed record that replaces the pre-formatted string, and
 :class:`Renderer` is the one contract a terminal implements over a stream of
-them. :class:`PlainRenderer` is the only implementation this issue ships: it
-reproduces today's line-per-event output, byte for byte, so that redirection
-and CI logs see no change. A live, redrawn-in-place renderer is a later issue
+them. :class:`PlainRenderer` reproduces today's line-per-event output for
+every kind but one: a ``heartbeat`` fires on every poll regardless of whether
+anything changed, so it prints only when the turn's ``state`` changes or
+:data:`PLAIN_KEEPALIVE_MS` has passed since the last one shown for that turn,
+rather than once per poll. A live, redrawn-in-place renderer is a later issue
 in the same epic, and the point of the seam is that it is a second
 :class:`Renderer` rather than a second code path threaded through
 ``step.py``, ``run.py``, and ``parallel.py``.
@@ -30,7 +32,15 @@ from typing import Literal, Protocol, runtime_checkable
 
 import typer
 
-__all__ = ["Event", "EventKind", "PlainRenderer", "Renderer", "about", "arrow"]
+__all__ = [
+    "PLAIN_KEEPALIVE_MS",
+    "Event",
+    "EventKind",
+    "PlainRenderer",
+    "Renderer",
+    "about",
+    "arrow",
+]
 
 EventKind = Literal["started", "dispatched", "heartbeat", "settled", "merged", "halted", "note"]
 """What kind of thing happened, named concretely by ADR 0026's table.
@@ -126,15 +136,52 @@ def arrow(text: str) -> str:
     return f"→ {text}"
 
 
-class PlainRenderer:
-    """One line per event, in order — today's output, unchanged.
+PLAIN_KEEPALIVE_MS = 60_000
+"""How long a turn's heartbeat may stay silent in :class:`PlainRenderer`.
 
-    The only renderer this issue ships. It reproduces ``milhouse run``'s
-    output byte for byte, because every call site already builds
-    :attr:`Event.text` to be exactly what it echoed before the seam existed;
-    this renderer's whole job is to print it.
+Deliberately not ``[run] poll_ms``: how often milhouse asks herdr about a
+lane and how often a human wants to be told a long turn is still alive are
+unrelated, and coupling the two is what produced the wall of identical
+``"... is still working"`` lines this constant exists to stop
+(:doc:`ADR 0026
+<../../docs/decisions/0026-the-progress-channel-is-events-and-the-terminal-is-one-renderer>`).
+"""
+
+
+class PlainRenderer:
+    """One line per event, in order, with a repeating heartbeat collapsed.
+
+    Every other kind prints :attr:`Event.text` verbatim, unchanged from
+    before the seam existed. A ``heartbeat`` is different: :func:`reap
+    <milhouse.step.reap>` emits one for every turn still in flight on every
+    poll, whether or not anything about it changed, so this renderer shows
+    one only when its :attr:`~Event.state` differs from the last one shown
+    for that :attr:`~Event.issue_id`, or when :data:`PLAIN_KEEPALIVE_MS` has
+    passed since the last one shown — whichever comes first, so a long turn
+    whose state never changes still says something occasionally instead of
+    going silent, in a piped log, for its whole duration.
     """
 
+    def __init__(self) -> None:
+        """Start with no turn's heartbeat shown yet."""
+        self._last_heartbeat: dict[str | None, tuple[str | None, int]] = {}
+
     def handle(self, event: Event) -> None:
-        """Print ``event``'s text, the way ``typer.echo`` always did."""
+        """Print ``event``'s text, unless it's a heartbeat repeating too soon."""
+        if event.kind == "heartbeat" and not self._due(event):
+            return
         typer.echo(event.text)
+
+    def _due(self, event: Event) -> bool:
+        """Whether this heartbeat is new, or old, enough to be worth showing.
+
+        Recorded by ``elapsed_ms`` rather than wall-clock time read here, so
+        the cadence follows the turn's own clock and a test can drive it
+        without mocking time.
+        """
+        elapsed = event.elapsed_ms or 0
+        last = self._last_heartbeat.get(event.issue_id)
+        if last is not None and last[0] == event.state and elapsed - last[1] < PLAIN_KEEPALIVE_MS:
+            return False
+        self._last_heartbeat[event.issue_id] = (event.state, elapsed)
+        return True

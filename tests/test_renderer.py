@@ -9,7 +9,18 @@ from __future__ import annotations
 
 import pytest
 
-from milhouse.renderer import Event, PlainRenderer, about, arrow
+from milhouse.renderer import PLAIN_KEEPALIVE_MS, Event, PlainRenderer, about, arrow
+
+
+def heartbeat(issue_id: str, state: str, elapsed_ms: int) -> Event:
+    return Event(
+        "heartbeat",
+        f"{issue_id} is still working",
+        issue_id=issue_id,
+        lane="w1",
+        state=state,
+        elapsed_ms=elapsed_ms,
+    )
 
 
 def test_an_event_carries_its_fields_separately_from_its_text() -> None:
@@ -58,3 +69,63 @@ def test_the_plain_renderer_prints_the_events_text(capsys: pytest.CaptureFixture
     renderer.handle(Event("note", "took over the lock on bd-e from a dead run"))
 
     assert capsys.readouterr().out == "took over the lock on bd-e from a dead run\n"
+
+
+# -- the plain renderer's heartbeat dedup ---------------------------------------
+
+
+def test_a_repeated_heartbeat_in_the_same_state_is_shown_only_once(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The wall of text this issue exists to stop: one poll's worth, not ten."""
+    renderer = PlainRenderer()
+
+    for elapsed in (0, 5_000, 10_000, 15_000, 20_000):
+        renderer.handle(heartbeat("bd-e.1", "working", elapsed))
+
+    assert capsys.readouterr().out == "bd-e.1 is still working\n"
+
+
+def test_a_heartbeat_reprints_when_its_state_changes(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    renderer = PlainRenderer()
+
+    renderer.handle(heartbeat("bd-e.1", "working", 0))
+    renderer.handle(heartbeat("bd-e.1", "working", 5_000))
+    renderer.handle(heartbeat("bd-e.1", "reaping", 10_000))
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines == ["bd-e.1 is still working", "bd-e.1 is still working"]
+
+
+def test_a_heartbeat_reprints_once_the_keepalive_cadence_has_passed(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A long turn whose state never changes still says something, on its own cadence."""
+    renderer = PlainRenderer()
+
+    renderer.handle(heartbeat("bd-e.1", "working", 0))
+    renderer.handle(heartbeat("bd-e.1", "working", PLAIN_KEEPALIVE_MS - 1))
+    renderer.handle(heartbeat("bd-e.1", "working", PLAIN_KEEPALIVE_MS))
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines == ["bd-e.1 is still working", "bd-e.1 is still working"]
+
+
+def test_heartbeats_for_different_turns_are_tracked_independently(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    renderer = PlainRenderer()
+
+    renderer.handle(heartbeat("bd-e.1", "working", 0))
+    renderer.handle(heartbeat("bd-e.2", "working", 0))
+    renderer.handle(heartbeat("bd-e.1", "working", 5_000))
+    renderer.handle(heartbeat("bd-e.2", "reaping", 5_000))
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines == [
+        "bd-e.1 is still working",
+        "bd-e.2 is still working",
+        "bd-e.2 is still working",
+    ]
