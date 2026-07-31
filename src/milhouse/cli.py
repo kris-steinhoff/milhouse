@@ -43,6 +43,7 @@ from .lanes import WORKER_SEPARATOR, Lane, Lanes
 from .models import Graph, Issue, Iteration, now
 from .parallel import Parallel
 from .policy import unattended
+from .renderer import PlainRenderer
 from .run import Body, RunResult
 from .run import run as run_loop
 from .rundir import LOCK_FILENAME, RunLock
@@ -683,12 +684,13 @@ def _session(
     worker_lanes: bool = False,
 ) -> Session:
     """Assemble a :class:`~milhouse.session.Session` from resolved configuration."""
+    renderer = PlainRenderer()
     return Session(
         config,
         tracker=tracker or BeadsTracker(config.repo_root, config.tracker),
         client=HerdrClient(cwd=config.repo_root),
         repo=GitRepo(config.repo_root),
-        report=typer.echo,
+        report=renderer.handle,
         attach=attach,
         lane_key=lane_key,
         worker_lanes=worker_lanes,

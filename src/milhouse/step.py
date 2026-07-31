@@ -41,8 +41,9 @@ from .errors import AgentError, HerdrError, MilhouseError
 from .lanes import Lane
 from .models import Issue, Iteration, MergeRecord, Outcome, now
 from .policy import Decision, Policy, decide
+from .renderer import Event, about, arrow
 from .runner import Runner, TurnResult
-from .session import Session, about
+from .session import Session
 from .verify import Verification, verify
 
 __all__ = [
@@ -168,7 +169,13 @@ def step(session: Session, *, policy: Policy = decide) -> StepResult | None:
         error = turn.error
 
     result = _finish(session, pending, runner, turn, error=error, policy=policy)
-    session.report(about(issue.id, f"→ {result.iteration.outcome}: {result.iteration.detail}"))
+    session.report(
+        Event(
+            "settled",
+            about(issue.id, arrow(f"{result.iteration.outcome}: {result.iteration.detail}")),
+            issue_id=issue.id,
+        )
+    )
     return result
 
 
@@ -239,13 +246,26 @@ def dispatch(session: Session, *, limit: int = 1, policy: Policy = decide) -> Di
         else:
             error = turn.error
         if error:
-            session.report(about(issue.id, f"→ could not start: {error}"))
+            session.report(
+                Event(
+                    "settled",
+                    about(issue.id, arrow(f"could not start: {error}")),
+                    issue_id=issue.id,
+                )
+            )
             result = _finish(session, pending, runner, turn, error=error, policy=policy)
             return DispatchResult(started=started, failed=[result])
         pending = replace(pending, prompt_path=session.relative(turn.prompt_path if turn else None))
         session.audit.dispatched(issue.id, pending.as_entry())
         session.hand_off(issue.id)
-        session.report(about(issue.id, f"→ dispatched to {pending.lane.workspace_id}"))
+        session.report(
+            Event(
+                "dispatched",
+                about(issue.id, arrow(f"dispatched to {pending.lane.workspace_id}")),
+                issue_id=issue.id,
+                lane=pending.lane.workspace_id,
+            )
+        )
         started.append(pending)
     return DispatchResult(started=started)
 
@@ -273,13 +293,19 @@ def reap(session: Session, *, policy: Policy = decide) -> list[StepResult]:
         runner = session.reaper_for(pending.lane)
         timed_out = _overdue(session, pending)
         if runner.settled() is None and not timed_out:
-            session.report(f"{pending.issue.id} is still working")
+            session.report(_heartbeat(pending, "working"))
             continue
-        session.report(f"reaping iteration {pending.number}: {pending.issue.id}")
+        session.report(_heartbeat(pending, "reaping"))
         turn = runner.finish_turn(pending.number, issue_id=issue_id)
         turn.timed_out = timed_out
         result = _finish(session, pending, runner, turn, error=None, policy=policy)
-        session.report(about(issue_id, f"→ {result.iteration.outcome}: {result.iteration.detail}"))
+        session.report(
+            Event(
+                "settled",
+                about(issue_id, arrow(f"{result.iteration.outcome}: {result.iteration.detail}")),
+                issue_id=issue_id,
+            )
+        )
         results.append(result)
     return results
 
@@ -323,7 +349,9 @@ def _prepare(session: Session, issue: Issue) -> tuple[Runner, str, Dispatched]:
     previous = session.history_for(issue.id)
     attempt = len(previous) + 1
     suffix = f" (attempt {attempt})" if attempt > 1 else ""
-    session.report(f"iteration {number}: {issue.id} {issue.title}{suffix}")
+    session.report(
+        Event("started", f"iteration {number}: {issue.id} {issue.title}{suffix}", issue_id=issue.id)
+    )
 
     runner = session.runner_for(issue)
     lane = session.lane_of(runner, issue)
@@ -435,13 +463,25 @@ def _rebuild(session: Session, issue_id: str, entry: dict[str, Any]) -> Dispatch
     """
     located = session.lanes.locate(issue_id)
     if located is None:
-        session.report(f"{issue_id} was dispatched but its lane is gone; leaving it to reconcile")
+        session.report(
+            Event(
+                "note",
+                f"{issue_id} was dispatched but its lane is gone; leaving it to reconcile",
+                issue_id=issue_id,
+            )
+        )
         return None
     lane, _ = located
     try:
         issue = session.tracker.get(issue_id)
     except MilhouseError as exc:
-        session.report(f"{issue_id} was dispatched but cannot be read back: {exc}")
+        session.report(
+            Event(
+                "note",
+                f"{issue_id} was dispatched but cannot be read back: {exc}",
+                issue_id=issue_id,
+            )
+        )
         return None
     return Dispatched(
         issue=issue,
@@ -454,6 +494,32 @@ def _rebuild(session: Session, issue_id: str, entry: dict[str, Any]) -> Dispatch
         head_before=entry.get("head_before"),
         prompt_path=entry.get("prompt_path"),
         started_at=_when(entry.get("started_at")),
+    )
+
+
+_HEARTBEAT_TEXT = {
+    "working": lambda pending: f"{pending.issue.id} is still working",
+    "reaping": lambda pending: f"reaping iteration {pending.number}: {pending.issue.id}",
+}
+
+
+def _heartbeat(pending: Dispatched, state: str) -> Event:
+    """A turn already in flight, observed again on this poll.
+
+    Not indented and not labelled with an arrow, same as today: a heartbeat is
+    an observation rather than a conclusion, and the renderer — not this
+    module — decides what to do with one that repeats
+    (:doc:`ADR 0026
+    <../../docs/decisions/0026-the-progress-channel-is-events-and-the-terminal-is-one-renderer>`).
+    """
+    elapsed_ms = int((now() - pending.started_at).total_seconds() * 1000)
+    return Event(
+        "heartbeat",
+        _HEARTBEAT_TEXT[state](pending),
+        issue_id=pending.issue.id,
+        lane=pending.lane.workspace_id,
+        state=state,
+        elapsed_ms=elapsed_ms,
     )
 
 
@@ -532,10 +598,24 @@ def _land(session: Session, pending: Dispatched, outcome: Outcome) -> MergeRecor
         skipped = MergeRecord(
             source=source, target=target, skipped=f"{refused.source} did not land in {target}"
         )
-        session.report(about(pending.issue.id, f"→ {merge_line(skipped)}"))
+        session.report(
+            Event(
+                "merged",
+                about(pending.issue.id, arrow(merge_line(skipped))),
+                issue_id=pending.issue.id,
+                lane=source,
+            )
+        )
         return skipped
 
-    session.report(about(pending.issue.id, f"merging {source} into {target} in {integration.path}"))
+    session.report(
+        Event(
+            "merged",
+            about(pending.issue.id, f"merging {source} into {target} in {integration.path}"),
+            issue_id=pending.issue.id,
+            lane=source,
+        )
+    )
     try:
         merged = session.repo.at(integration.path).merge(
             source, message=f"Merge {source} into {target} ({pending.issue.id})"
@@ -550,7 +630,14 @@ def _land(session: Session, pending: Dispatched, outcome: Outcome) -> MergeRecor
             fast_forwarded=merged.fast_forwarded,
             conflicts=list(merged.conflicts),
         )
-    session.report(about(pending.issue.id, f"→ {merge_line(record)}"))
+    session.report(
+        Event(
+            "merged",
+            about(pending.issue.id, arrow(merge_line(record))),
+            issue_id=pending.issue.id,
+            lane=source,
+        )
+    )
     if not record.landed:
         session.refused_merge = record
     return record
@@ -609,7 +696,13 @@ def _verify(
     command = session.config.verify.command
     if error or not issue_after.is_closed or not command:
         return None
-    session.report(about(issue_after.id, f"verifying in {cwd}: {' '.join(command)}"))
+    session.report(
+        Event(
+            "note",
+            about(issue_after.id, f"verifying in {cwd}: {' '.join(command)}"),
+            issue_id=issue_after.id,
+        )
+    )
     return verify(session.config, cwd=cwd)
 
 
@@ -659,12 +752,24 @@ def _verify_integration(
 
     issue_id = pending.issue.id
     session.report(
-        about(issue_id, f"verifying {merge.target} in {integration.path}: {' '.join(command)}")
+        Event(
+            "merged",
+            about(issue_id, f"verifying {merge.target} in {integration.path}: {' '.join(command)}"),
+            issue_id=issue_id,
+            lane=merge.target,
+        )
     )
     checked = verify(session.config, cwd=integration.path)
     if checked is None or checked.ok:
         return checked
-    session.report(about(issue_id, f"→ {merge.target} is red with {issue_id} merged into it"))
+    session.report(
+        Event(
+            "merged",
+            about(issue_id, arrow(f"{merge.target} is red with {issue_id} merged into it")),
+            issue_id=issue_id,
+            lane=merge.target,
+        )
+    )
     session.note(
         pending.issue.id,
         f"milhouse merged {merge.source} into {merge.target} in iteration "
