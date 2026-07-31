@@ -9,12 +9,12 @@ nothing between the code that knew what happened and the terminal that drew it
 
 :class:`Event` is the typed record that replaces the pre-formatted string, and
 :class:`Renderer` is the one contract a terminal implements over a stream of
-them. :class:`PlainRenderer` is the only implementation this issue ships: it
-reproduces today's line-per-event output, byte for byte, so that redirection
-and CI logs see no change. A live, redrawn-in-place renderer is a later issue
-in the same epic, and the point of the seam is that it is a second
-:class:`Renderer` rather than a second code path threaded through
-``step.py``, ``run.py``, and ``parallel.py``.
+them. :class:`PlainRenderer` reproduces today's line-per-event output, byte for
+byte, so that redirection and CI logs see no change. :class:`LiveRenderer` is
+the second: a lane table redrawn in place, chosen instead when stdout is a
+capable terminal. Both are genuinely two implementations of one contract
+rather than one code path threaded through ``step.py``, ``run.py``, and
+``parallel.py`` with a flag in it — which is the point of the seam.
 
 :func:`about` and :func:`arrow` are the two pieces of formatting that used to
 live at the call site — ``session.py``'s indent and ``step.py``'s arrows —
@@ -25,12 +25,26 @@ though a call site still asks for it by name when it builds an
 
 from __future__ import annotations
 
+import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from types import TracebackType
 from typing import Literal, Protocol, runtime_checkable
 
 import typer
+from rich.console import Console
+from rich.live import Live
 
-__all__ = ["Event", "EventKind", "PlainRenderer", "Renderer", "about", "arrow"]
+__all__ = [
+    "Event",
+    "EventKind",
+    "LiveRenderer",
+    "PlainRenderer",
+    "Renderer",
+    "about",
+    "arrow",
+]
 
 EventKind = Literal["started", "dispatched", "heartbeat", "settled", "merged", "halted", "note"]
 """What kind of thing happened, named concretely by ADR 0026's table.
@@ -129,12 +143,258 @@ def arrow(text: str) -> str:
 class PlainRenderer:
     """One line per event, in order — today's output, unchanged.
 
-    The only renderer this issue ships. It reproduces ``milhouse run``'s
-    output byte for byte, because every call site already builds
-    :attr:`Event.text` to be exactly what it echoed before the seam existed;
-    this renderer's whole job is to print it.
+    It reproduces ``milhouse run``'s output byte for byte, because every call
+    site already builds :attr:`Event.text` to be exactly what it echoed
+    before the seam existed; this renderer's whole job is to print it.
     """
 
     def handle(self, event: Event) -> None:
         """Print ``event``'s text, the way ``typer.echo`` always did."""
         typer.echo(event.text)
+
+
+_TITLE_RE = re.compile(r"^iteration \d+: \S+ (?P<title>.+)$")
+_ATTEMPT_SUFFIX_RE = re.compile(r" \(attempt \d+\)$")
+_OUTCOME_RE = re.compile(r"→ (?P<outcome>[^:]+):")
+
+
+def _parse_title(text: str) -> str:
+    """The issue's title, out of a ``started`` event's finished sentence.
+
+    ``Event`` has no field for it (:doc:`ADR 0026
+    <../../docs/decisions/0026-the-progress-channel-is-events-and-the-terminal-is-one-renderer>`
+    names seven kinds and none of them is "the title"), and the table needs one
+    for its title column. ``step._prepare`` builds ``started`` text in exactly
+    one shape — ``f"iteration {number}: {issue.id} {issue.title}{suffix}"`` —
+    so parsing it back out is reading the one sentence that already has it
+    rather than growing the event schema for a single column.
+    """
+    match = _TITLE_RE.match(text)
+    if not match:
+        return ""
+    return _ATTEMPT_SUFFIX_RE.sub("", match.group("title"))
+
+
+def _parse_outcome(text: str) -> str:
+    """The outcome word, out of a ``settled`` event's ``about(id, arrow(...))`` text."""
+    match = _OUTCOME_RE.search(text)
+    return match.group("outcome") if match else text
+
+
+def _merge_word(text: str) -> str | None:
+    """How a ``merged`` event's text says the branch landed, or ``None`` before it has.
+
+    Only the concluding line — the one with an arrow — says how the merge
+    turned out; the "merging X into Y in Z" line that starts it carries no
+    verdict yet.
+    """
+    if "→" not in text:
+        return None
+    tail = text.split("→", 1)[1].strip()
+    if tail.startswith("is red with"):
+        return "merged (red)"
+    unlanded = "was not merged into" in tail or "conflicts with" in tail
+    if unlanded or tail.startswith("could not merge"):
+        return "unmerged"
+    return "merged"
+
+
+def _format_elapsed(seconds: float) -> str:
+    """A duration as ``4m12s``, or ``45s`` under a minute."""
+    total = max(int(seconds), 0)
+    minutes, secs = divmod(total, 60)
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
+@dataclass
+class _Row:
+    """One lane's row, built up from whatever events have touched it so far."""
+
+    issue_id: str
+    title: str = ""
+    mark: str = "*"
+    status: str = "started"
+    branch: str = ""
+    merged: str = ""
+    started: float = 0.0
+    elapsed_ms: int | None = None
+
+
+class LiveRenderer:
+    """A lane table redrawn in place, with milestones scrolling above it.
+
+    ``rich.Live`` owns the redraw; this class owns turning an :class:`Event`
+    stream into the table it draws. That split is what :meth:`frame` is for:
+    it renders the table's current text with no ``Live`` involved, so the
+    whole state machine — what a lane's row looks like after any sequence of
+    events — is tested by feeding events to :meth:`handle` and reading
+    :meth:`frame` back, no terminal required.
+
+    Only ``started``, ``dispatched``, and ``heartbeat`` change a row.
+    ``settled``, ``merged``, ``halted``, and ``note`` carry a finished
+    sentence instead, and are printed through :attr:`console` rather than
+    folded into a cell — while a ``Live`` is active, printing through its own
+    console inserts that line above the redrawn region and lets it scroll
+    normally, which is the epic's "milestones scrolling above it in ordinary
+    scrollback." ``settled`` does both: the sentence scrolls, and the row it
+    concluded moves above the rule with its outcome.
+
+    ``auto_refresh`` is off. Every :meth:`handle` call redraws once, so the
+    table's cadence is the event stream's own — a poll every few seconds, not
+    a timer thread painting on a schedule nothing here controls. Before
+    ``Live`` is started, that redraw is skipped rather than half-done, which
+    is what lets :meth:`frame` be read straight off :meth:`handle` calls with
+    no ``Live`` ever entered.
+
+    No alt screen (``screen=False``, ``rich.Live``'s own default) and no
+    keybindings, so Ctrl-C stays Ctrl-C. Whatever interrupts a run still runs
+    this object's ``__exit__``, by ordinary context-manager semantics, so the
+    cursor ``Live.start()`` hid is always restored and the last frame is what
+    is left on the screen.
+    """
+
+    def __init__(
+        self,
+        *,
+        console: Console | None = None,
+        scope: str = "",
+        max_iterations: int = 0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        """Set up an empty table.
+
+        Args:
+            console: Where the table (and the milestones above it) are drawn.
+                Defaults to a console over stdout; a caller that wants to
+                force terminal behaviour for a non-terminal file, or capture
+                output for a test, passes its own.
+            scope: The header's ``scope`` line — a run's target description,
+                static for its whole lifetime and not something any event
+                carries.
+            max_iterations: The ceiling the header's ``turn N/M`` counts
+                against. Also static, also not an event field.
+            clock: How elapsed time is measured. Injectable so a test can feed
+                a sequence of events and know exactly what "12m" is measured
+                from, without a real run taking twelve minutes.
+        """
+        self.console = console or Console()
+        self._scope = scope
+        self._max_iterations = max_iterations
+        self._clock = clock
+        self._live = Live(console=self.console, screen=False, transient=False, auto_refresh=False)
+        self._active: dict[str, _Row] = {}
+        self._settled: list[_Row] = []
+        self._used = 0
+        self._run_started = clock()
+        self._live.update(self.frame())
+
+    def __enter__(self) -> LiveRenderer:
+        """Start redrawing in place."""
+        self._live.__enter__()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        """Stop redrawing, leaving the last frame and the milestones above it on screen."""
+        self._live.__exit__(exc_type, exc, tb)
+
+    def handle(self, event: Event) -> None:
+        """Update the table, or print a milestone line above it, and redraw."""
+        if event.kind == "started" and event.issue_id:
+            self._used += 1
+            row = self._row(event.issue_id)
+            row.title = _parse_title(event.text) or row.title
+            row.mark = "*"
+            row.status = "started"
+            row.started = self._clock()
+        elif event.kind == "dispatched" and event.issue_id:
+            row = self._row(event.issue_id)
+            row.status = "dispatched"
+            row.branch = event.lane or row.branch
+        elif event.kind == "heartbeat" and event.issue_id:
+            row = self._row(event.issue_id)
+            row.status = event.state or row.status
+            row.branch = event.lane or row.branch
+            row.elapsed_ms = event.elapsed_ms
+        elif event.kind == "merged":
+            row = self._active.get(event.issue_id) if event.issue_id else None
+            if row is not None:
+                row.branch = event.lane or row.branch
+                word = _merge_word(event.text)
+                if word:
+                    row.merged = word
+                else:
+                    row.status = "merging"
+            self.console.print(event.text)
+        elif event.kind == "settled" and event.issue_id:
+            row = self._active.pop(event.issue_id, None) or _Row(issue_id=event.issue_id)
+            outcome = _parse_outcome(event.text)
+            row.mark = "v" if outcome == "success" else "x"
+            row.status = outcome
+            row.elapsed_ms = None
+            self._settled.append(row)
+            self.console.print(event.text)
+        elif event.kind in ("halted", "note"):
+            self.console.print(event.text)
+        self._live.update(self.frame(), refresh=self._live.is_started)
+
+    def frame(self) -> str:
+        """The table as it stands right now, as plain text — one redraw's worth.
+
+        Pure: reading it back after a sequence of :meth:`handle` calls is the
+        whole of this class's test surface, and it touches neither
+        :attr:`console` nor ``Live``.
+        """
+        rows = [*self._settled, *self._active.values()]
+        issue_w = max((len(row.issue_id) for row in rows), default=0)
+        title_w = max((len(row.title) for row in rows), default=0)
+        status_w = max((len(row.status) for row in rows), default=0)
+
+        settled_lines = [
+            self._line(row, issue_w, title_w, status_w, row.merged) for row in self._settled
+        ]
+        active_lines = [
+            self._line(row, issue_w, title_w, status_w, self._detail(row))
+            for row in self._active.values()
+        ]
+        body = list(settled_lines)
+        if settled_lines and active_lines:
+            width = max(len(line) for line in (*settled_lines, *active_lines))
+            body.append("-" * width)
+        body.extend(active_lines)
+        return "\n".join([self._header(), "", *body]) if body else self._header()
+
+    def _row(self, issue_id: str) -> _Row:
+        row = self._active.get(issue_id)
+        if row is None:
+            row = _Row(issue_id=issue_id)
+            self._active[issue_id] = row
+        return row
+
+    def _detail(self, row: _Row) -> str:
+        elapsed = _format_elapsed(
+            row.elapsed_ms / 1000 if row.elapsed_ms is not None else self._clock() - row.started
+        )
+        return f"{elapsed}  {row.branch}" if row.branch else elapsed
+
+    def _header(self) -> str:
+        turn = f"turn {self._used}"
+        if self._max_iterations:
+            turn += f"/{self._max_iterations}"
+        elapsed = _format_elapsed(self._clock() - self._run_started)
+        scope = f"scope   {self._scope}" if self._scope else "scope"
+        return f"{scope}     {turn}   {elapsed}"
+
+    @staticmethod
+    def _line(row: _Row, issue_w: int, title_w: int, status_w: int, tail: str) -> str:
+        line = (
+            f"  {row.mark}  {row.issue_id.ljust(issue_w)}  {row.title.ljust(title_w)}  "
+            f"{row.status.ljust(status_w)}   {tail}"
+        )
+        return line.rstrip()

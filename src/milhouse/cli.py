@@ -24,12 +24,15 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from importlib.metadata import version as package_version
 from pathlib import Path
-from typing import Annotated, Any
+from typing import IO, Annotated, Any, Literal
 
 import typer
+from rich.console import Console
 from typer.core import TyperGroup
 
 from . import completion, prompts
@@ -43,7 +46,7 @@ from .lanes import WORKER_SEPARATOR, Lane, Lanes
 from .models import Graph, Issue, Iteration, now
 from .parallel import Parallel
 from .policy import unattended
-from .renderer import PlainRenderer
+from .renderer import LiveRenderer, PlainRenderer, Renderer
 from .run import Body, RunResult
 from .run import run as run_loop
 from .rundir import LOCK_FILENAME, RunLock
@@ -105,6 +108,20 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
+ProgressMode = Literal["auto", "live", "plain"]
+
+_progress_mode: ProgressMode = "auto"
+"""How the next command's progress is shown, set by ``main_options`` from
+``--progress``/``MILHOUSE_PROGRESS`` before any subcommand runs.
+
+Module-level rather than threaded through every command's signature, for the
+same reason ``--verbose`` already configures ``logging`` globally rather than
+being passed to each command by hand: it is one setting for the whole
+invocation, decided once, in the one place (:func:`main_options`) every
+subcommand passes through before its own body runs.
+"""
+
+
 @app.callback()
 def main_options(
     version: Annotated[
@@ -120,8 +137,22 @@ def main_options(
         bool,
         typer.Option("--verbose", "-v", help="Log every subprocess milhouse runs."),
     ] = False,
+    progress: Annotated[
+        ProgressMode,
+        typer.Option(
+            "--progress",
+            envvar="MILHOUSE_PROGRESS",
+            help=(
+                "How progress is shown: `live` redraws a lane table in place, "
+                "`plain` is a line per event, `auto` picks `live` on a terminal "
+                "and `plain` otherwise."
+            ),
+        ),
+    ] = "auto",
 ) -> None:
     """Global options that apply to every subcommand."""
+    global _progress_mode
+    _progress_mode = progress
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s",
@@ -362,14 +393,13 @@ def run(
     typer.echo(f"scope   {scope.describe()}")
     if width > 1:
         typer.echo(f"count   {width} turns in flight at once, each in a worker lane")
-    session = _session(
+    with _session(
         config,
         tracker=scope.tracker,
         attach=attach,
         lane_key=scope.key,
         worker_lanes=width > 1,
-    )
-    with session as opened:
+    ) as opened:
         result = run_loop(
             opened,
             scope.targets,
@@ -675,6 +705,34 @@ def _scope(config: Config) -> str:
     return ", ".join(parts) or "every ready issue in the repository"
 
 
+def _renderer(config: Config, *, stream: IO[str] | None = None) -> Renderer:
+    """The renderer this invocation draws progress with.
+
+    ``--progress``/``MILHOUSE_PROGRESS`` (:data:`_progress_mode`) picks
+    explicitly; ``auto``, the default, resolves once here to `live` on a
+    capable terminal and to `plain` otherwise. "Capable" is
+    ``rich.console.Console.is_terminal``, which already folds in ``NO_COLOR``,
+    ``TERM=dumb``, and a redirected stream, so this re-implements none of that
+    (:doc:`ADR 0026
+    <../../docs/decisions/0026-the-progress-channel-is-events-and-the-terminal-is-one-renderer>`).
+
+    Args:
+        config: Resolved configuration, for the live table's header.
+        stream: Where output goes. Defaults to stdout; a test passes its own
+            to force (or rule out) terminal behaviour without a real one.
+    """
+    console = Console(file=stream) if stream is not None else Console()
+    mode = _progress_mode
+    if mode == "auto":
+        mode = "live" if console.is_terminal else "plain"
+    if mode == "live":
+        return LiveRenderer(
+            console=console, scope=_scope(config), max_iterations=config.run.max_iterations
+        )
+    return PlainRenderer()
+
+
+@contextmanager
 def _session(
     config: Config,
     *,
@@ -682,19 +740,30 @@ def _session(
     attach: bool = False,
     lane_key: str | None = None,
     worker_lanes: bool = False,
-) -> Session:
-    """Assemble a :class:`~milhouse.session.Session` from resolved configuration."""
-    renderer = PlainRenderer()
-    return Session(
-        config,
-        tracker=tracker or BeadsTracker(config.repo_root, config.tracker),
-        client=HerdrClient(cwd=config.repo_root),
-        repo=GitRepo(config.repo_root),
-        report=renderer.handle,
-        attach=attach,
-        lane_key=lane_key,
-        worker_lanes=worker_lanes,
-    )
+) -> Iterator[Session]:
+    """Open a :class:`~milhouse.session.Session`, drawn by this invocation's renderer.
+
+    A context manager rather than a plain constructor, because
+    :class:`~milhouse.renderer.LiveRenderer` has a screen to start and stop
+    around the whole session — including :meth:`Session.__enter__`'s own
+    events — and every caller already wraps the result in ``with``.
+    """
+    renderer = _renderer(config)
+    screen = renderer if isinstance(renderer, LiveRenderer) else nullcontext()
+    with (
+        screen,
+        Session(
+            config,
+            tracker=tracker or BeadsTracker(config.repo_root, config.tracker),
+            client=HerdrClient(cwd=config.repo_root),
+            repo=GitRepo(config.repo_root),
+            report=renderer.handle,
+            attach=attach,
+            lane_key=lane_key,
+            worker_lanes=worker_lanes,
+        ) as session,
+    ):
+        yield session
 
 
 def _body(config: Config) -> Body:

@@ -7,6 +7,7 @@ codes, and the commands that promise not to start anything really do not.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 from pathlib import Path
@@ -16,8 +17,10 @@ import pytest
 from typer.testing import CliRunner, Result
 
 from milhouse import cli, proc
+from milhouse.config import Config
 from milhouse.models import Issue, Iteration, MergeRecord, now
 from milhouse.parallel import Parallel
+from milhouse.renderer import LiveRenderer, PlainRenderer
 from milhouse.run import Draining, Halt, RunResult
 from milhouse.rundir import LOCK_FILENAME, LockHolder, RunLock
 
@@ -62,6 +65,74 @@ def worked_repo(repo: Path, fake_proc: FakeProc, monkeypatch: pytest.MonkeyPatch
 
 def invoke(*args: str) -> Result:
     return runner.invoke(cli.app, list(args))
+
+
+class _TTYStream(io.StringIO):
+    """A stream that claims to be a terminal, without needing a real one."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+def test_renderer_picks_live_on_a_capable_terminal(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "_progress_mode", "auto")
+
+    assert isinstance(cli._renderer(config, stream=_TTYStream()), LiveRenderer)
+
+
+def test_renderer_picks_plain_off_a_terminal(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "_progress_mode", "auto")
+
+    assert isinstance(cli._renderer(config, stream=io.StringIO()), PlainRenderer)
+
+
+def test_an_explicit_progress_mode_overrides_auto_detection(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "_progress_mode", "live")
+    assert isinstance(cli._renderer(config, stream=io.StringIO()), LiveRenderer)
+
+    monkeypatch.setattr(cli, "_progress_mode", "plain")
+    assert isinstance(cli._renderer(config, stream=_TTYStream()), PlainRenderer)
+
+
+def test_the_progress_flag_sets_the_mode_every_command_reads(
+    worked_repo: Path, fake_proc: FakeProc
+) -> None:
+    fake_proc.expect("bd", bd_reads_the_tree)
+
+    result = invoke("--progress", "plain", "step", "--dry-run")
+
+    assert result.exit_code == 0
+    assert cli._progress_mode == "plain"
+
+
+def test_the_progress_env_var_is_read_when_the_flag_is_not_given(
+    worked_repo: Path, fake_proc: FakeProc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_proc.expect("bd", bd_reads_the_tree)
+    monkeypatch.setenv("MILHOUSE_PROGRESS", "live")
+
+    result = invoke("step", "--dry-run")
+
+    assert result.exit_code == 0
+    assert cli._progress_mode == "live"
+
+
+def test_an_explicit_progress_flag_beats_the_env_var(
+    worked_repo: Path, fake_proc: FakeProc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_proc.expect("bd", bd_reads_the_tree)
+    monkeypatch.setenv("MILHOUSE_PROGRESS", "live")
+
+    result = invoke("--progress", "plain", "step", "--dry-run")
+
+    assert result.exit_code == 0
+    assert cli._progress_mode == "plain"
 
 
 def test_help_lists_every_command() -> None:
