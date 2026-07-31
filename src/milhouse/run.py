@@ -46,6 +46,7 @@ from typing import Literal, Protocol, runtime_checkable
 
 from .models import Issue, Iteration, now
 from .policy import Policy, decide
+from .renderer import Event
 from .session import Session
 from .step import StepResult, merge_line, nothing_ready, step
 
@@ -297,7 +298,7 @@ def run(
             deferred.append((result.iteration.issue_id, result.decision.reason))
 
     def finish(halt: Halt) -> RunResult:
-        session.report(f"stopping: {halt.detail}")
+        session.report(Event("halted", f"stopping: {halt.detail}"))
         for result in _drain(body, session, policy):
             take(result)
         return RunResult(
@@ -348,7 +349,10 @@ def _drain(body: Body, session: Session, policy: Policy) -> list[StepResult]:
         return []
     if body.in_flight:
         session.report(
-            f"draining {len(body.in_flight)} turn(s) already in flight; {_promise(session)}"
+            Event(
+                "note",
+                f"draining {len(body.in_flight)} turn(s) already in flight; {_promise(session)}",
+            )
         )
     return body.drain(session, policy)
 

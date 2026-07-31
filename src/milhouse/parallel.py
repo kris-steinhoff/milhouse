@@ -39,6 +39,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .models import Iteration, now
+from .renderer import Event
 from .session import Session
 from .step import Dispatched, StepResult, dispatch, reap
 
@@ -250,6 +251,12 @@ class Parallel:
         for issue_id, pending in list(self._flying.items()):
             if (now() - pending.started_at).total_seconds() <= deadline:
                 continue
-            session.report(f"{issue_id} is overdue and cannot be reaped; giving up on it")
+            session.report(
+                Event(
+                    "note",
+                    f"{issue_id} is overdue and cannot be reaped; giving up on it",
+                    issue_id=issue_id,
+                )
+            )
             del self._flying[issue_id]
             self._lost.append(issue_id)

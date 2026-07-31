@@ -41,44 +41,19 @@ from .herdr import HerdrClient, Workspace
 from .lanes import Lane, Lanes
 from .models import Issue, Iteration, MergeRecord
 from .policy import Decision
+from .renderer import Event, about
 from .rundir import LOCK_FILENAME, RunLock
 from .runner import AgentRunner, Runner
 from .tracker.base import Tracker
 
-__all__ = ["Reporter", "Session", "about", "usable_workspace"]
+__all__ = ["Reporter", "Session", "usable_workspace"]
 
 log = logging.getLogger(__name__)
 
-Reporter = Callable[[str], None]
-"""Where progress lines go. The CLI passes ``typer.echo``."""
-
-
-def about(issue_id: str, text: str) -> str:
-    """A progress line indented under its turn and labelled with whose turn it is.
-
-    Serially the label is redundant, because the ``iteration N: <issue>`` line
-    above it is the only turn in progress. Concurrently it is the whole line:
-    four turns interleave their progress on one terminal, and an unlabelled
-    ``→ success`` says nothing about which of them succeeded
-    (:doc:`ADR 0024 <../../docs/decisions/0024-an-integration-lane-and-worker-lanes>`).
-
-    The label is the issue id rather than the lane's workspace or its branch,
-    because it is the one name that is the same in every progress line, in the
-    audit log, and in the report — and in a run with worker lanes it *is* the
-    lane key (:meth:`milhouse.lanes.Lanes.open_worker`).
-
-    Here rather than in :mod:`milhouse.step` because a session reports lines of
-    its own, and :mod:`milhouse.step` imports this module rather than the other
-    way round.
-
-    Args:
-        issue_id: The turn's issue.
-        text: What to say about it.
-
-    Returns:
-        The line to report.
-    """
-    return f"  {issue_id}  {text}"
+Reporter = Callable[[Event], None]
+"""Where progress events go. The CLI passes a :class:`~milhouse.renderer.Renderer`'s
+``handle`` method (:doc:`ADR 0026
+<../../docs/decisions/0026-the-progress-channel-is-events-and-the-terminal-is-one-renderer>`)."""
 
 
 def usable_workspace(
@@ -131,7 +106,7 @@ class Session:
         client: HerdrClient,
         repo: GitRepo,
         audit: AuditLog | None = None,
-        report: Reporter = lambda line: None,
+        report: Reporter = lambda event: None,
         attach: bool = False,
         lane_key: str | None = None,
         worker_lanes: bool = False,
@@ -146,7 +121,7 @@ class Session:
             repo: The git repository being worked in.
             audit: Where iterations are recorded. Defaults to this repository's
                 beads audit log.
-            report: Called with each human-readable progress line.
+            report: Called with each progress event.
             attach: Focus the workspace when creating it, so a human watches it
                 happen. Off by default, so a background run does not steal the
                 screen.
@@ -258,7 +233,13 @@ class Session:
             self._release_locks()
             self._restore_signals()
         for lane in self._lanes_opened():
-            self.report(f"lane {lane.workspace_id} is left open ({lane.path})")
+            self.report(
+                Event(
+                    "note",
+                    f"lane {lane.workspace_id} is left open ({lane.path})",
+                    lane=lane.workspace_id,
+                )
+            )
         return False
 
     def _lanes_opened(self) -> list[Lane]:
@@ -336,7 +317,13 @@ class Session:
         lock = RunLock(self.config.run_dir() / key / LOCK_FILENAME)
         stale = lock.acquire()
         if stale is not None:
-            self.report(f"took over the lock on {key} from a dead run ({stale.describe()})")
+            self.report(
+                Event(
+                    "note",
+                    f"took over the lock on {key} from a dead run ({stale.describe()})",
+                    lane=key,
+                )
+            )
         self._locks[key] = lock
         return lock
 
@@ -403,7 +390,13 @@ class Session:
             if self.lanes.locate(issue_id) is not None:
                 continue
             self.lock_for(issue_id)
-            self.report(f"reconciling: re-opening {issue_id}, claimed by a run that did not finish")
+            self.report(
+                Event(
+                    "note",
+                    f"reconciling: re-opening {issue_id}, claimed by a run that did not finish",
+                    issue_id=issue_id,
+                )
+            )
             self.release_claim(issue_id, "Re-opened by milhouse: the previous run did not finish.")
 
     # -- resources --------------------------------------------------------
@@ -460,14 +453,18 @@ class Session:
             focus=self.attach,
         )
         self.report(
-            f"created herdr workspace {self.workspace.workspace_id} ({self.workspace.label})"
+            Event(
+                "note",
+                f"created herdr workspace {self.workspace.workspace_id} ({self.workspace.label})",
+                lane=self.workspace.workspace_id,
+            )
         )
 
     def _usable(self, workspace_id: str | None) -> str | None:
         """``workspace_id`` if :func:`usable_workspace` accepts it, reporting if not."""
         usable, refusal = usable_workspace(self.client, workspace_id, self.config.repo_root)
         if refusal:
-            self.report(refusal)
+            self.report(Event("note", refusal, lane=workspace_id))
         return usable
 
     def integration_lane(self) -> Lane | None:
@@ -507,9 +504,14 @@ class Session:
                 # and `runner_for` names it there instead of naming it twice.
                 lane = self._integration
                 self.report(
-                    about(
-                        self.lane_key,
-                        f"integration lane {lane.workspace_id} on {lane.branch} ({lane.path})",
+                    Event(
+                        "note",
+                        about(
+                            self.lane_key,
+                            f"integration lane {lane.workspace_id} on {lane.branch} ({lane.path})",
+                        ),
+                        issue_id=self.lane_key,
+                        lane=lane.workspace_id,
                     )
                 )
         return self._integration
@@ -558,7 +560,14 @@ class Session:
                 focus=self.attach,
             )
         self._opened[issue.id] = lane
-        self.report(about(issue.id, f"lane {lane.workspace_id} on {lane.branch} ({lane.path})"))
+        self.report(
+            Event(
+                "note",
+                about(issue.id, f"lane {lane.workspace_id} on {lane.branch} ({lane.path})"),
+                issue_id=issue.id,
+                lane=lane.workspace_id,
+            )
+        )
         self._active = AgentRunner(
             self.client,
             self.config,

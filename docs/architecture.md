@@ -202,6 +202,7 @@ src/milhouse/
     beads.py     bd wrapper
   herdr.py       narrow client over the herdr CLI — swappable transport
   runner.py      Runner protocol, and AgentRunner — start/prompt/read/exit
+  renderer.py    Event, Renderer protocol, PlainRenderer — what happened, how it looks
   session.py     Session — lock, branch, workspace, lane, claim. No policy.
   outcome.py     classify(issue_after, git, agent_state) -> Verdict
   policy.py      decide / unattended(max_attempts) -> Decision. No I/O.
@@ -221,6 +222,7 @@ src/milhouse/
 - **`gitrepo.py` reads one working directory.** A `GitRepo` is bound to the path it was given, and a turn is classified against the directory the agent actually worked in — the repository root today, a worktree once lanes exist ([ADR 0020](decisions/0020-a-lane-is-a-herdr-worktree.md)). Reading the root instead would credit an issue with commits someone else made, whether that is another lane or a human in another terminal.
 - **`outcome.py` and `policy.py` are pure.** See [the layering](#the-layering): values in, values out, so every row of both decision tables is a unit test with no subprocess involved.
 - **`session.py` holds no policy.** It does not decide what to work on next or whether there is a next. That is what let `run.py` reuse it unchanged.
+- **`renderer.py` is the only place that knows about terminals.** `step.py`, `run.py`, `parallel.py`, and `session.py` report what happened as an `Event`; nothing below the CLI decides how it looks, whether it is indented, or whether it is shown at all ([ADR 0026](decisions/0026-the-progress-channel-is-events-and-the-terminal-is-one-renderer.md)).
 - **`scope.py` produces a `Tracker`.** One target, or several unioned, fences the ready queue, and expressing the fence as a tracker is what keeps `Session`, `step`, `dispatch`, and `reap` from ever hearing that a target exists, let alone how many.
 - **`run.py` owns only the count.** It may not classify a turn, decide what becomes of an issue, or know what is in scope. Its loop body is an argument for the same reason.
 - **`cli.py` holds no behaviour, and no private attributes.** It resolves config, drives a `Session` through public methods, and formats the result.
